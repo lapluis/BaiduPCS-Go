@@ -6,13 +6,27 @@ $priorConfig = $env:BAIDUPCS_GO_CONFIG_DIR
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 $env:BAIDUPCS_GO_CONFIG_DIR = Join-Path $testRoot 'config'
 function Invoke-Rc([string[]]$Arguments) {
- $result = & $Binary @Arguments
- if ($LASTEXITCODE -ne 0) { throw ('Command failed: ' + ($Arguments -join ' ')) }
+ $oldPreference = $ErrorActionPreference
+ $ErrorActionPreference = 'Continue'
+ try {
+  $result = & $Binary @Arguments 2>$null
+  $exitCode = $LASTEXITCODE
+ } finally {
+  $ErrorActionPreference = $oldPreference
+ }
+ if ($exitCode -ne 0) { throw ('Command failed (' + $exitCode + '): ' + ($Arguments -join ' ')) }
  return $result
 }
 function Expect-Failure([string[]]$Arguments) {
- & $Binary @Arguments 2>$null | Out-Null
- if ($LASTEXITCODE -eq 0) { throw ('Expected failure: ' + ($Arguments -join ' ')) }
+ $oldPreference = $ErrorActionPreference
+ $ErrorActionPreference = 'Continue'
+ try {
+  & $Binary @Arguments 2>$null | Out-Null
+  $exitCode = $LASTEXITCODE
+ } finally {
+  $ErrorActionPreference = $oldPreference
+ }
+ if ($exitCode -eq 0) { throw ('Expected failure: ' + ($Arguments -join ' ')) }
 }
 try {
  $source = Join-Path $testRoot 'source'
