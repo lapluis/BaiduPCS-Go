@@ -82,6 +82,8 @@ pcsclone [global options] <command> [arguments]
 | `mkdir` | `PATH [options]` | 创建目录及缺失父目录 |
 | `tree` | `PATH [options]` | 目录树；`--depth N` |
 
+pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `copy`/`copyto`/`sync`/`move` 即上传/下载。与旧 `BaiduPCS-Go upload/download` 的参数对照见 [pcsclone.md 的 7.1 节](pcsclone.md)。
+
 ### 4.1 目录语义
 
 - `copy`、`sync`、`move` 对目录操作时处理**目录内容**，不额外生成源目录名。

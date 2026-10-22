@@ -286,6 +286,95 @@ if ($LASTEXITCODE -ne 0) { throw "sync failed: $LASTEXITCODE" }
 - 传输 worker 是 pcsclone 自身，不使用旧可执行文件；两个入口的 worker 互不依赖。
 - 旧的 `rc_remotes.json` 别名可通过 `config import-pcsgo` 导入；导入后由 pcsclone 管理自己的副本。
 
+### 7.1 `upload` / `download` 参数对照
+
+pcsclone **没有** `upload` / `download` 子命令。上传和下载分别用本地/网盘端点之间的 `copy`、`copyto`、`sync`、`move` 表达；传输 worker 内部仍复用原来的 `pcsupload` / `pcsdownload` 实现。
+
+先注意三条语义差异：
+
+- `copy` 对目录复制的是**目录内容**；旧 `upload`/`download` 对目录默认会把源目录名也放进目标路径。
+- `sync` 会删除目标端多余文件；`move` 会删除源；旧 `upload`/`download` 不删除任何源或额外文件。
+- pcsclone 默认比较内容；旧 `download` 默认“目标已存在就跳过”，旧 `upload` 默认策略是 `skip`。
+
+#### 下载参数
+
+| 旧 `download` | pcsclone |
+| --- | --- |
+| `download REMOTE...` | `copy REMOTE LOCAL_DIR`；单文件精确目标用 `copyto`；镜像删除用 `sync` |
+| `--saveto DIR` | 本地 `DEST` 参数 |
+| `--save` | `DEST` 写 `.` |
+| 默认 `SaveDir/uid_name/...` | 没有隐式保存目录；必须显式给 `DEST` |
+| 默认跳过已存在文件 | `--ignore-existing` 最接近；pcsclone 默认跳过相同内容、覆盖不同内容 |
+| `--ow` | pcsclone 默认覆盖不同内容；没有强制重下相同内容的开关 |
+| `--mode pcs/stream/locate` | 只使用等价于 `locate` 的下载模式；`pcs`/`stream` 未暴露 |
+| `-p N` 单文件线程数 | worker 固定 `MaxParallel: 1`，没有对应参数 |
+| `-l N` 同时下载文件数 | `--transfers N`；注意 pcsclone 默认 4，旧配置默认 1 |
+| `--retry N` | `--retries N`，按整个文件重试 worker；默认 2 次额外重试 |
+| `--nocheck` | worker 固定不校验；需要校验用 `--checksum` |
+| `--mtime` | worker 固定设置下载文件 mtime |
+| `--status` | `--progress` / `-P`（周期进度，不是逐线程状态） |
+| `--x`、`--dindex`、`--fullpath`、`--test` | 未提供对应参数 |
+| 远端通配符 `*` | 不展开远端通配符；使用 `--include`/`--exclude`/`--files-from` |
+| `.BaiduPCS-Go-downloading` 续传 | 下载先写临时文件；不提供跨命令下载续传 |
+
+旧下载的目录名布局与 pcsclone 的对应写法：
+
+```powershell
+# 旧：D:\Downloads\我的资源\...
+BaiduPCS-Go download --saveto D:\Downloads /我的资源
+# pcsclone：显式把源目录名放进目标
+& .\build\pcsclone.exe copy bd:/我的资源 D:\Downloads\我的资源
+
+# 单文件：两边都是 D:\Downloads\1.mp4
+BaiduPCS-Go download --saveto D:\Downloads /我的资源/1.mp4
+& .\build\pcsclone.exe copy bd:/我的资源/1.mp4 D:\Downloads
+```
+
+#### 上传参数
+
+| 旧 `upload` | pcsclone |
+| --- | --- |
+| `upload LOCAL... REMOTE_DIR` | `copy LOCAL REMOTE_DIR`；精确远端文件名用 `copyto` |
+| 目录上传保留源目录名 | `copy` 复制目录内容；用 `copy LOCAL REMOTE_DIR/源目录名` 模拟旧布局 |
+| `--policy skip` | `--ignore-existing` |
+| `--policy overwrite` | pcsclone 默认覆盖不同内容；相同内容跳过 |
+| `--policy rsync` | `--size-only`（同大小跳过；默认内容比较更强） |
+| `-p N` 单文件线程数 | worker 固定 `Parallel: 1`，没有对应参数 |
+| `-l N` 同时上传文件数 | `--transfers N`（默认 4） |
+| `--retry N` | `--retries N`，按整个文件重试 worker；默认 2 次额外重试 |
+| `--norapid` | 未提供；worker 仍会尝试秒传 |
+| 零字节文件 | 旧 `upload` 跳过；pcsclone 会上传零字节文件 |
+| 空目录 | 旧 `upload` 跳过；pcsclone 默认也跳过，可用 `--create-empty-src-dirs` 创建 |
+| 符号链接 | 旧 `upload` 跟随；pcsclone 拒绝符号链接 |
+| 上传续传数据库 | worker 使用独立 `rc-state/`，按账号/源/目标隔离；不与旧数据库共用 |
+| 多个本地源 | pcsclone 每个 `copy` 只接受一个源；用脚本循环或先整理到一个目录 |
+
+旧上传目录布局与 pcsclone 的对应写法：
+
+```powershell
+# 旧：/视频/Desktop/...
+BaiduPCS-Go upload D:\Desktop /视频
+# pcsclone：显式把源目录名放进目标
+& .\build\pcsclone.exe copy D:\Desktop bd:/视频/Desktop
+
+# 单文件：/视频/1.mp4
+& .\build\pcsclone.exe copy D:\Desktop\1.mp4 bd:/视频
+```
+
+#### 公共并发、限速和校验
+
+| 项目 | pcsclone |
+| --- | --- |
+| 同时传输文件数 | `--transfers N`，默认 4 |
+| 比较并发数 | `--checkers N`，默认 4 |
+| 失败重试 | `--retries N`，默认 2 次额外重试 |
+| 限速 | `--bwlimit RATE`；**旧配置的 `max_download_rate`/`max_upload_rate` 不会用于 pcsclone 传输** |
+| 传输后校验 | `--checksum`；远端会下载内容计算 MD5 |
+| 仅比较大小 | `--size-only` |
+| 跳过已存在/较新目标 | `--ignore-existing` / `--update` |
+| 预演 | `--dry-run`；不写目标，但比较时可能读取/下载内容 |
+| 缓存大小、代理、UA | 仍从 pcsclone 的 `pcs_config.json` 读取；可用 `config file` 定位后编辑 |
+
 ## 8. Shell 补全
 
 ```bash
