@@ -125,6 +125,14 @@ func TestResolveConfigPathPrecedence(t *testing.T) {
 	if path != explicit {
 		t.Fatalf("explicit path lost: %q", path)
 	}
+	dirForm := filepath.Join(dir, "as-directory") + string(os.PathSeparator)
+	path, err = resolveConfigPath(dirForm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(dir, "as-directory", defaultConfigName) {
+		t.Fatalf("directory form lost: %q", path)
+	}
 	path, err = resolveConfigPath("")
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +174,35 @@ func TestCompletionScripts(t *testing.T) {
 	requireCode(t, 2, config, "completion", "fish")
 }
 
+func TestConfigFileWorksWithInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "pcs_config.json")
+	if err := os.WriteFile(config, []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCLI(t, config, "config", "file", "--json")
+	if code != 0 {
+		t.Fatalf("config file failed: %d %s", code, stderr)
+	}
+	var info map[string]string
+	if err := json.Unmarshal([]byte(stdout), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info["config"] != config || !strings.HasSuffix(info["remotes"], "rc_remotes.json") {
+		t.Fatalf("unexpected paths: %#v", info)
+	}
+	requireCode(t, 1, config, "listremotes")
+}
+
 func TestRuntimeExportsConfigForWorker(t *testing.T) {
+	oldEnv, hadEnv := os.LookupEnv(EnvConfigFile)
+	defer func() {
+		if hadEnv {
+			_ = os.Setenv(EnvConfigFile, oldEnv)
+		} else {
+			_ = os.Unsetenv(EnvConfigFile)
+		}
+	}()
 	root := t.TempDir()
 	config := filepath.Join(root, "config", "pcs_config.json")
 	app := &App{CWD: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
@@ -198,6 +234,14 @@ func TestHelpAndExitCodes(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "pcsclone baidu share create") {
 		t.Fatalf("nested help failed: %d %q", code, out)
 	}
+	code, out, _ = runCLI(t, "", "help", "version")
+	if code != 0 || !strings.Contains(out, "pcsclone version") {
+		t.Fatalf("version help failed: %d %q", code, out)
+	}
+	code, out, _ = runCLI(t, "", "help", "help")
+	if code != 0 || !strings.Contains(out, "pcsclone help [command ...]") {
+		t.Fatalf("help help failed: %d %q", code, out)
+	}
 	code, _, errOut := runCLI(t, "", "not-a-command")
 	if code != 2 || !strings.Contains(errOut, "unknown command") {
 		t.Fatalf("unknown command: %d %q", code, errOut)
@@ -208,6 +252,7 @@ func TestHelpAndExitCodes(t *testing.T) {
 	requireCode(t, 2, config, "config", "create", "x")
 	requireCode(t, 2, config, "config", "create", "alice", "--cookies", "BDUSS=abc")
 	requireCode(t, 1, config, "config", "delete", "nope")
+	requireCode(t, 1, config, "config", "rename", "nope", "nope")
 }
 
 func TestLocalWorkflow(t *testing.T) {
@@ -241,6 +286,20 @@ func TestLocalWorkflow(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, "skip.tmp")); !os.IsNotExist(err) {
 		t.Fatal("excluded file was copied")
 	}
+
+	listFile := filepath.Join(root, "files.txt")
+	if err := os.WriteFile(listFile, []byte("# selected files\nnested/hello.txt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	filtered := filepath.Join(root, "filtered")
+	mustRun(t, config, "copy", source, filtered, "--files-from", listFile)
+	if _, err := os.Stat(filepath.Join(filtered, "nested", "hello.txt")); err != nil {
+		t.Fatal("files-from selection was not copied:", err)
+	}
+	if _, err := os.Stat(filepath.Join(filtered, "zero.txt")); !os.IsNotExist(err) {
+		t.Fatal("files-from copied an unlisted file")
+	}
+	mustRun(t, config, "purge", filtered)
 
 	recursive := mustRun(t, config, "ls", target)
 	if !strings.Contains(recursive, "nested/hello.txt") {
@@ -320,6 +379,7 @@ func TestLocalWorkflow(t *testing.T) {
 	requireCode(t, 2, config, "copy", source, target, "--transfers", "0")
 	requireCode(t, 2, config, "purge", source, "--exclude", "*.txt")
 	requireCode(t, 2, config, "tree", source, "--depth", "-2")
+	requireCode(t, 2, config, "tree", source, "--depth", "0")
 }
 
 func TestImportLegacyConfigAndRedaction(t *testing.T) {
@@ -337,7 +397,7 @@ func TestImportLegacyConfigAndRedaction(t *testing.T) {
     {"uid": 333, "name": "broken", "bduss": "", "cookies": ""}
   ]
 }`
-	if err := os.WriteFile(legacyPath, []byte(legacyJSON), 0600); err != nil {
+	if err := os.WriteFile(legacyPath, append([]byte{0xEF, 0xBB, 0xBF}, []byte(legacyJSON)...), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(legacyDir, "rc_remotes.json"), []byte(`{"bd": 111, "cjk": 222}`), 0600); err != nil {

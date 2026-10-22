@@ -309,6 +309,9 @@ func runBaiduShareList(c *commandContext) error {
 		return writeJSON(c, records)
 	}
 	for _, record := range records {
+		if record == nil {
+			continue
+		}
 		fmt.Fprintf(c.app.Stdout, "shareid=%d link=%s path=%s expire_type=%d views=%d\n",
 			record.ShareID, record.Shortlink, record.TypicalPath, record.ExpireType, record.ViewCount)
 	}
@@ -341,6 +344,10 @@ type transferOutput struct {
 }
 
 func runBaiduTransfer(c *commandContext) error {
+	code := c.flags.String("code")
+	if code != "" && len(code) != 4 {
+		return usageErrorf("--code must contain exactly four characters")
+	}
 	remote, root, err := c.resolveRemote(c.args[1])
 	if err != nil {
 		return err
@@ -349,17 +356,20 @@ func runBaiduTransfer(c *commandContext) error {
 		return operationError(err)
 	}
 	params := []string{c.args[0]}
-	if code := c.flags.String("code"); code != "" {
-		if len(code) != 4 {
-			return usageErrorf("--code must contain exactly four characters")
-		}
+	if code != "" {
 		params = append(params, code)
 	}
 	result, err := pcscommand.ShareTransferTo(remote.PCS, params, root, &baidupcs.TransferOption{Collect: c.flags.Bool("collect")})
 	if err != nil {
 		return operationError(err)
 	}
-	output := transferOutput{Filename: result.Filename, Filenames: result.Filenames, Path: root}
+	if result.Filenames == nil {
+		result.Filenames = []string{}
+	}
+	if result.Path == "" {
+		result.Path = root
+	}
+	output := transferOutput{Filename: result.Filename, Filenames: result.Filenames, Path: result.Path}
 	if c.flags.Bool("json") {
 		return writeJSON(c, output)
 	}
@@ -400,7 +410,7 @@ func runBaiduLink(c *commandContext) error {
 		if pcsErr != nil {
 			return operationError(pcsErr)
 		}
-		if located == nil {
+		if located == nil || len(located.URLs) == 0 {
 			return operationError(errors.New("locate API returned no download information"))
 		}
 		for _, item := range located.URLs {

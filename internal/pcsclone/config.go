@@ -1,6 +1,7 @@
 package pcsclone
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,7 +69,7 @@ Credential values are always redacted.`,
 			{
 				Name: "file", Summary: "Print configuration file locations",
 				Usage:   "pcsclone config file [--json]",
-				MinArgs: 0, MaxArgs: 0,
+				MinArgs: 0, MaxArgs: 0, NoRuntime: true,
 				Flags: []flagSpec{boolFlag("json", "", "Write a JSON object")},
 				Run:   runConfigFile,
 			},
@@ -213,16 +214,16 @@ func runConfigReconnect(c *commandContext) error {
 
 func runConfigRename(c *commandContext) error {
 	oldName, newName := c.args[0], c.args[1]
+	uid, exists := c.app.Resolver.Aliases[oldName]
+	if !exists {
+		return operationError(fmt.Errorf("unknown remote %q", oldName))
+	}
 	if oldName == newName {
 		fmt.Fprintf(c.app.Stdout, "Remote %q is already named %q\n", oldName, newName)
 		return nil
 	}
 	if !validAlias(newName) {
 		return usageErrorf("remote names need at least two letters/digits, start with a letter, and may contain _ or -")
-	}
-	uid, exists := c.app.Resolver.Aliases[oldName]
-	if !exists {
-		return operationError(fmt.Errorf("unknown remote %q", oldName))
 	}
 	if _, exists = c.app.Resolver.Aliases[newName]; exists {
 		return operationError(fmt.Errorf("remote %q already exists", newName))
@@ -353,9 +354,13 @@ func presence(ok bool) string {
 }
 
 func runConfigFile(c *commandContext) error {
-	dir := pcsconfig.GetConfigDir()
+	path, err := resolveConfigPath(c.configPath)
+	if err != nil {
+		return operationError(err)
+	}
+	dir := filepath.Dir(path)
 	info := map[string]string{
-		"config":  pcsconfig.Config.FilePath(),
+		"config":  path,
 		"remotes": filepath.Join(dir, "rc_remotes.json"),
 		"state":   filepath.Join(dir, "rc-state"),
 	}
@@ -380,6 +385,7 @@ func runConfigImport(c *commandContext) error {
 	if err != nil {
 		return operationError(err)
 	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	var legacy legacyConfig
 	if err = json.Unmarshal(data, &legacy); err != nil {
 		return operationError(fmt.Errorf("parse legacy config %s: %w", source, err))
@@ -388,6 +394,7 @@ func runConfigImport(c *commandContext) error {
 	legacyAliases := map[string]uint64{}
 	aliasPath := filepath.Join(filepath.Dir(source), "rc_remotes.json")
 	if aliasData, readErr := os.ReadFile(aliasPath); readErr == nil {
+		aliasData = bytes.TrimPrefix(aliasData, []byte{0xEF, 0xBB, 0xBF})
 		if unmarshalErr := json.Unmarshal(aliasData, &legacyAliases); unmarshalErr != nil {
 			fmt.Fprintf(c.app.Stderr, "pcsclone: ignoring invalid legacy aliases %s: %v\n", aliasPath, unmarshalErr)
 			legacyAliases = map[string]uint64{}
@@ -484,7 +491,7 @@ func runConfigImport(c *commandContext) error {
 	fmt.Fprintf(c.app.Stdout, "Imported %d account(s); %d already present; %d unusable; %d alias(es) added.\nSource: %s\n",
 		imported, existing, skipped, addedAliases, source)
 	if dryRun {
-		fmt.Fprintln(c.app.Stdout, "Dry run: no files were written.")
+		fmt.Fprintln(c.app.Stdout, "Dry run: no accounts or aliases were imported.")
 	}
 	return nil
 }
@@ -515,11 +522,20 @@ func resolveLegacyConfig(from, current string) (string, error) {
 	}
 
 	var candidates []string
+	exeDir := ""
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
 	if dir := strings.TrimSpace(os.Getenv(pcsconfig.EnvConfigDir)); dir != "" {
+		if !filepath.IsAbs(dir) && exeDir != "" {
+			// Match the legacy resolver: a relative env directory is based on
+			// the executable directory, not the invocation directory.
+			dir = filepath.Join(exeDir, dir)
+		}
 		candidates = append(candidates, filepath.Join(dir, defaultConfigName))
 	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), defaultConfigName))
+	if exeDir != "" {
+		candidates = append(candidates, filepath.Join(exeDir, defaultConfigName))
 	}
 	if runtime.GOOS == "windows" {
 		if dir := os.Getenv("APPDATA"); dir != "" {

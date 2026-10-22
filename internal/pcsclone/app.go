@@ -190,13 +190,16 @@ func (a *App) ensureRuntime(configPath string) error {
 		_ = old.Close()
 	}
 	if err = cfg.Init(); err != nil {
+		_ = cfg.Close()
 		return fmt.Errorf("load config %s: %w", path, err)
 	}
 	if err = os.Setenv(EnvConfigFile, path); err != nil {
+		_ = cfg.Close()
 		return fmt.Errorf("export config path for transfer workers: %w", err)
 	}
 	resolver, err := rc.NewResolver(a.CWD)
 	if err != nil {
+		_ = cfg.Close()
 		return err
 	}
 	a.ConfigFile = path
@@ -217,7 +220,9 @@ func resolveConfigPath(explicit string) (string, error) {
 		}
 		path = filepath.Join(dir, defaultConfigName)
 	}
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
+	if strings.HasSuffix(path, "/") || (runtime.GOOS == "windows" && strings.HasSuffix(path, `\`)) {
+		path = filepath.Join(path, defaultConfigName)
+	} else if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, defaultConfigName)
 	}
 	abs, err := filepath.Abs(path)
@@ -298,11 +303,12 @@ type command struct {
 }
 
 type commandContext struct {
-	app   *App
-	ctx   context.Context
-	cmd   *command
-	args  []string
-	flags *flagValues
+	app        *App
+	ctx        context.Context
+	cmd        *command
+	args       []string
+	flags      *flagValues
+	configPath string
 }
 
 func (a *App) runCommand(ctx context.Context, cmd *command, args []string, configPath string) error {
@@ -355,13 +361,27 @@ func (a *App) runLeaf(ctx context.Context, cmd *command, args []string, configPa
 			return operationError(err)
 		}
 	}
-	c := &commandContext{app: a, ctx: ctx, cmd: cmd, args: positional, flags: flags}
+	c := &commandContext{app: a, ctx: ctx, cmd: cmd, args: positional, flags: flags, configPath: configPath}
 	return cmd.Run(c)
 }
 
 func (a *App) runHelp(args []string) int {
 	if len(args) == 0 {
 		a.printGlobalHelp()
+		return 0
+	}
+	switch args[0] {
+	case "help":
+		if len(args) != 1 {
+			return a.report(usageErrorf("help takes at most one command path"))
+		}
+		fmt.Fprint(a.Stdout, "Usage:\n  pcsclone help [command ...]\n\nShow global or per-command help.\n")
+		return 0
+	case "version":
+		if len(args) != 1 {
+			return a.report(usageErrorf("version takes no arguments"))
+		}
+		fmt.Fprintf(a.Stdout, "Usage:\n  pcsclone version\n\nShow the version (pcsclone %s).\n", a.Version)
 		return 0
 	}
 	cmd := findCommand(topLevelCommands(), args[0])
@@ -432,6 +452,10 @@ Global options:
   --config FILE, -c FILE   Use FILE instead of the pcsclone configuration
   --help, -h               Show this help
   --version, -V            Show the version
+
+Environment:
+  PCSCLONE_CONFIG_FILE     Configuration file path (also inherited by workers)
+  PCSCLONE_CONFIG_DIR      Configuration directory when FILE is unset
 
 `, a.Version)
 

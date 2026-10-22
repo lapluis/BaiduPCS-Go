@@ -413,8 +413,8 @@ func runList(c *commandContext, mode string) error {
 	if mode == "tree" {
 		recursive = true
 		depth = c.flags.IntOr("depth", -1)
-		if depth < -1 {
-			return usageErrorf("--depth must be -1 or greater")
+		if depth == 0 || depth < -1 {
+			return usageErrorf("--depth must be -1 (unlimited) or a positive number")
 		}
 	}
 	if c.flags.Bool("files-only") && c.flags.Bool("dirs-only") {
@@ -531,9 +531,7 @@ func runStat(c *commandContext) error {
 		}
 		result.Hash = hash
 	}
-	encoder := json.NewEncoder(c.app.Stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return json.NewEncoder(c.app.Stdout).Encode(result)
 }
 
 func runAbout(c *commandContext) error {

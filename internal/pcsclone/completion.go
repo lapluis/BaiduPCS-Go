@@ -114,7 +114,38 @@ func sortedCaseKeys(cases map[string][]string) []string {
 	return keys
 }
 
+func completionValueFlagWords() []string {
+	set := map[string]bool{}
+	var walk func([]*command)
+	walk = func(commands []*command) {
+		for _, cmd := range commands {
+			for _, spec := range cmd.Flags {
+				if spec.Kind == flagBool {
+					continue
+				}
+				set["--"+spec.Name] = true
+				if spec.Short != "" {
+					set["-"+spec.Short] = true
+				}
+			}
+			if cmd.Group != nil {
+				walk(cmd.Group)
+			}
+		}
+	}
+	walk(topLevelCommands())
+	set["--config"] = true
+	set["-c"] = true
+	words := make([]string, 0, len(set))
+	for word := range set {
+		words = append(words, word)
+	}
+	sort.Strings(words)
+	return words
+}
+
 func bashCompletion(cases map[string][]string) string {
+	valuePatterns := strings.Join(completionValueFlagWords(), "|")
 	var b strings.Builder
 	b.WriteString("# bash completion for pcsclone\n")
 	b.WriteString("_pcsclone_completion() {\n")
@@ -125,7 +156,7 @@ func bashCompletion(cases map[string][]string) string {
 	b.WriteString("  while [ \"$i\" -lt \"$COMP_CWORD\" ]; do\n")
 	b.WriteString("    w=\"${COMP_WORDS[$i]}\"\n")
 	b.WriteString("    case \"$w\" in\n")
-	b.WriteString("      --config|-c) i=$((i+2)); continue ;;\n")
+	fmt.Fprintf(&b, "      %s) i=$((i+2)); continue ;;\n", valuePatterns)
 	b.WriteString("      -*) i=$((i+1)); continue ;;\n")
 	b.WriteString("    esac\n")
 	b.WriteString("    path=\"${path:+$path }$w\"\n")
@@ -146,6 +177,7 @@ func bashCompletion(cases map[string][]string) string {
 }
 
 func zshCompletion(cases map[string][]string) string {
+	valuePatterns := strings.Join(completionValueFlagWords(), "|")
 	var b strings.Builder
 	b.WriteString("#compdef pcsclone\n")
 	b.WriteString("_pcsclone_completion() {\n")
@@ -153,7 +185,7 @@ func zshCompletion(cases map[string][]string) string {
 	b.WriteString("  while (( i < CURRENT )); do\n")
 	b.WriteString("    w=\"${words[i]}\"\n")
 	b.WriteString("    case \"$w\" in\n")
-	b.WriteString("      --config|-c) (( i += 2 )); continue ;;\n")
+	fmt.Fprintf(&b, "      %s) (( i += 2 )); continue ;;\n", valuePatterns)
 	b.WriteString("      -*) (( i++ )); continue ;;\n")
 	b.WriteString("    esac\n")
 	b.WriteString("    path=\"${path:+$path }$w\"\n")
@@ -183,9 +215,10 @@ func powershellCompletion(cases map[string][]string) string {
 	b.WriteString("    if ($elements.Count -eq 1) { $elements = @() } else { $elements = @($elements[0..($elements.Count - 2)]) }\n")
 	b.WriteString("  }\n")
 	b.WriteString("  $pathParts = @()\n")
+	fmt.Fprintf(&b, "  $valueFlags = %s\n", quoteWordsPowerShell(completionValueFlagWords()))
 	b.WriteString("  for ($i = 0; $i -lt $elements.Count; $i++) {\n")
 	b.WriteString("    $value = $elements[$i].Value\n")
-	b.WriteString("    if ($value -eq '--config' -or $value -eq '-c') { $i++; continue }\n")
+	b.WriteString("    if ($valueFlags -contains $value) { $i++; continue }\n")
 	b.WriteString("    if ($value.StartsWith('-')) { continue }\n")
 	b.WriteString("    $pathParts += $value\n")
 	b.WriteString("  }\n")

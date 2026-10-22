@@ -19,6 +19,7 @@ var shareLinkRe = regexp.MustCompile(`(https?://pan\.baidu\.com/s/[0-9A-Za-z_-]+
 type ShareTransferResult struct {
 	Filename  string
 	Filenames []string
+	Path      string
 }
 
 // ShareTransferTo saves a share link into savePath using pcs. It returns errors
@@ -143,7 +144,7 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		resp["filename"] = transMetas["filename"]
 	}
 
-	result := &ShareTransferResult{Filename: resp["filename"]}
+	result := &ShareTransferResult{Filename: resp["filename"], Path: transMetas["path"]}
 	if resp["filenames"] != "" {
 		result.Filenames = strings.Split(resp["filenames"], ",")
 	}

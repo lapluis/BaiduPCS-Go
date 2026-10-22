@@ -277,12 +277,6 @@ func SetConfigDir(dir string) {
 	configDirOverride = filepath.Clean(dir)
 }
 
-// ConfigDirOverridden reports whether SetConfigDir selected a separate state
-// directory. The legacy front-end never sets it.
-func ConfigDirOverridden() bool {
-	return configDirOverride != ""
-}
-
 // FilePath returns the path of the configuration file backing c.
 func (c *PCSConfig) FilePath() string {
 	return c.configFilePath
