@@ -206,8 +206,10 @@ type fdPanListJSON struct {
 // (修复 https://github.com/qjfoidnh/BaiduPCS-Go/issues/511)。
 // 通过 fs_id 去重防御分页异常: 一旦出现重复条目立即终止, 避免死循环与重复数据。
 func (pcs *BaiduPCS) FilesDirectoriesList(path string, options *OrderOptions) (data FileDirectoryList, pcsError pcserror.Error) {
-	// 防御性上限, 避免接口异常导致死循环
-	const maxPage = 2000
+	return pcs.filesDirectoriesList(path, options, 2000)
+}
+
+func (pcs *BaiduPCS) filesDirectoriesList(path string, options *OrderOptions, maxPage int) (data FileDirectoryList, pcsError pcserror.Error) {
 	seen := make(map[int64]struct{}, maxListNum)
 
 	for page := 1; page <= maxPage; page++ {
@@ -228,16 +230,22 @@ func (pcs *BaiduPCS) FilesDirectoriesList(path string, options *OrderOptions) (d
 			return
 		}
 
+		if jsonData.List == nil {
+			return nil, incompleteListing("missing list")
+		}
 		if len(jsonData.List) == 0 {
-			break
+			return data, nil
 		}
 
 		// 转换为 FileDirectory 并按 fs_id 去重
 		pageList := make(FileDirectoryList, 0, len(jsonData.List))
 		for _, j := range jsonData.List {
+			if j == nil || j.FsID <= 0 {
+				return nil, incompleteListing("invalid entry")
+			}
 			if _, ok := seen[j.FsID]; ok {
-				// 重复 fs_id 说明分页未继续推进 (或已绕回), 终止遍历
-				return
+				// Partial listings must never be mistaken for a complete snapshot.
+				return nil, incompleteListing("repeated file ID")
 			}
 			seen[j.FsID] = struct{}{}
 			pageList = append(pageList, j.toFileDirectory())
@@ -247,10 +255,14 @@ func (pcs *BaiduPCS) FilesDirectoriesList(path string, options *OrderOptions) (d
 		data = append(data, pageList...)
 
 		if len(jsonData.List) < maxListNum {
-			break // 已取完最后一页
+			return data, nil // 已取完最后一页
 		}
 	}
-	return
+	return nil, incompleteListing("page limit reached")
+}
+
+func incompleteListing(reason string) pcserror.Error {
+	return &pcserror.PanErrorInfo{Operation: OperationFilesDirectoriesList, ErrType: pcserror.ErrTypeOthers, Err: fmt.Errorf("incomplete directory listing: %s", reason)}
 }
 
 // Search 按文件名搜索文件, 不支持查找目录

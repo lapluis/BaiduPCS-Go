@@ -22,9 +22,7 @@ func NewDownloadFirstInfoByResp(contentLength int64, resp *http.Response) (dfi *
 		dfi.ContentLength = contentLength
 		return
 	}
-	if contentLength != resp.ContentLength {
-		dfi.ContentLength = contentLength
-	}
+	dfi.ContentLength = contentLength
 	dfi.AcceptRanges = resp.Header.Get("Accept-Ranges")
 	dfi.Referer = resp.Header.Get("Referer")
 	return
