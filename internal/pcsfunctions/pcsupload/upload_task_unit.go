@@ -34,6 +34,7 @@ type (
 		PCS               *baidupcs.BaiduPCS
 		UploadingDatabase *UploadingDatabase // 数据库
 		Parallel          int
+		IgnoreCachedMatch bool   // Caller already compared content; do not trust cached remote MD5.
 		NoRapidUpload     bool   // 禁用秒传
 		NoSplitFile       bool   // 禁用分片上传
 		Policy            string // 上传重名文件策略
@@ -190,7 +191,7 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 			if fd.Filename == utu.panFile {
 				decodedMD5, _ := hex.DecodeString(fd.MD5)
 				// TODO: fd.MD5 有可能是错误的
-				if (utu.Policy == baidupcs.SkipPolicy) || (bytes.Compare(decodedMD5, utu.LocalFileChecksum.MD5) == 0) {
+				if (utu.Policy == baidupcs.SkipPolicy) || (!utu.IgnoreCachedMatch && bytes.Equal(decodedMD5, utu.LocalFileChecksum.MD5)) {
 					fmt.Printf("[%s] 目标文件, %s, 已存在, 跳过...\n", utu.taskInfo.Id(), utu.SavePath)
 					result.Succeed = true // 成功
 					return

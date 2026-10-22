@@ -33,7 +33,12 @@ type (
 
 // NewUploadingDatabase 初始化未完成上传的数据库, 从库中读取内容
 func NewUploadingDatabase() (ud *UploadingDatabase, err error) {
-	file, err := os.OpenFile(filepath.Join(pcsconfig.GetConfigDir(), UploadingFileName), os.O_CREATE|os.O_RDWR, 0777)
+	return NewUploadingDatabaseAt(filepath.Join(pcsconfig.GetConfigDir(), UploadingFileName))
+}
+
+// NewUploadingDatabaseAt isolates resume state for independent transfer workers.
+func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) {
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
