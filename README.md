@@ -1,5 +1,6 @@
 # BaiduPCS-Go 百度网盘客户端(加强版)
 
+> 本 fork 在保留原有命令的基础上，以补丁系列增加 rclone 风格的统一文件操作命令，详见 [使用指南](docs/rc.md)。运行 `BaiduPCS-Go rc help` 查看指令。补丁分组、上游同步与导出流程见 [补丁系列说明](docs/patch-series.md)。
 
 仿 Linux shell 文件处理命令的百度网盘命令行客户端.
 

@@ -1,5 +1,12 @@
 # 文档目录
 
+## 本 fork 文档
+
+- [Rclone 风格命令使用指南](rc.md)
+- [实现与兼容性说明](rc-implementation.md)
+- [验证记录（历史参考验证与本 fork 当前验证）](rc-validation.md)
+- [补丁系列、上游同步与导出流程](patch-series.md)
+
 ## 百度PCS文档
 
 ### 文件API
