@@ -79,7 +79,7 @@ Credential values are always redacted.`,
 				Description: `Copy accounts and remote aliases from a legacy BaiduPCS-Go
 configuration into pcsclone's own configuration. The legacy file is only read;
 it is not modified.`,
-				MinArgs: 0, MaxArgs: 0,
+				MinArgs: 0, MaxArgs: 0, NoRuntime: true,
 				Flags: []flagSpec{
 					stringFlag("from", "", "PATH", "Legacy config file or directory"),
 					boolFlag("dry-run", "n", "Report without importing accounts or aliases"),
@@ -377,8 +377,20 @@ type legacyConfig struct {
 }
 
 func runConfigImport(c *commandContext) error {
-	source, err := resolveLegacyConfig(c.flags.String("from"), c.app.ConfigFile)
+	config, err := resolveConfigPath(c.configPath)
 	if err != nil {
+		return operationError(err)
+	}
+	source, err := resolveLegacyConfig(c.flags.String("from"), config)
+	if err != nil {
+		return operationError(err)
+	}
+	if err = validateImportStorage(source, config); err != nil {
+		return operationError(err)
+	}
+	// Validate before initialization: initializing an empty destination file
+	// writes defaults, which must never overwrite the legacy import source.
+	if err = c.app.ensureRuntime(config); err != nil {
 		return operationError(err)
 	}
 	data, err := os.ReadFile(source)
@@ -492,6 +504,30 @@ func runConfigImport(c *commandContext) error {
 		imported, existing, skipped, addedAliases, source)
 	if dryRun {
 		fmt.Fprintln(c.app.Stdout, "Dry run: no accounts or aliases were imported.")
+	}
+	return nil
+}
+
+// The account file and aliases are both written during import. A different
+// config filename is insufficient when the two front-ends share a directory.
+func validateImportStorage(source, destination string) error {
+	sourceDir, destinationDir := filepath.Dir(source), filepath.Dir(destination)
+	for _, pair := range [][2]string{
+		{source, destination},
+		{sourceDir, destinationDir},
+		{filepath.Join(sourceDir, "rc_remotes.json"), filepath.Join(destinationDir, "rc_remotes.json")},
+	} {
+		sourceInfo, sourceErr := os.Stat(pair[0])
+		destinationInfo, destinationErr := os.Stat(pair[1])
+		if sourceErr != nil && !os.IsNotExist(sourceErr) {
+			return sourceErr
+		}
+		if destinationErr != nil && !os.IsNotExist(destinationErr) {
+			return destinationErr
+		}
+		if sourceErr == nil && destinationErr == nil && os.SameFile(sourceInfo, destinationInfo) {
+			return errors.New("legacy and pcsclone configuration must use separate files and directories; choose a separate --config directory before importing")
+		}
 	}
 	return nil
 }

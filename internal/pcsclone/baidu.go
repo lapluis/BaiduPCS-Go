@@ -534,6 +534,11 @@ func runBaiduOfflineAdd(c *commandContext) error {
 	result := offlineAddResult{Added: []offlineAddEntry{}}
 	var failures []error
 	for _, source := range c.args[1:] {
+		if err := c.ctx.Err(); err != nil {
+			result.Errors = append(result.Errors, err.Error())
+			failures = append(failures, err)
+			break
+		}
 		taskID, pcsErr := remote.PCS.CloudDlAddTask(source, savePath)
 		if pcsErr != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", source, pcsErr))
@@ -615,6 +620,10 @@ func runOfflineIDAction(c *commandContext, action string) error {
 	done := make([]int64, 0, len(ids))
 	var failures []error
 	for _, id := range ids {
+		if err := c.ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		var pcsErr error
 		if action == "cancel" {
 			pcsErr = remote.PCS.CloudDlCancelTask(id)

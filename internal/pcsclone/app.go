@@ -19,6 +19,7 @@ import (
 
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 )
 
 const (
@@ -83,6 +84,10 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 }
 
 func (a *App) run(raw []string) int {
+	// Legacy request logs bypass this front-end's log level, JSON formatting
+	// and output destination. Do not inherit BAIDUPCS_GO_VERBOSE, including
+	// in the re-executed transfer worker.
+	pcsverbose.IsVerbose = false
 	oldConfigEnv, hadConfigEnv := os.LookupEnv(EnvConfigFile)
 	defer func() {
 		if a.initialized {

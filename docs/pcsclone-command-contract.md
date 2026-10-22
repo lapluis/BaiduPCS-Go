@@ -182,6 +182,7 @@ pcsclone [global options] <command> [arguments]
 - `config create` 拒绝为同一 UID 再创建一个别名，重复创建返回 1；导入时如果旧配置本来就有同一 UID 的多个别名，会保留这些别名。
 - `config show` 的 JSON 字段：`name`、`uid`、`username`、`bduss`、`stoken`、`cookies`、`access_token`、`broken`；除 `name`/`uid`/`username`/`broken` 外均为布尔值。存在指向缺失账号的别名时仍输出全部条目，但返回 1。
 - `config import-pcsgo`：
+  - 导入前检查配置存储隔离；新旧配置文件和目录不能共用，别名文件也不能指向同一文件。检查在初始化配置前执行，避免改写空的旧配置。
   - 优先沿用旧 `rc_remotes.json` 的别名。
   - 没有可用别名时，从用户名生成；非 ASCII 或不合法的名称回退为 `u<uid>`。
   - 已存在的 UID 不重复添加，也不会被旧凭据覆盖；需要刷新凭据时使用 `config reconnect`。没有别名的账号会补一个别名。
@@ -217,6 +218,7 @@ pcsclone [global options] <command> [arguments]
 
 - 数字 ID 必须为正整数；无效 ID 返回 2。
 - 多 ID 操作逐项执行；部分失败时已完成项保留，最终返回 1。
+- 批量离线任务在每次请求前检查取消状态；收到中断后不再提交后续任务请求。已发送的请求可能完成，不能回滚。
 - `baidu transfer` 的目标按目录处理并创建；提取码长度为 4。
 - `baidu share create` 的 `--pwd` 为空时由百度生成；非空时必须为 4 个字符。
 - 远端 API 错误、账号失效、链接/提取码非法返回 1。
@@ -226,6 +228,7 @@ pcsclone [global options] <command> [arguments]
 
 - stdout 只放数据：列表、路径、JSON、命令结果摘要。
 - stderr 放事件日志（`copy:`、`delete:`、`error:` 等）、进度和错误。
+- 独立入口与传输 worker 禁用旧 `BAIDUPCS_GO_VERBOSE` 原始请求日志；日志行为由 pcsclone 自身选项控制。
 - `--use-json-log` 时事件日志为 JSON Lines。
 - `--log-file` 相对路径以启动目录为基准。
 - JSON 输出为单个 JSON 值（数组或对象），单行紧凑格式，末尾换行。
