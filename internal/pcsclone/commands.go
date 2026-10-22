@@ -77,35 +77,37 @@ Exits nonzero when any difference is found.`,
 		},
 		&command{
 			Name: "ls", Category: "Core file operations",
-			Summary: "List paths recursively (default)",
+			Summary: "List files and directories recursively (default)",
 			Usage:   "pcsclone ls PATH [options]",
-			Description: `List PATH recursively by default. Use --recursive=false for one
-level. Directories are printed with a trailing slash.`,
+			Description: `List files and directories under PATH recursively by default.
+Use --recursive=false or lsf for one level. Directories are printed with a
+trailing slash.`,
 			MinArgs: 1, MaxArgs: 1, Flags: listFlags(true), Run: listCommand("ls"),
 		},
 		&command{
 			Name: "lsf", Category: "Core file operations",
-			Summary: "List paths one level deep",
+			Summary: "List files and directories one level deep",
 			Usage:   "pcsclone lsf PATH [options]",
-			Description: `List PATH one level deep by default. Add --recursive/-R for all
-descendants. Directories are printed with a trailing slash.`,
+			Description: `List files and directories under PATH one level deep by default.
+Add --recursive/-R for all descendants. Use --files-only or --dirs-only to
+restrict output; lsd prints directories only.`,
 			MinArgs: 1, MaxArgs: 1, Flags: listFlags(false), Run: listCommand("lsf"),
 		},
 		&command{
 			Name: "lsd", Category: "Core file operations",
-			Summary: "List directories",
+			Summary: "List directories only (one level by default)",
 			Usage:   "pcsclone lsd PATH [options]",
-			Description: `List directory entries one level deep by default. Add
---recursive/-R for descendants.`,
+			Description: `List directories under PATH one level deep by default. Files are
+never printed. Add --recursive/-R for descendant directories.`,
 			MinArgs: 1, MaxArgs: 1, Flags: lsDFlags(), Run: listCommand("lsd"),
 		},
 		&command{
 			Name: "lsjson", Category: "Core file operations",
-			Summary: "Write a JSON array of entries",
+			Summary: "Write a JSON array of files and directories",
 			Usage:   "pcsclone lsjson PATH [options]",
-			Description: `Write entries as a JSON array containing Path, Name, Size,
-ModTime and IsDir. One level is listed by default; use --recursive/-R for all
-descendants.`,
+			Description: `Write files and directories as a JSON array containing Path,
+Name, Size, ModTime and IsDir. One level is listed by default; use
+--recursive/-R for all descendants.`,
 			MinArgs: 1, MaxArgs: 1, Flags: listFlags(false), Run: listCommand("lsjson"),
 		},
 		&command{

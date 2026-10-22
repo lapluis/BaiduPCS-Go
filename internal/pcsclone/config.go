@@ -490,18 +490,24 @@ func runConfigImport(c *commandContext) error {
 			return operationError(err)
 		}
 	}
+	remoteNames := sortedAliasNames(c.app.Resolver.Aliases)
 	if c.flags.Bool("json") {
 		return json.NewEncoder(c.app.Stdout).Encode(map[string]interface{}{
-			"source":   source,
-			"imported": imported,
-			"existing": existing,
-			"skipped":  skipped,
-			"aliases":  addedAliases,
-			"dry_run":  dryRun,
+			"source":        source,
+			"imported":      imported,
+			"existing":      existing,
+			"skipped":       skipped,
+			"aliases_added": addedAliases,
+			"remotes":       remoteNames,
+			"dry_run":       dryRun,
 		})
 	}
-	fmt.Fprintf(c.app.Stdout, "Imported %d account(s); %d already present; %d unusable; %d alias(es) added.\nSource: %s\n",
-		imported, existing, skipped, addedAliases, source)
+	remotesText := strings.Join(remoteNames, ", ")
+	if remotesText == "" {
+		remotesText = "(none)"
+	}
+	fmt.Fprintf(c.app.Stdout, "Imported %d account(s); %d already present; %d unusable; %d alias(es) added.\nSource: %s\nRemotes: %s\n",
+		imported, existing, skipped, addedAliases, source, remotesText)
 	if dryRun {
 		fmt.Fprintln(c.app.Stdout, "Dry run: no accounts or aliases were imported.")
 	}
@@ -539,6 +545,15 @@ func aliasExistsForUID(aliases map[string]uint64, uid uint64) bool {
 		}
 	}
 	return false
+}
+
+func sortedAliasNames(aliases map[string]uint64) []string {
+	names := make([]string, 0, len(aliases))
+	for name := range aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func resolveLegacyConfig(from, current string) (string, error) {

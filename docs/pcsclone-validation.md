@@ -26,7 +26,7 @@
 - 目录内容复制规则、尾斜线不改变含义、空目录、筛选、排除优先、`--files-from` 选择（本地回归与 `internal/rc` 引擎测试）。
 - `--dry-run` 不创建目标；`--checksum` 传输后校验。
 - `sync` 删除上限 `--max-delete`、目标多余文件删除、`check` 差异返回 1。
-- `ls` 默认递归；`lsf`/`lsd`/`lsjson` 默认一层；`-R` 递归。
+- `ls` 默认递归；`lsf`/`lsd`/`lsjson` 默认一层；`-R` 递归。混合目录下验证 `lsf` 输出文件+目录、`lsd` 只输出目录；只有子目录的目录两者文本相同。
 - `lsjson` 数组、`stat` 单对象与 `--hash`、`size` 文本/JSON。
 - 参数错误返回 2；源目标重叠、check 差异返回 1；未知命令返回 2。
 - `completion bash|zsh|powershell` 生成脚本，包含顶层命令、嵌套子命令和长选项；不支持 `fish` 时返回 2。脚本内容经过单元测试检查，未在真实交互 shell 中逐键验证补全行为。
@@ -34,7 +34,7 @@
 
 ### 1.2 配置与导入覆盖
 
-- `config import-pcsgo` 的 dry-run、正式导入、重复导入。
+- `config import-pcsgo` 的 dry-run、正式导入、重复导入；文本输出列出 `Remotes:`，JSON 输出包含 `remotes` 数组。
 - 旧 `rc_remotes.json` 别名保留（`bd`、`cjk`）。
 - 非 ASCII 用户名回退为 `u<uid>`。
 - 缺少凭据的旧账号计入 unusable，不导入。
