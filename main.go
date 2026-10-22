@@ -21,6 +21,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsfunctions/pcsdownload"
 	_ "github.com/qjfoidnh/BaiduPCS-Go/internal/pcsinit"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsupdate"
+	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsliner"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsliner/args"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
@@ -76,10 +77,19 @@ var (
 	isCli bool
 )
 
+var rcOriginalCWD, _ = os.Getwd()
+
 func init() {
+	if rc.Handles(os.Args[1:]) {
+		pcsverbose.IsVerbose = false
+	}
 	pcsutil.ChWorkDir()
 
 	err := pcsconfig.Config.Init()
+	if err != nil && rc.Handles(os.Args[1:]) {
+		fmt.Fprintln(os.Stderr, "configuration initialization failed:", err)
+		os.Exit(1)
+	}
 	switch err {
 	case nil:
 	case pcsconfig.ErrConfigFileNoPermission, pcsconfig.ErrConfigContentsParseError:
@@ -91,6 +101,11 @@ func init() {
 }
 
 func main() {
+	if rc.Handles(os.Args[1:]) {
+		code := rc.Run(os.Args[1:], rcOriginalCWD)
+		pcsconfig.Config.Close()
+		os.Exit(code)
+	}
 	defer pcsconfig.Config.Close()
 
 	app := cli.NewApp()
@@ -2163,6 +2178,7 @@ func main() {
 		},
 	}
 
+	app.Commands = append(app.Commands, rc.Commands(rcOriginalCWD)...)
 	sort.Sort(cli.FlagsByName(app.Flags))
 	sort.Sort(cli.CommandsByName(app.Commands))
 
