@@ -30,12 +30,14 @@ pcsclone [global options] <command> [arguments]
   - 相对路径：相对**启动 pcsclone 时的当前目录**，不受旧交互式工作目录影响。
   - UNC：`\\server\share`。
   - 拒绝 `D:relative` 这类盘符相对路径。
+  - 本地文件名本身含冒号时，加 `./` 前缀，避免被当作远端名。
 - 网盘路径：
   - `NAME:/path`、`NAME:`（账号根目录）。
   - `NAME` 由 `config create` 或 `config import-pcsgo` 建立，至少两个字符，首字符为字母。
   - 只使用 `/` 分隔；不使用远端工作目录。
 - 每条命令通过路径参数显式选择账号；不存在“当前账号”或“当前工作目录”。
 - 列表输出中的 `Path` 是相对请求根目录的路径；`stat` 的 `Path` 对本地是绝对路径，对网盘保留用户输入的远端参数。
+- 以 `-` 开头的路径或参数需要放在 `--` 之后。
 - 源和目标相同或互为子目录时拒绝执行。
 
 ## 3. 退出码
@@ -94,7 +96,7 @@ pcsclone [global options] <command> [arguments]
 - `lsf`、`lsjson`、`lsd`：默认一层；`-R`/`--recursive` 递归。
 - 文本列表每行一个路径；目录追加 `/`。`lsjson` 的 `Path` 不带尾斜线，目录由 `IsDir` 表示。
 - `lsd` 只列目录；`lsf`/`lsjson` 支持 `--files-only`、`--dirs-only`，两者互斥。
-- `tree` 的 `--depth 1` 表示直接子项，默认无限。
+- `tree` 的 `--depth 1` 表示直接子项，默认无限；`--depth` 接受 `-1` 或正整数，不接受 0。
 - 列表命令要求 PATH 是目录；单文件信息使用 `stat`。
 
 ### 4.3 JSON 输出
@@ -122,7 +124,7 @@ pcsclone [global options] <command> [arguments]
 ### 4.4 筛选
 
 - `--include PATTERN`、`--exclude PATTERN` 可重复；排除优先。
-- `--files-from FILE` 从 UTF-8 文本读取相对路径；空行和 `#` 注释忽略。
+- `--files-from FILE` 从 UTF-8 文本读取相对路径（使用 `/` 分隔）；空行和 `#` 注释忽略。
 - 模式以源根目录的相对路径为基准；无斜线模式匹配任意层级名称；`/` 开头从根匹配；`**` 跨目录；支持 `*`、`?`、字符组。
 - 目录排除作用于全部后代。
 - 文件路径本身不展开通配符。
@@ -177,12 +179,12 @@ pcsclone [global options] <command> [arguments]
 | `listremotes` | 每个别名一行，格式 `NAME:` |
 
 - `--cookies` 必须包含完整 `BDUSS=...;` 字段，不能与 `--bduss`/`--ptoken`/`--stoken` 同时使用。
-- 同一 UID 不能被两个别名分别创建；重复创建返回 1。
-- `config show` 的 JSON 字段：`name`、`uid`、`username`、`bduss`、`stoken`、`cookies`、`access_token`、`broken`；除 `name`/`uid`/`username`/`broken` 外均为布尔值。
+- `config create` 拒绝为同一 UID 再创建一个别名，重复创建返回 1；导入时如果旧配置本来就有同一 UID 的多个别名，会保留这些别名。
+- `config show` 的 JSON 字段：`name`、`uid`、`username`、`bduss`、`stoken`、`cookies`、`access_token`、`broken`；除 `name`/`uid`/`username`/`broken` 外均为布尔值。存在指向缺失账号的别名时仍输出全部条目，但返回 1。
 - `config import-pcsgo`：
   - 优先沿用旧 `rc_remotes.json` 的别名。
   - 没有可用别名时，从用户名生成；非 ASCII 或不合法的名称回退为 `u<uid>`。
-  - 已存在的 UID 不重复添加；没有别名的账号补一个。
+  - 已存在的 UID 不重复添加，也不会被旧凭据覆盖；需要刷新凭据时使用 `config reconnect`。没有别名的账号会补一个别名。
   - 不复制旧 `workdir` 语义；导入账号的工作目录统一为 `/`。
   - 旧配置文件在导入前后字节不变。
   - `--dry-run` 不写入导入的账号或别名；pcsclone 自身的配置目录仍可能按正常运行规则初始化。
@@ -226,7 +228,8 @@ pcsclone [global options] <command> [arguments]
 - stderr 放事件日志（`copy:`、`delete:`、`error:` 等）、进度和错误。
 - `--use-json-log` 时事件日志为 JSON Lines。
 - `--log-file` 相对路径以启动目录为基准。
-- JSON 输出为单个 JSON 值（数组或对象），末尾换行；`stat` 使用两空格缩进，其他 JSON 为紧凑格式。
+- JSON 输出为单个 JSON 值（数组或对象），单行紧凑格式，末尾换行。
+- `lsjson`/`stat` 沿用 rc 的 Go 风格字段名（`Path`、`Name`、`Size`、`ModTime`、`IsDir`）；`size`、`about`、`config` 和 `baidu ...` 的 JSON 字段使用小写或 snake_case。
 
 ## 8. 明确不包含
 

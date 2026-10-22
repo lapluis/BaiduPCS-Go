@@ -23,7 +23,7 @@ $env:CGO_ENABLED = '0'
 go build -trimpath -ldflags "-s -w -X main.Version=v4.0.2-dev" -o build/pcsclone.exe ./cmd/pcsclone
 ```
 
-`go build ./...` 仍然会构建旧的 `BaiduPCS-Go` 入口；两个入口共享代码，但产物独立。`pcsclone.exe` 不需要旁边的 `BaiduPCS-Go.exe`：传输 worker 通过 `os.Executable()` 重新执行自身。
+`go build ./...` 仍然会构建旧的 `BaiduPCS-Go` 入口；两个入口共享代码，但产物独立。CI 的构建矩阵会同时输出 `BaiduPCS-Go` 和 `pcsclone_<os>_<arch>` 两种产物。`pcsclone.exe` 不需要旁边的 `BaiduPCS-Go.exe`：传输 worker 通过 `os.Executable()` 重新执行自身。
 
 ## 2. 配置目录
 
@@ -49,6 +49,8 @@ $env:PCSCLONE_CONFIG_FILE = 'D:\pcsclone-config\pcs_config.json'
 
 pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命令不会读写旧 `BaiduPCS-Go` 配置；唯一例外是显式的 `config import-pcsgo`，它只读旧文件。
 
+代理、User-Agent、缓存、限速等高级设置仍保存在 `pcs_config.json` 中；本轮没有为这些设置提供逐项命令，可直接编辑该文件。`config file` 会打印实际路径。
+
 ## 3. 账号
 
 ### 3.1 交互登录并创建别名
@@ -68,7 +70,7 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 & .\build\pcsclone.exe config create bd --cookies "BDUSS=...; STOKEN=...;"
 ```
 
-`--cookies` 必须包含完整的 `BDUSS=...;` 字段，不能和其他凭据参数混用。
+`--cookies` 必须包含完整的 `BDUSS=...;` 字段，不能和其他凭据参数混用。注意：`--bduss`、`--stoken`、`--cookies` 会出现在 shell 历史和进程列表中；在可信终端中优先使用交互登录，或从受保护的环境变量/脚本中传入。
 
 ### 3.3 查看和整理
 
@@ -283,6 +285,7 @@ pcsclone completion powershell | Out-String | Invoke-Expression
 ## 9. 当前限制
 
 - 不提供 `mount`、`serve`、`bisync` 或 rclone Remote Control API。
+- 执行引擎仍通过 `pcsconfig.Config` 全局值读取账号列表；pcsclone 在启动时把它指向独立配置文件。完整的依赖注入式账号/配置访问接口尚未重构。
 - 不提供跨命令下载续传；上传续传状态按账号、源、目标隔离。
 - 不跟随符号链接，不复制 ACL/所有者。
 - 远端比较、`check`、`stat --hash`、`--checksum` 可能需要下载内容，产生流量和临时磁盘占用。

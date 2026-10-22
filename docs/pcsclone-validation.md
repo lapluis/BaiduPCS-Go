@@ -14,6 +14,7 @@
 | 全仓单元测试 | `go test ./... -timeout 180s` | 通过 |
 | 静态检查 | `go vet ./...` | 通过 |
 | 独立入口构建 | `go build -o build/pcsclone.exe ./cmd/pcsclone` | 通过 |
+| 交叉编译冒烟 | `GOOS/GOARCH` 为 linux/amd64、windows/386、darwin/arm64，`CGO_ENABLED=0` | 通过 |
 | pcsclone 本地回归 | `scripts/test-pcsclone-local.ps1 -Binary build/pcsclone.exe` | PASS |
 | 旧 rc 本地回归 | `scripts/test-rc-local.ps1 -Binary <legacy-build>` | PASS |
 | 独立分发冒烟 | 把 `pcsclone.exe` 复制到仓库外临时目录，执行 `ls`/`copy`/`stat` | 通过 |
@@ -22,7 +23,7 @@
 ### 1.1 pcsclone 本地回归覆盖
 
 - `mkdir`、`copy`、`copyto`、`sync`、`move`、`moveto`、`delete`、`deletefile`、`purge`、`rmdir`、`rmdirs`。
-- 目录内容复制规则、尾斜线不改变含义、空目录、筛选、排除优先、`--files-from` 相关的引擎测试。
+- 目录内容复制规则、尾斜线不改变含义、空目录、筛选、排除优先、`--files-from` 选择（本地回归与 `internal/rc` 引擎测试）。
 - `--dry-run` 不创建目标；`--checksum` 传输后校验。
 - `sync` 删除上限 `--max-delete`、目标多余文件删除、`check` 差异返回 1。
 - `ls` 默认递归；`lsf`/`lsd`/`lsjson` 默认一层；`-R` 递归。
