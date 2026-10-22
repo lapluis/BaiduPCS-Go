@@ -317,6 +317,16 @@ func TestLocalWorkflow(t *testing.T) {
 	if !strings.Contains(lsfRecursive, "nested/hello.txt") {
 		t.Fatalf("lsf -R did not recurse: %q", lsfRecursive)
 	}
+	if !strings.Contains(lsf, "zero.txt") || !strings.Contains(lsf, "nested/") {
+		t.Fatalf("lsf should list files and directories: %q", lsf)
+	}
+	lsd := mustRun(t, config, "lsd", target)
+	if strings.Contains(lsd, "zero.txt") {
+		t.Fatalf("lsd should not list files: %q", lsd)
+	}
+	if !strings.Contains(lsd, "nested/") || !strings.Contains(lsd, "empty/") {
+		t.Fatalf("lsd should list directories: %q", lsd)
+	}
 
 	var entries []map[string]interface{}
 	if err := json.Unmarshal([]byte(mustRun(t, config, "lsjson", target)), &entries); err != nil {
@@ -414,8 +424,12 @@ func TestImportLegacyConfigAndRedaction(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary["imported"].(float64) != 2 || summary["skipped"].(float64) != 1 || summary["aliases"].(float64) != 2 {
+	if summary["imported"].(float64) != 2 || summary["skipped"].(float64) != 1 || summary["aliases_added"].(float64) != 2 {
 		t.Fatalf("unexpected import summary: %#v", summary)
+	}
+	summaryRemotes, ok := summary["remotes"].([]interface{})
+	if !ok || len(summaryRemotes) != 2 || summaryRemotes[0] != "bd" || summaryRemotes[1] != "cjk" {
+		t.Fatalf("unexpected import remotes: %#v", summary["remotes"])
 	}
 
 	remotes := mustRun(t, config, "listremotes")
@@ -470,13 +484,20 @@ func TestImportDryRunAndSecondRun(t *testing.T) {
 	if remotes := mustRun(t, config, "listremotes"); strings.TrimSpace(remotes) != "" {
 		t.Fatalf("dry-run added remotes: %q", remotes)
 	}
-	mustRun(t, config, "config", "import-pcsgo", "--from", legacyPath)
+	firstOut := mustRun(t, config, "config", "import-pcsgo", "--from", legacyPath)
+	if !strings.Contains(firstOut, "Remotes: seven") {
+		t.Fatalf("import output should name the remote: %q", firstOut)
+	}
 	out := mustRun(t, config, "config", "import-pcsgo", "--from", legacyPath, "--json")
 	var summary map[string]interface{}
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary["imported"].(float64) != 0 || summary["existing"].(float64) != 1 {
+	if summary["imported"].(float64) != 0 || summary["existing"].(float64) != 1 || summary["aliases_added"].(float64) != 0 {
 		t.Fatalf("second import should not duplicate the account: %#v", summary)
+	}
+	summaryRemotes, ok := summary["remotes"].([]interface{})
+	if !ok || len(summaryRemotes) != 1 || summaryRemotes[0] != "seven" {
+		t.Fatalf("second import should report the existing remote: %#v", summary["remotes"])
 	}
 }

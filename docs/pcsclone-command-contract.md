@@ -92,10 +92,12 @@ pcsclone [global options] <command> [arguments]
 
 ### 4.2 列表
 
-- `ls`：默认递归；`--recursive=false` 可改为一层。
-- `lsf`、`lsjson`、`lsd`：默认一层；`-R`/`--recursive` 递归。
+- `ls`：默认递归，列出文件和目录；`--recursive=false` 可改为一层。这是本工具的固定契约，不等同于 Unix `ls` 的一层默认行为。
+- `lsf`：默认一层，列出**文件和目录**；`-R`/`--recursive` 递归；支持 `--files-only`、`--dirs-only`，两者互斥。
+- `lsd`：默认一层，**只列目录**，从不输出文件；`-R`/`--recursive` 递归。
+- `lsjson`：默认一层，列出文件和目录的 JSON 数组；`-R`/`--recursive` 递归；支持 `--files-only`、`--dirs-only`。
+- 如果目录下只有子目录，`lsf` 和 `lsd` 的文本输出会相同，这是数据本身决定的；文件存在时 `lsf` 才会多出文件行。
 - 文本列表每行一个路径；目录追加 `/`。`lsjson` 的 `Path` 不带尾斜线，目录由 `IsDir` 表示。
-- `lsd` 只列目录；`lsf`/`lsjson` 支持 `--files-only`、`--dirs-only`，两者互斥。
 - `tree` 的 `--depth 1` 表示直接子项，默认无限；`--depth` 接受 `-1` 或正整数，不接受 0。
 - 列表命令要求 PATH 是目录；单文件信息使用 `stat`。
 
@@ -184,10 +186,11 @@ pcsclone [global options] <command> [arguments]
 - `config import-pcsgo`：
   - 导入前检查配置存储隔离；新旧配置文件和目录不能共用，别名文件也不能指向同一文件。检查在初始化配置前执行，避免改写空的旧配置。
   - 优先沿用旧 `rc_remotes.json` 的别名。
-  - 没有可用别名时，从用户名生成；非 ASCII 或不合法的名称回退为 `u<uid>`。
+  - 没有可用别名时，从用户名生成；非 ASCII 或不合法的名称回退为 `u<uid>`。导入不会固定创建 `bd` 之类的示例别名。
   - 已存在的 UID 不重复添加，也不会被旧凭据覆盖；需要刷新凭据时使用 `config reconnect`。没有别名的账号会补一个别名。
   - 不复制旧 `workdir` 语义；导入账号的工作目录统一为 `/`。
   - 旧配置文件在导入前后字节不变。
+  - 文本输出包含 `Source:` 和 `Remotes:` 行；`Remotes:` 列出当前全部可用别名。JSON 输出包含 `remotes` 数组（别名字符串）和 `aliases_added`（本次新增别名数量）。
   - `--dry-run` 不写入导入的账号或别名；pcsclone 自身的配置目录仍可能按正常运行规则初始化。
 - 配置目录隔离：pcsclone 的配置、别名、`rc-state/` 都在自己的目录中；worker 使用同一目录。
 

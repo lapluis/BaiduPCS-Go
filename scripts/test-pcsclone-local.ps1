@@ -106,7 +106,12 @@ try {
   [IO.File]::WriteAllText((Join-Path $legacyDir 'rc_remotes.json'), '{"bd":111,"cjk":222}', (New-Object System.Text.UTF8Encoding($false)))
   $legacyBefore = [IO.File]::ReadAllText((Join-Path $legacyDir 'pcs_config.json'))
 
-  Invoke-Pcs @('config', 'import-pcsgo', '--from', $legacyDir) | Out-Null
+  $importOut = Invoke-Pcs @('config', 'import-pcsgo', '--from', $legacyDir) | Out-String
+  if ($importOut -notmatch 'Remotes: bd, cjk') { throw 'Import output missing remotes' }
+  $importJson = Invoke-Pcs @('config', 'import-pcsgo', '--from', $legacyDir, '--json') | ConvertFrom-Json
+  if (@($importJson.remotes).Count -ne 2 -or $importJson.remotes[0] -ne 'bd' -or $importJson.remotes[1] -ne 'cjk') {
+    throw 'Import JSON remotes mismatch'
+  }
   $remotes = Invoke-Pcs @('listremotes') | Out-String
   if ($remotes -notmatch 'bd:' -or $remotes -notmatch 'cjk:') { throw 'Imported aliases missing' }
   $show = Invoke-Pcs @('config', 'show', '--json') | Out-String

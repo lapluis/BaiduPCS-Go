@@ -109,12 +109,18 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 - 旧配置文件只读，导入前后字节不变。
 - 旧账号的 `workdir` 不导入为隐式语义；pcsclone 所有网盘路径都从 `NAME:/` 开始。
 
-导入后即可直接使用：
+导入**不会固定创建 `bd` 别名**：别名优先沿用旧 `rc_remotes.json`；没有旧别名时由用户名生成（例如 `Lapluis`）。导入命令现在会在 `Remotes:` 行列出可用别名。先查看实际名称，再使用：
 
 ```powershell
-& .\build\pcsclone.exe ls bd:/
-& .\build\pcsclone.exe about bd:
+& .\build\pcsclone.exe listremotes
+# 假设输出 Lapluis:
+& .\build\pcsclone.exe ls Lapluis:/
+& .\build\pcsclone.exe about Lapluis:
+# 如果希望使用 bd，可以重命名：
+& .\build\pcsclone.exe config rename Lapluis bd
 ```
+
+本指南后续示例使用 `bd` 作为别名；它需要先通过 `config create bd` 创建，或通过 `config rename` 改名，导入本身不保证生成这个名字。
 
 ## 4. 核心文件操作
 
@@ -161,6 +167,19 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 & .\build\pcsclone.exe size bd:/Backup --json
 & .\build\pcsclone.exe about bd:
 ```
+
+列表命令的区别：
+
+| 命令 | 默认深度 | 输出内容 |
+| --- | --- | --- |
+| `ls` | 递归 | 文件和目录 |
+| `ls --recursive=false` / `lsf` | 一层 | 文件和目录 |
+| `lsd` | 一层 | 仅目录 |
+| `lsjson` | 一层 | 文件和目录，JSON 数组 |
+
+`lsf`/`lsd`/`lsjson` 加 `-R` 递归；`lsf` 还可用 `--files-only`、`--dirs-only`。如果某个目录下恰好只有子目录，`lsf` 和 `lsd` 的文本输出会看起来相同；在包含文件的目录下（或使用 `-R`）就能看到区别。
+
+`ls` 的递归默认是本工具的固定契约，不等同于 Unix `ls` 的一层默认行为；需要一层输出时请使用 `lsf` 或 `ls --recursive=false`。
 
 `stat` 输出单个 JSON 对象；`lsjson` 输出数组。`size`/`about` 默认文本，`--json` 输出对象。`stat --hash` 对远端文件会下载内容后计算 MD5。
 
