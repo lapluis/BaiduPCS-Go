@@ -26,6 +26,10 @@ var (
 	pcsConfigVerbose = pcsverbose.New("PCSCONFIG")
 	configFilePath   = filepath.Join(GetConfigDir(), ConfigName)
 
+	// configDirOverride lets a separate front-end keep its state away from the
+	// legacy configuration without changing the legacy resolution rules.
+	configDirOverride string
+
 	// Config 配置信息, 由外部调用
 	Config = NewConfig(configFilePath)
 )
@@ -266,8 +270,30 @@ func (c *PCSConfig) InitDefaultConfig() {
 	}
 }
 
+// SetConfigDir makes all runtime state files (configuration, aliases and
+// transfer state) use dir. It is intended for alternate front-ends such as
+// pcsclone and must be called before configuring or using the Config value.
+func SetConfigDir(dir string) {
+	configDirOverride = filepath.Clean(dir)
+}
+
+// ConfigDirOverridden reports whether SetConfigDir selected a separate state
+// directory. The legacy front-end never sets it.
+func ConfigDirOverridden() bool {
+	return configDirOverride != ""
+}
+
+// FilePath returns the path of the configuration file backing c.
+func (c *PCSConfig) FilePath() string {
+	return c.configFilePath
+}
+
 // GetConfigDir 获取配置路径
 func GetConfigDir() string {
+	if configDirOverride != "" {
+		return configDirOverride
+	}
+
 	// 从环境变量读取
 	configDir, ok := os.LookupEnv(EnvConfigDir)
 	if ok {
