@@ -1,7 +1,6 @@
 package requester
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -14,7 +13,6 @@ func ParseCookieStr(cookieStr string) []*http.Cookie {
 	for _, rawCookie := range rawCookies {
 		s2 := strings.SplitN(rawCookie, "=", 2)
 		if len(s2) < 2 {
-			fmt.Println(s2)
 			continue
 		}
 

@@ -1,45 +1,40 @@
 package checksum_test
 
 import (
-	"fmt"
+	"bytes"
+	"crypto/md5"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
+	"hash/crc32"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-var (
-	flagList = []int{
-		checksum.CHECKSUM_MD5 | 000000000000000000000000000 | 00000000000000000000000,
-		000000000000000000000 | checksum.CHECKSUM_SLICE_MD5 | 00000000000000000000000,
-		000000000000000000000 | 000000000000000000000000000 | checksum.CHECKSUM_CRC32,
-		checksum.CHECKSUM_MD5 | checksum.CHECKSUM_SLICE_MD5 | 00000000000000000000000,
-		000000000000000000000 | checksum.CHECKSUM_SLICE_MD5 | checksum.CHECKSUM_CRC32,
-		checksum.CHECKSUM_MD5 | 000000000000000000000000000 | checksum.CHECKSUM_CRC32,
-		checksum.CHECKSUM_MD5 | checksum.CHECKSUM_SLICE_MD5 | checksum.CHECKSUM_CRC32,
-	}
-)
-
-func printFileMeta(meta *checksum.LocalFileMeta) {
-	fmt.Printf("slicemd5: %x, md5: %x, crc32: %x %d\n", meta.SliceMD5, meta.MD5, meta.CRC32, meta.CRC32)
-}
-
 func TestChecksum(t *testing.T) {
-	fmt.Println("--- file.go")
-	for _, flag := range flagList {
-		lf, err := checksum.GetFileSum("file.go", flag)
-		if err != nil {
-			t.Fatal(err)
-		}
-		printFileMeta(&lf.LocalFileMeta)
+	data := bytes.Repeat([]byte("checksum fixture"), 20000)
+	p := filepath.Join(t.TempDir(), "fixture.bin")
+	if err := os.WriteFile(p, data, 0600); err != nil {
+		t.Fatal(err)
 	}
-
-	fmt.Println("--- /Users/syy/go/src/github.com/qjfoidnh/BaiduPCS-Go/BaiduPCS-Go")
-	for _, flag := range flagList {
-		lf := checksum.NewLocalFileChecksumWithBufSize("/Users/syy/go/src/github.com/qjfoidnh/BaiduPCS-Go/BaiduPCS-Go", checksum.DefaultBufSize-3, checksum.DefaultBufSize)
-		err := lf.OpenPath()
-		if err != nil {
-			t.Fatal(err)
-		}
-		lf.Sum(flag)
-		printFileMeta(&lf.LocalFileMeta)
+	flags := checksum.CHECKSUM_MD5 | checksum.CHECKSUM_SLICE_MD5 | checksum.CHECKSUM_CRC32
+	got, err := checksum.GetFileSum(p, flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := md5.Sum(data)
+	slice := md5.Sum(data[:256*1024])
+	if !bytes.Equal(got.MD5, want[:]) || !bytes.Equal(got.SliceMD5, slice[:]) || got.CRC32 != crc32.ChecksumIEEE(data) {
+		t.Fatal("checksum mismatch")
+	}
+	lf := checksum.NewLocalFileChecksumWithBufSize(p, checksum.DefaultBufSize-3, checksum.DefaultBufSize)
+	if err = lf.OpenPath(); err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	if err = lf.Sum(flags); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(lf.MD5, want[:]) {
+		t.Fatal("unaligned buffer hash mismatch")
 	}
 }

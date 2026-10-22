@@ -3,7 +3,6 @@ package converter
 
 import (
 	"github.com/mattn/go-runewidth"
-	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
@@ -22,17 +21,12 @@ func ToString(p []byte) string {
 
 // ToBytes unsafe 转换, 将 string 转换为 []byte
 func ToBytes(str string) []byte {
-	strHeader := (*reflect.StringHeader)(unsafe.Pointer(&str))
-	return *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
-		Data: strHeader.Data,
-		Len:  strHeader.Len,
-		Cap:  strHeader.Len,
-	}))
+	return unsafe.Slice(unsafe.StringData(str), len(str))
 }
 
 // ToBytesUnsafe unsafe 转换, 请确保转换后的 []byte 不涉及 cap() 操作, 将 string 转换为 []byte
 func ToBytesUnsafe(str string) []byte {
-	return *(*[]byte)(unsafe.Pointer(&str))
+	return unsafe.Slice(unsafe.StringData(str), len(str))
 }
 
 // IntToBool int 类型转换为 bool

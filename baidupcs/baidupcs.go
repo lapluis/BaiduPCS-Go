@@ -148,7 +148,7 @@ type (
 		isSetPanUA  bool
 		fixPCSAddr  bool
 		ph          *panhome.PanHome
-		cacheOpMap  cachemap.CacheOpMap
+		cacheOpMap  *cachemap.CacheOpMap
 	}
 
 	userInfoJSON struct {
@@ -258,6 +258,9 @@ func NewPCSWithCookieStr(appID int, cookieStr string) *BaiduPCS {
 }
 
 func (pcs *BaiduPCS) lazyInit() {
+	if pcs.cacheOpMap == nil {
+		pcs.cacheOpMap = &cachemap.CacheOpMap{}
+	}
 	if pcs.client == nil {
 		pcs.client = requester.NewHTTPClient()
 	}
@@ -368,6 +371,7 @@ func (pcs *BaiduPCS) SetPCSAddr(addr string) {
 }
 
 func (pcs *BaiduPCS) CopyPCS() *BaiduPCS {
+	pcs.lazyInit()
 	return &BaiduPCS{
 		appID:       pcs.appID,
 		isHTTPS:     pcs.isHTTPS,
