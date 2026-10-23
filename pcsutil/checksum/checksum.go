@@ -253,17 +253,44 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	if chunkSize <= 0 {
 		return fmt.Errorf("invalid block size: %d", chunkSize)
 	}
+	if lfc.file == nil {
+		return ErrFileIsNil
+	}
 
 	fileSize := lfc.Length
+	if fileSize < 0 {
+		return fmt.Errorf("invalid file size: %d", fileSize)
+	}
+	checkSize := func() error {
+		info, err := lfc.file.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Size() < fileSize {
+			return fmt.Errorf("file shrank from %d to %d bytes: %w", fileSize, info.Size(), io.ErrUnexpectedEOF)
+		}
+		if info.Size() > fileSize {
+			return fmt.Errorf("file size changed from %d to %d bytes", fileSize, info.Size())
+		}
+		return nil
+	}
+	if err := checkSize(); err != nil {
+		return err
+	}
 	if fileSize == 0 {
+		lfc.BlocksList = nil
 		return nil // 空文件
 	}
 
 	// 计算分块数量
-	chunkCount := int((fileSize + chunkSize - 1) / chunkSize)
+	count := (fileSize-1)/chunkSize + 1
+	if count > int64(int(^uint(0)>>1)) {
+		return fmt.Errorf("too many checksum blocks: %d", count)
+	}
+	chunkCount := int(count)
 
 	// 初始化结果存储, 各 worker 按自己的块索引写入, 无需加锁
-	lfc.BlocksList = make([]string, chunkCount)
+	blocks := make([]string, chunkCount)
 
 	// worker 数: 不超过逻辑核数, 不超过分块数, 上限 16 (控制 4MB×N 的缓冲区内存)
 	workers := runtime.GOMAXPROCS(0)
@@ -275,7 +302,10 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, workers)
+	var failureOnce sync.Once
+	var firstErr error
+	stopped := make(chan struct{})
+	fail := func(err error) { failureOnce.Do(func() { firstErr = err; close(stopped) }) }
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(workerId int) {
@@ -285,18 +315,25 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 			chunkMD5 := md5.New()
 
 			for i := workerId; i < chunkCount; i += workers {
+				select {
+				case <-stopped:
+					return
+				default:
+				}
 				offset := int64(i) * chunkSize
 				// 计算当前分块的实际大小（最后一块可能较小）
-				currentChunkSize := chunkSize
-				if offset+chunkSize > fileSize {
-					currentChunkSize = fileSize - offset
-				}
+				currentChunkSize := min(chunkSize, fileSize-offset)
 
 				chunkMD5.Reset()
 				bytesRead := int64(0)
 
 				// 读取当前分块的所有数据
 				for bytesRead < currentChunkSize {
+					select {
+					case <-stopped:
+						return
+					default:
+					}
 					readSize := int64(len(buffer))
 					if readSize > currentChunkSize-bytesRead {
 						readSize = currentChunkSize - bytesRead
@@ -307,26 +344,32 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 						chunkMD5.Write(buffer[:n])
 						bytesRead += int64(n)
 					}
+					if rerr == io.EOF && bytesRead < currentChunkSize {
+						rerr = io.ErrUnexpectedEOF
+					}
 					if rerr != nil && rerr != io.EOF {
-						select {
-						case errCh <- rerr:
-						default:
-						}
+						fail(rerr)
+						return
+					}
+					if n == 0 {
+						fail(io.ErrNoProgress)
 						return
 					}
 				}
 
-				lfc.BlocksList[i] = hex.EncodeToString(chunkMD5.Sum(nil))
+				blocks[i] = hex.EncodeToString(chunkMD5.Sum(nil))
 			}
 		}(w)
 	}
 	wg.Wait()
 
-	select {
-	case err = <-errCh:
-		return err
-	default:
+	if firstErr != nil {
+		return firstErr
 	}
+	if err := checkSize(); err != nil {
+		return err
+	}
+	lfc.BlocksList = blocks
 	return nil
 }
 
