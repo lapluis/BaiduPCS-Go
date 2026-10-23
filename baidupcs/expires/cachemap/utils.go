@@ -11,17 +11,18 @@ type (
 
 func (cm *CacheOpMap) CacheOperation(op string, key interface{}, opFunc OpFunc) (data expires.DataExpires) {
 	var (
-		cache = cm.LazyInitCachePoolOp(op)
+		cache = cm.LazyInitCachePoolOp(op).(*cacheUnit)
 		ok    bool
 	)
 
 	cache.LockKey(key)
 	defer cache.UnlockKey(key)
+	revision := cache.currentRevision()
 	data, ok = cache.Load(key)
 	if !ok {
 		data = opFunc()
 		if data != nil {
-			cache.Store(key, data)
+			cache.storeAtRevision(key, data, revision)
 		}
 		return
 	}
@@ -31,12 +32,13 @@ func (cm *CacheOpMap) CacheOperation(op string, key interface{}, opFunc OpFunc) 
 
 func (cm *CacheOpMap) CacheOperationWithError(op string, key interface{}, opFunc OpFuncWithError) (data expires.DataExpires, err error) {
 	var (
-		cache = cm.LazyInitCachePoolOp(op)
+		cache = cm.LazyInitCachePoolOp(op).(*cacheUnit)
 		ok    bool
 	)
 
 	cache.LockKey(key)
 	defer cache.UnlockKey(key)
+	revision := cache.currentRevision()
 	data, ok = cache.Load(key)
 	if !ok {
 		data, err = opFunc()
@@ -47,7 +49,7 @@ func (cm *CacheOpMap) CacheOperationWithError(op string, key interface{}, opFunc
 			// 数据为空时也不存
 			return
 		}
-		cache.Store(key, data)
+		cache.storeAtRevision(key, data, revision)
 	}
 
 	return

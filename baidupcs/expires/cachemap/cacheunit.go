@@ -17,11 +17,42 @@ type (
 	}
 
 	cacheUnit struct {
-		unit   sync.Map
-		keyMap sync.Map
+		unit      sync.Map
+		keyMap    sync.Map
+		publishMu sync.Mutex
+		revision  uint64
 	}
 	cacheEntry struct{ value expires.DataExpires }
 )
+
+func (cu *cacheUnit) currentRevision() uint64 {
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	return cu.revision
+}
+
+func (cu *cacheUnit) storeAtRevision(key interface{}, value expires.DataExpires, revision uint64) {
+	if value == nil || value.IsExpires() {
+		return
+	}
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	if revision == cu.revision {
+		cu.unit.Store(key, &cacheEntry{value: value})
+	}
+}
+
+func (cu *cacheUnit) invalidateKeys(match func(interface{}) bool) {
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	cu.revision++
+	cu.unit.Range(func(key, _ interface{}) bool {
+		if match(key) {
+			cu.unit.Delete(key)
+		}
+		return true
+	})
+}
 
 func (cu *cacheUnit) Delete(key interface{}) {
 	cu.unit.Delete(key)

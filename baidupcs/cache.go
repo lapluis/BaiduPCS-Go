@@ -24,7 +24,6 @@ type directoryCacheKey struct {
 // deleteCache 删除含有 dirs 的缓存
 func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 	pcs.lazyInit()
-	cache := pcs.cacheOpMap.LazyInitCachePoolOp(OperationFilesDirectoriesList)
 	changed := make(map[string]bool, len(dirs))
 	for _, dir := range dirs {
 		changed[directoryCachePath(dir)] = true
@@ -33,7 +32,7 @@ func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 	for i, dir := range subtrees {
 		roots[i] = directoryCachePath(dir)
 	}
-	cache.Range(func(key interface{}, _ expires.DataExpires) bool {
+	pcs.cacheOpMap.InvalidateKeys(OperationFilesDirectoriesList, func(key interface{}) bool {
 		if listing, ok := key.(directoryCacheKey); ok {
 			remove := changed[listing.path]
 			for _, root := range roots {
@@ -42,11 +41,9 @@ func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 					break
 				}
 			}
-			if remove {
-				cache.Delete(key)
-			}
+			return remove
 		}
-		return true
+		return false
 	})
 }
 

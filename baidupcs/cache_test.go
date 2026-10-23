@@ -2,8 +2,40 @@ package baidupcs
 
 import (
 	"net/http"
+	"sync/atomic"
 	"testing"
 )
+
+func TestInflightListingCannotRestoreInvalidatedCache(t *testing.T) {
+	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	pcs := fixturePCS(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/list" && calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return response(req, `{"errno":0,"list":[]}`), nil
+	})
+	done := make(chan error, 1)
+	go func() { _, err := pcs.CacheFilesDirectoriesList("/", nil); done <- err }()
+	<-started
+	err := pcs.Mkdir("/new")
+	close(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := pcs.CacheFilesDirectoriesList("/", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("pre-mutation listing was cached after mutation: %d list requests, want 2", calls.Load())
+	}
+}
 
 func TestCredentialChangeInvalidatesDirectoryCache(t *testing.T) {
 	calls := 0
