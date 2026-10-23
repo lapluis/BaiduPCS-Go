@@ -44,3 +44,39 @@ func TestMultipartPartsRemainSeparate(t *testing.T) {
 		t.Fatal("unexpected extra part", err)
 	}
 }
+
+func TestMultipartEscapesHeaderParameters(t *testing.T) {
+	mr := NewMultipartReader()
+	field := `field"with\slash`
+	filename := "file\"with\\slash\r\nX-Injected: yes.txt"
+	mr.AddFormFile(field, filename, fileReader{strings.NewReader("payload")})
+	if err := mr.CloseMultipart(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(mr)
+	if err != nil || int64(len(body)) != mr.Len() {
+		t.Fatal("incorrect body length", err)
+	}
+	_, params, err := mime.ParseMediaType(mr.ContentType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).NextPart()
+	if err != nil {
+		t.Fatal("invalid multipart header:", err)
+	}
+	_, disposition, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disposition["name"] != field || disposition["filename"] != "file\"with\\slash%0D%0AX-Injected: yes.txt" {
+		t.Fatal("header parameters were not escaped correctly")
+	}
+	if part.Header.Get("X-Injected") != "" {
+		t.Fatal("filename injected a MIME header")
+	}
+	data, err := io.ReadAll(part)
+	if err != nil || string(data) != "payload" {
+		t.Fatal("file data changed")
+	}
+}

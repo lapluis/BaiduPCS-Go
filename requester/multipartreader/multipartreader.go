@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 )
 
+var headerParameterEscaper = strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\r", "%0D", "\n", "%0A")
+
 type (
 	// MultipartReader MIME multipart format
 	MultipartReader struct {
@@ -62,7 +64,7 @@ func (mr *MultipartReader) AddFormField(fieldname string, readerlen rio.ReaderLe
 	}
 
 	mpart := &part{
-		form:      fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", mr.boundary, fieldname),
+		form:      fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", mr.boundary, headerParameterEscaper.Replace(fieldname)),
 		readerlen: readerlen,
 	}
 	atomic.AddInt64(&mr.length, int64(len(mpart.form)+mpart.readerlen.Len()))
@@ -76,14 +78,14 @@ func (mr *MultipartReader) AddFormFile(fieldname, filename string, readerlen64 r
 	}
 
 	mpart64 := &part64{
-		form:        fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n\r\n", mr.boundary, fieldname, filename),
+		form:        fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n\r\n", mr.boundary, headerParameterEscaper.Replace(fieldname), headerParameterEscaper.Replace(filename)),
 		readerlen64: readerlen64,
 	}
 	atomic.AddInt64(&mr.length, int64(len(mpart64.form))+mpart64.readerlen64.Len())
 	mr.part64s = append(mr.part64s, mpart64)
 }
 
-//CloseMultipart 关闭multipartreader
+// CloseMultipart 关闭multipartreader
 func (mr *MultipartReader) CloseMultipart() error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
@@ -128,7 +130,7 @@ func (mr *MultipartReader) CloseMultipart() error {
 	return nil
 }
 
-//ContentType 返回Content-Type
+// ContentType 返回Content-Type
 func (mr *MultipartReader) ContentType() string {
 	return mr.contentType
 }
