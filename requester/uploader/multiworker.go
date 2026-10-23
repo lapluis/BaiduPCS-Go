@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/oleiade/lane"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
+	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"os"
 	"sync"
 )
@@ -60,6 +61,9 @@ func (muer *MultiUploader) upload() (uperr error) {
 	if err != nil {
 		return err
 	}
+	if err := muer.validateSource(); err != nil {
+		return err
+	}
 	var (
 		uploadDeque = lane.NewDeque()
 	)
@@ -68,6 +72,17 @@ func (muer *MultiUploader) upload() (uperr error) {
 		checksumMap = make(map[int]string) // key: wer.id, value: checksum
 		mu          sync.Mutex
 	)
+	terminate := func(err error) {
+		if err == nil {
+			err = errors.New("upload terminated")
+		}
+		mu.Lock()
+		if uperr == nil {
+			uperr = err
+		}
+		mu.Unlock()
+		muer.Cancel()
+	}
 
 	// 加入队列
 	for _, wer := range muer.workers {
@@ -101,23 +116,27 @@ func (muer *MultiUploader) upload() (uperr error) {
 				if muer.isCanceled() {
 					return
 				}
+				if err := muer.validateSource(); err != nil {
+					terminate(err)
+					return
+				}
 				checksum, terr := muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
 				if muer.isCanceled() {
 					return
 				}
+				if err := muer.validateSource(); err != nil {
+					terminate(err)
+					return
+				}
 				if terr != nil {
+					if errors.Is(terr, rio.ErrSourceChanged) {
+						terminate(terr)
+						return
+					}
 					var me *MultiError
 					if errors.As(terr, &me) {
 						if me.Terminated { // 终止
-							mu.Lock()
-							if uperr == nil {
-								uperr = me.Err
-								if uperr == nil {
-									uperr = errors.New("upload terminated")
-								}
-							}
-							mu.Unlock()
-							muer.Cancel()
+							terminate(me.Err)
 							return
 						}
 					}
@@ -173,10 +192,13 @@ func (muer *MultiUploader) upload() (uperr error) {
 		return context.Canceled
 	}
 
-	cerr := muer.multiUpload.CreateSuperFile(originPCSHost, muer.config.Policy, muer.instanceState.Uploadid, muer.file.Len(), checksumMap)
+	if err := muer.validateSource(); err != nil {
+		return err
+	}
+	cerr := muer.multiUpload.CreateSuperFile(originPCSHost, muer.config.Policy, muer.instanceState.Uploadid, muer.fileSize, checksumMap)
 	if cerr != nil {
 		return cerr
 	}
 
-	return
+	return muer.validateSource()
 }

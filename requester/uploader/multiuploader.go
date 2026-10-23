@@ -37,6 +37,7 @@ type (
 
 		multiUpload MultiUpload       // 上传体接口
 		file        rio.ReaderAtLen64 // 上传
+		fileSize    int64             // 执行时固定的文件大小
 		config      *MultiUploaderConfig
 		workers     workerList
 		speedsStat  *speeds.Speeds
@@ -54,10 +55,11 @@ type (
 
 	// MultiUploaderConfig 多线程上传配置
 	MultiUploaderConfig struct {
-		Parallel  int    // 上传并发量
-		BlockSize int64  // 上传分块
-		MaxRate   int64  // 限制最大上传速度
-		Policy    string // 文件重名策略
+		Parallel       int          // 上传并发量
+		BlockSize      int64        // 上传分块
+		MaxRate        int64        // 限制最大上传速度
+		Policy         string       // 文件重名策略
+		ValidateSource func() error // 可选：校验更早阶段捕获的文件状态
 	}
 )
 
@@ -135,7 +137,12 @@ func (muer *MultiUploader) Execute() {
 	}
 
 	// 分配任务
-	if err := validateUploadState(muer.instanceState, muer.file.Len()); err != nil {
+	muer.fileSize = muer.file.Len()
+	if err := muer.validateSource(); err != nil {
+		muer.finish(err)
+		return
+	}
+	if err := validateUploadState(muer.instanceState, muer.fileSize); err != nil {
 		muer.finish(err)
 		return
 	}
@@ -145,7 +152,7 @@ func (muer *MultiUploader) Execute() {
 		uploaderVerbose.Infof("upload task CREATED from instance state\n")
 	} else {
 		workers = muer.getWorkerListByInstanceState(&InstanceState{
-			BlockList: SplitBlock(muer.file.Len(), muer.config.BlockSize),
+			BlockList: SplitBlock(muer.fileSize, muer.config.BlockSize),
 		})
 
 		uploaderVerbose.Infof("upload task CREATED: block size: %d, num: %d\n", muer.config.BlockSize, len(workers))
@@ -162,6 +169,23 @@ func (muer *MultiUploader) Execute() {
 
 	err := muer.upload()
 	muer.finish(err)
+}
+
+func (muer *MultiUploader) validateSource() error {
+	if muer.config.ValidateSource != nil {
+		if err := muer.config.ValidateSource(); err != nil {
+			return errors.Join(rio.ErrSourceChanged, err)
+		}
+	}
+	if validator, ok := muer.file.(rio.SnapshotValidator); ok {
+		if err := validator.ValidateSnapshot(); err != nil {
+			return err
+		}
+	}
+	if muer.file.Len() != muer.fileSize {
+		return rio.ErrSourceChanged
+	}
+	return nil
 }
 
 func (muer *MultiUploader) finish(err error) {

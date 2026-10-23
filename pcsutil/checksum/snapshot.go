@@ -5,6 +5,10 @@ import (
 	"io"
 )
 
+// ValidateSnapshot checks that the open file still matches the metadata used
+// for its checksums, including when handing the file to an uploader.
+func (lfc *LocalFileChecksum) ValidateSnapshot() error { return lfc.checkSnapshot() }
+
 // checkSnapshot guards publication of checksums tied to the metadata captured
 // by OpenPath. It is also used after reading to detect changes during hashing.
 func (lfc *LocalFileChecksum) checkSnapshot() error {

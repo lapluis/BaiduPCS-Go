@@ -299,10 +299,11 @@ func (utu *UploadTaskUnit) upload() (result *taskframework.TaskUnitRunResult) {
 	blockSize := getBlockSize(utu.LocalFileChecksum.Length)
 
 	muer := uploader.NewMultiUploader(NewPCSUpload(utu.PCS, utu.SavePath), rio.NewFileReaderAtLen64(utu.LocalFileChecksum.GetFile()), &uploader.MultiUploaderConfig{
-		Parallel:  utu.Parallel,
-		BlockSize: blockSize,
-		MaxRate:   pcsconfig.Config.MaxUploadRate,
-		Policy:    utu.Policy,
+		Parallel:       utu.Parallel,
+		BlockSize:      blockSize,
+		MaxRate:        pcsconfig.Config.MaxUploadRate,
+		Policy:         utu.Policy,
+		ValidateSource: utu.LocalFileChecksum.ValidateSnapshot,
 	}, utu.SavePath)
 
 	// 设置断点续传

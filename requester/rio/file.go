@@ -2,15 +2,25 @@ package rio
 
 import (
 	cryptorand "crypto/rand"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
 )
 
+// ErrSourceChanged indicates that the file no longer matches the reader's snapshot.
+var ErrSourceChanged = errors.New("source file changed")
+
+// SnapshotValidator lets transfer code reject files modified during a transfer.
+type SnapshotValidator interface{ ValidateSnapshot() error }
+
 type (
 	fileReadedlen64 struct {
-		readed int64
-		f      *os.File
+		readed      int64
+		f           *os.File
+		snapshot    os.FileInfo
+		snapshotErr error
 	}
 
 	rdReadedlen64 struct {
@@ -30,9 +40,12 @@ func NewFileReaderLen64(f *os.File) ReaderLen64 {
 	if err != nil {
 		position = 0
 	}
+	snapshot, snapshotErr := f.Stat()
 	return &fileReadedlen64{
-		f:      f,
-		readed: position,
+		f:           f,
+		readed:      position,
+		snapshot:    snapshot,
+		snapshotErr: snapshotErr,
 	}
 }
 
@@ -42,9 +55,22 @@ func NewFileReaderAtLen64(f *os.File) ReaderAtLen64 {
 		return nil
 	}
 
-	return &fileReadedlen64{
-		f: f,
+	snapshot, err := f.Stat()
+	return &fileReadedlen64{f: f, snapshot: snapshot, snapshotErr: err}
+}
+
+func (fr *fileReadedlen64) ValidateSnapshot() error {
+	if fr.snapshotErr != nil {
+		return fmt.Errorf("%w: %w", ErrSourceChanged, fr.snapshotErr)
 	}
+	info, err := fr.f.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrSourceChanged, err)
+	}
+	if fr.snapshot == nil || !os.SameFile(fr.snapshot, info) || fr.snapshot.Size() != info.Size() || !fr.snapshot.ModTime().Equal(info.ModTime()) {
+		return ErrSourceChanged
+	}
+	return nil
 }
 
 func NewCryptoRandReaderAtLen64(size int64) ReaderAtLen64 {

@@ -95,7 +95,7 @@ func (muer *MultiUploader) uploadStatusEvent() {
 			case <-ticker.C:
 				readed := muer.workers.Readed()
 				muer.onUploadStatusEvent(&UploadStatus{
-					totalSize:       muer.file.Len(),
+					totalSize:       muer.fileSize,
 					uploaded:        readed,
 					speedsPerSecond: muer.speedsStat.GetSpeeds(),
 					timeElapsed:     time.Since(muer.executeTime) / 1e8 * 1e8,
