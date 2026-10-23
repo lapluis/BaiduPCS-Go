@@ -34,3 +34,15 @@ func TestBufferedSplitSeekDiscardsOldData(t *testing.T) {
 		t.Fatalf("seek from end failed: %q, %v", data, err)
 	}
 }
+
+func TestLargeSplitRangeDoesNotNarrowRemainingLength(t *testing.T) {
+	block := &fileBlock{readerAt: strings.NewReader("abc"), readRange: transfer.Range{Begin: 0, End: 1<<31 + 8}}
+	buffer := make([]byte, 3)
+	n, err := block.Read(buffer)
+	if err != nil || n != 3 || string(buffer) != "abc" {
+		t.Fatalf("large range incorrectly exhausted: %d, %v, %q", n, err, buffer)
+	}
+	if block.Left() != (1<<31+8)-3 {
+		t.Fatal("remaining byte count changed incorrectly")
+	}
+}

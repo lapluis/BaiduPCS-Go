@@ -83,12 +83,12 @@ func (fb *fileBlock) Read(b []byte) (n int, err error) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
-	left := int(fb.Left())
+	left := fb.Left()
 	if left <= 0 {
 		return 0, io.EOF
 	}
 
-	if len(b) > left {
+	if int64(len(b)) > left {
 		n, err = fb.readerAt.ReadAt(b[:left], fb.readed+fb.readRange.Begin)
 	} else {
 		n, err = fb.readerAt.ReadAt(b, fb.readed+fb.readRange.Begin)
