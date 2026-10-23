@@ -144,17 +144,18 @@ func (c *PCSConfig) init() error {
 	}
 
 	c.InitDefaultConfig()
+	// Reload accounts from scratch: JSON decoding can otherwise reuse slice
+	// elements and retain credentials that are absent from the new file.
+	c.BaiduActiveUID = 0
+	c.BaiduUserList = nil
+	c.activeUser = nil
+	c.pcs = nil
 	err := c.loadConfigFromFile()
 	if err != nil {
 		return err
 	}
 
-	// 载入配置
-	// 如果 activeUser 已初始化, 则跳过
-	if c.activeUser != nil && c.activeUser.UID == c.BaiduActiveUID {
-		return nil
-	}
-
+	// Rebuild the client and apply runtime settings even when the UID is unchanged.
 	c.activeUser, err = c.GetBaiduUser(&BaiduBase{
 		UID: c.BaiduActiveUID,
 	})
