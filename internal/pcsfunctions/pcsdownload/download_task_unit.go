@@ -1,6 +1,7 @@
 package pcsdownload
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
@@ -135,13 +136,13 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			}
 		} else if !fileInfo.IsDir() {
 			// SavePath所在的目录不是目录
-			return fmt.Errorf("%s, path %s: not a directory", StrDownloadInitError, dir)
+			return fmt.Errorf("%s, %w", StrDownloadInitError, &os.PathError{Op: "mkdir", Path: dir, Err: errors.New("not a directory")})
 		}
 
 		// 打开文件
 		writer, file, err = downloader.NewDownloaderWriterByFilename(dtu.SavePath, os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
-			return fmt.Errorf("%s, %s", StrDownloadInitError, err)
+			return fmt.Errorf("%s, %w", StrDownloadInitError, err)
 		}
 		defer file.Close()
 	}
@@ -267,31 +268,31 @@ func (dtu *DownloadTaskUnit) panHTTPClient() *requester.HTTPClient {
 }
 
 func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult) {
-	switch value := result.Err.(type) {
-	case pcserror.Error: // pcserror 接口
-		switch value.GetErrType() {
-		case pcserror.ErrTypeRemoteError:
-		// 远程服务器错误
-		case 31045: // user not exists
-			fallthrough
-		case 31066: // file does not exist
-			result.NeedRetry = false
-		case 31297: // file does not exist
-			result.NeedRetry = false
-		case 31626: // user is not authorized
-			//可能是User-Agent不对
-			//重试
-			fallthrough
-		default:
-			result.NeedRetry = true
-		}
-	case *os.PathError:
-		// 系统级别的错误, 可能是权限问题
-		result.NeedRetry = false
-	default:
-		// 其他错误, 需要重试
-		result.NeedRetry = true
+	result.NeedRetry = downloadNeedsRetry(result.Err)
+}
+
+func downloadNeedsRetry(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
 	}
+	var pcsErr pcserror.Error
+	if errors.As(err, &pcsErr) {
+		if pcsErr.GetErrType() == pcserror.ErrTypeRemoteError {
+			switch pcsErr.GetRemoteErrCode() {
+			case 31045, 31066, 31297: // user or file does not exist
+				return false
+			default:
+				return true
+			}
+		}
+		// PCS errors expose their underlying cause through GetError.
+		if cause := pcsErr.GetError(); cause != nil {
+			return downloadNeedsRetry(cause)
+		}
+		return true
+	}
+	var pathErr *os.PathError
+	return !errors.As(err, &pathErr)
 }
 
 func (dtu *DownloadTaskUnit) execPanDownload(dlink string, result *taskframework.TaskUnitRunResult, okPtr *bool) {
