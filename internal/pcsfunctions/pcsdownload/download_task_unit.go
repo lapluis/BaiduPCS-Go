@@ -264,7 +264,9 @@ func (dtu *DownloadTaskUnit) panHTTPClient() *requester.HTTPClient {
 		panClient.SetTimeout(6 * time.Minute)
 		panClient.SetKeepAlive(true)
 	})
-	return panClient
+	client := *panClient
+	client.SetCookiejar(nil)
+	return &client
 }
 
 func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult) {
@@ -299,9 +301,22 @@ func (dtu *DownloadTaskUnit) execPanDownload(dlink string, result *taskframework
 	dtu.verboseInfof("[%s] 获取到下载链接: %s\n", dtu.taskInfo.Id(), dlink)
 
 	client := dtu.panHTTPClient()
-	activePCS := pcsconfig.Config.ActiveUserBaiduPCS()
-	cookieJar := activePCS.GetClient().Jar
-	newCookieJar, _ := CloneJarWithDomain(cookieJar, dlink)
+	if dtu.PCS == nil {
+		result.ResultMessage = StrDownloadInitError
+		result.Err = errors.New("download task has no account client")
+		return
+	}
+	var newCookieJar http.CookieJar
+	if cookieJar := dtu.PCS.GetClient().Jar; cookieJar != nil {
+		var err error
+		newCookieJar, err = cloneJarFromHost(cookieJar, dtu.PCS.URL().Host, dlink)
+		if err != nil {
+			result.ResultMessage = StrDownloadInitError
+			result.Err = err
+			dtu.handleError(result)
+			return
+		}
+	}
 	client.SetCookiejar(newCookieJar)
 	err := dtu.download(dlink, client)
 	if err != nil {

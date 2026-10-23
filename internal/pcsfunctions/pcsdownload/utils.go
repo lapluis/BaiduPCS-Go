@@ -7,6 +7,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
 	"golang.org/x/net/publicsuffix"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -67,6 +68,14 @@ func FixHTTPLinkURL(linkURL *url.URL) {
 }
 
 func CloneJarWithDomain(srcJar http.CookieJar, newURL string) (http.CookieJar, error) {
+	sourceHost := pcsconfig.Config.PCSAddr
+	if sourceHost == "" {
+		sourceHost = baidupcs.PCSBaiduCom
+	}
+	return cloneJarFromHost(srcJar, sourceHost, newURL)
+}
+
+func cloneJarFromHost(srcJar http.CookieJar, sourceHost, newURL string) (http.CookieJar, error) {
 	if srcJar == nil {
 		return nil, fmt.Errorf("srcJar is nil")
 	}
@@ -75,15 +84,24 @@ func CloneJarWithDomain(srcJar http.CookieJar, newURL string) (http.CookieJar, e
 		return nil, err
 	}
 
-	u, _ := url.Parse(newURL)
+	u, err := url.Parse(newURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return nil, fmt.Errorf("invalid download URL")
+	}
 	newDomain := u.Hostname()
-	u, _ = url.Parse("https://" + pcsconfig.Config.PCSAddr + "/")
-	cookies := srcJar.Cookies(u)
+	sourceURL, err := url.Parse("https://" + sourceHost + "/")
+	if err != nil || sourceURL.Hostname() == "" || sourceURL.User != nil || sourceURL.Host != sourceHost {
+		return nil, fmt.Errorf("invalid source PCS host")
+	}
+	cookies := srcJar.Cookies(sourceURL)
+	cloneURL := &url.URL{Scheme: "https", Host: u.Host, Path: "/"}
 	for _, c := range cookies {
 		nc := *c
 		nc.Domain = newDomain
-		newURL, _ := url.Parse("https://" + newDomain + "/")
-		dstJar.SetCookies(newURL, []*http.Cookie{&nc})
+		if net.ParseIP(newDomain) != nil {
+			nc.Domain = ""
+		}
+		dstJar.SetCookies(cloneURL, []*http.Cookie{&nc})
 	}
 	return dstJar, nil
 }
