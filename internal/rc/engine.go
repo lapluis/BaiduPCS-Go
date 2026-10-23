@@ -157,17 +157,9 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 	if errors.Is(statErr, os.ErrNotExist) {
 		p.Actions = append(p.Actions, Action{Kind: "mkdir", Path: ""})
 	}
-	seen := map[string]string{}
-	if _, local := dst.FS.(*Local); local && runtime.GOOS == "windows" {
-		names := map[string]string{}
-		for _, inventory := range []map[string]Entry{dm, sm} {
-			for name := range inventory {
-				folded := strings.ToLower(name)
-				if prior, ok := names[folded]; ok && prior != name {
-					return nil, fmt.Errorf("case collision: %s and %s", prior, name)
-				}
-				names[folded] = name
-			}
+	if _, local := dst.FS.(*Local); local {
+		if err := validateSelectedLocalPaths(sm, dm, o); err != nil {
+			return nil, err
 		}
 	}
 	var candidates []Action
@@ -188,16 +180,6 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		}
 		if !o.Filter.Match(k) {
 			continue
-		}
-		if _, local := dst.FS.(*Local); local {
-			if err = validLocalName(k); err != nil {
-				return nil, err
-			}
-			fold := strings.ToLower(k)
-			if prev, ok := seen[fold]; ok && prev != k {
-				return nil, fmt.Errorf("case collision: %s and %s", prev, k)
-			}
-			seen[fold] = k
 		}
 		for parent := path.Dir(k); parent != "."; parent = path.Dir(parent) {
 			if d, ok := dm[parent]; ok && !d.IsDir {
@@ -286,6 +268,43 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 	}
 	return p, nil
 }
+
+// Validate only selected paths and the parents needed to create them. Existing
+// destination names still participate even when excluded: a selected write
+// must not alias an excluded destination on a case-insensitive filesystem.
+func validateSelectedLocalPaths(source, destination map[string]Entry, o Options) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	selected := map[string]Entry{}
+	for name, entry := range source {
+		if !o.Filter.Match(name) || (entry.IsDir && !o.CreateEmptyDirs) {
+			continue
+		}
+		for p := name; p != "."; p = path.Dir(p) {
+			selected[p] = Entry{}
+		}
+	}
+	names := map[string][]string{}
+	for name := range destination {
+		folded := strings.ToLower(name)
+		names[folded] = append(names[folded], name)
+	}
+	for _, name := range sortedKeys(selected) {
+		if err := validLocalName(name); err != nil {
+			return err
+		}
+		folded := strings.ToLower(name)
+		for _, prior := range names[folded] {
+			if prior != name {
+				return fmt.Errorf("case collision: %s and %s", prior, name)
+			}
+		}
+		names[folded] = append(names[folded], name)
+	}
+	return nil
+}
+
 func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {
 	current, err := e.FS.Stat(ctx, e.At(p))
 	if old == nil {
