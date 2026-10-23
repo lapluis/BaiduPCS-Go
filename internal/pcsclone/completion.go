@@ -149,19 +149,22 @@ func bashCompletion(cases map[string][]string) string {
 	var b strings.Builder
 	b.WriteString("# bash completion for pcsclone\n")
 	b.WriteString("_pcsclone_completion() {\n")
-	b.WriteString("  local cur path i w candidates\n")
+	b.WriteString("  local cur path i w candidates next\n")
+	b.WriteString("  COMPREPLY=()\n")
 	b.WriteString("  cur=\"${COMP_WORDS[COMP_CWORD]}\"\n")
 	b.WriteString("  path=\"\"\n")
 	b.WriteString("  i=1\n")
 	b.WriteString("  while [ \"$i\" -lt \"$COMP_CWORD\" ]; do\n")
 	b.WriteString("    w=\"${COMP_WORDS[$i]}\"\n")
 	b.WriteString("    case \"$w\" in\n")
+	b.WriteString("      --) return ;;\n")
 	fmt.Fprintf(&b, "      %s) i=$((i+2)); continue ;;\n", valuePatterns)
 	b.WriteString("      -*) i=$((i+1)); continue ;;\n")
 	b.WriteString("    esac\n")
-	b.WriteString("    path=\"${path:+$path }$w\"\n")
+	writeShellPathTransition(&b, cases, "path")
 	b.WriteString("    i=$((i+1))\n")
 	b.WriteString("  done\n")
+	b.WriteString("  [ \"$i\" -gt \"$COMP_CWORD\" ] && return\n")
 	b.WriteString("  candidates=\"\"\n")
 	b.WriteString("  case \"$path\" in\n")
 	for _, key := range sortedCaseKeys(cases) {
@@ -181,18 +184,20 @@ func zshCompletion(cases map[string][]string) string {
 	var b strings.Builder
 	b.WriteString("#compdef pcsclone\n")
 	b.WriteString("_pcsclone_completion() {\n")
-	b.WriteString("  local path=\"\" i=2 w\n")
+	b.WriteString("  local command_path=\"\" i=2 w next\n")
 	b.WriteString("  while (( i < CURRENT )); do\n")
 	b.WriteString("    w=\"${words[i]}\"\n")
 	b.WriteString("    case \"$w\" in\n")
+	b.WriteString("      --) return ;;\n")
 	fmt.Fprintf(&b, "      %s) (( i += 2 )); continue ;;\n", valuePatterns)
 	b.WriteString("      -*) (( i++ )); continue ;;\n")
 	b.WriteString("    esac\n")
-	b.WriteString("    path=\"${path:+$path }$w\"\n")
+	writeShellPathTransition(&b, cases, "command_path")
 	b.WriteString("    (( i++ ))\n")
 	b.WriteString("  done\n")
+	b.WriteString("  (( i > CURRENT )) && return\n")
 	b.WriteString("  local -a candidates\n")
-	b.WriteString("  case \"$path\" in\n")
+	b.WriteString("  case \"$command_path\" in\n")
 	for _, key := range sortedCaseKeys(cases) {
 		fmt.Fprintf(&b, "    \"%s\") candidates=(%s) ;;\n", key, quoteWords(cases[key]))
 	}
@@ -214,15 +219,18 @@ func powershellCompletion(cases map[string][]string) string {
 	b.WriteString("  if ($elements.Count -gt 0 -and $wordToComplete -ne '' -and $elements[-1].Value -eq $wordToComplete) {\n")
 	b.WriteString("    if ($elements.Count -eq 1) { $elements = @() } else { $elements = @($elements[0..($elements.Count - 2)]) }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  $pathParts = @()\n")
+	b.WriteString("  $path = ''\n")
+	fmt.Fprintf(&b, "  $commandPaths = %s\n", quoteWordsPowerShell(sortedCaseKeys(cases)))
 	fmt.Fprintf(&b, "  $valueFlags = %s\n", quoteWordsPowerShell(completionValueFlagWords()))
 	b.WriteString("  for ($i = 0; $i -lt $elements.Count; $i++) {\n")
 	b.WriteString("    $value = $elements[$i].Value\n")
+	b.WriteString("    if ($value -eq '--') { return }\n")
 	b.WriteString("    if ($valueFlags -contains $value) { $i++; continue }\n")
 	b.WriteString("    if ($value.StartsWith('-')) { continue }\n")
-	b.WriteString("    $pathParts += $value\n")
+	b.WriteString("    $next = if ($path -eq '') { $value } else { \"$path $value\" }\n")
+	b.WriteString("    if ($commandPaths -ccontains $next) { $path = $next }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  $path = $pathParts -join ' '\n")
+	b.WriteString("  if ($i -gt $elements.Count) { return }\n")
 	b.WriteString("  $candidates = switch ($path) {\n")
 	for _, key := range sortedCaseKeys(cases) {
 		fmt.Fprintf(&b, "    '%s' { %s }\n", key, quoteWordsPowerShell(cases[key]))
@@ -234,6 +242,17 @@ func powershellCompletion(cases map[string][]string) string {
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// Only recognized command paths advance the parser. Positional filenames
+// leave the leaf command selected, so its options remain available.
+func writeShellPathTransition(b *strings.Builder, cases map[string][]string, variable string) {
+	fmt.Fprintf(b, "    next=\"${%s:+$%s }$w\"\n", variable, variable)
+	b.WriteString("    case \"$next\" in\n")
+	for _, key := range sortedCaseKeys(cases) {
+		fmt.Fprintf(b, "      %q) %s=\"$next\" ;;\n", key, variable)
+	}
+	b.WriteString("    esac\n")
 }
 
 func quoteWords(words []string) string {

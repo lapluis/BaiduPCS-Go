@@ -95,6 +95,39 @@ func validatePair(a, b Endpoint) error {
 	if x == y || strings.HasPrefix(x, y+"/") || strings.HasPrefix(y, x+"/") {
 		return errors.New("source and destination overlap")
 	}
+	if _, local := a.FS.(*Local); local {
+		if _, local = b.FS.(*Local); local {
+			return validateLocalOverlap(a.Root, b.Root)
+		}
+	}
+	return nil
+}
+
+// Lexical comparisons miss Windows path aliases and hard links. Compare each
+// existing root with the other path and its ancestors, including when a new
+// destination is nested beneath an alias of the source directory.
+func validateLocalOverlap(a, b string) error {
+	for _, pair := range [][2]string{{a, b}, {b, a}} {
+		root, err := os.Stat(pair[0])
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for p := pair[1]; ; p = filepath.Dir(p) {
+			info, err := os.Stat(p)
+			if err == nil && os.SameFile(root, info) {
+				return errors.New("source and destination overlap (same filesystem object)")
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if filepath.Dir(p) == p {
+				break
+			}
+		}
+	}
 	return nil
 }
 func validLocalName(p string) error {
@@ -157,17 +190,9 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 	if errors.Is(statErr, os.ErrNotExist) {
 		p.Actions = append(p.Actions, Action{Kind: "mkdir", Path: ""})
 	}
-	seen := map[string]string{}
-	if _, local := dst.FS.(*Local); local && runtime.GOOS == "windows" {
-		names := map[string]string{}
-		for _, inventory := range []map[string]Entry{dm, sm} {
-			for name := range inventory {
-				folded := strings.ToLower(name)
-				if prior, ok := names[folded]; ok && prior != name {
-					return nil, fmt.Errorf("case collision: %s and %s", prior, name)
-				}
-				names[folded] = name
-			}
+	if _, local := dst.FS.(*Local); local {
+		if err := validateSelectedLocalPaths(sm, dm, o); err != nil {
+			return nil, err
 		}
 	}
 	var candidates []Action
@@ -175,9 +200,6 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		s := sm[k]
 		d, exists := dm[k]
 		if s.IsDir {
-			if exists && !d.IsDir {
-				return nil, fmt.Errorf("file/directory conflict: %s", k)
-			}
 			p.SourceDirs = append(p.SourceDirs, k)
 			if o.CreateEmptyDirs && o.Filter.Match(k) {
 				if exists && !d.IsDir {
@@ -191,16 +213,6 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		}
 		if !o.Filter.Match(k) {
 			continue
-		}
-		if _, local := dst.FS.(*Local); local {
-			if err = validLocalName(k); err != nil {
-				return nil, err
-			}
-			fold := strings.ToLower(k)
-			if prev, ok := seen[fold]; ok && prev != k {
-				return nil, fmt.Errorf("case collision: %s and %s", prev, k)
-			}
-			seen[fold] = k
 		}
 		for parent := path.Dir(k); parent != "."; parent = path.Dir(parent) {
 			if d, ok := dm[parent]; ok && !d.IsDir {
@@ -289,6 +301,43 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 	}
 	return p, nil
 }
+
+// Validate only selected paths and the parents needed to create them. Existing
+// destination names still participate even when excluded: a selected write
+// must not alias an excluded destination on a case-insensitive filesystem.
+func validateSelectedLocalPaths(source, destination map[string]Entry, o Options) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	selected := map[string]Entry{}
+	for name, entry := range source {
+		if !o.Filter.Match(name) || (entry.IsDir && !o.CreateEmptyDirs) {
+			continue
+		}
+		for p := name; p != "."; p = path.Dir(p) {
+			selected[p] = Entry{}
+		}
+	}
+	names := map[string][]string{}
+	for name := range destination {
+		folded := strings.ToLower(name)
+		names[folded] = append(names[folded], name)
+	}
+	for _, name := range sortedKeys(selected) {
+		if err := validLocalName(name); err != nil {
+			return err
+		}
+		folded := strings.ToLower(name)
+		for _, prior := range names[folded] {
+			if prior != name {
+				return fmt.Errorf("case collision: %s and %s", prior, name)
+			}
+		}
+		names[folded] = append(names[folded], name)
+	}
+	return nil
+}
+
 func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {
 	current, err := e.FS.Stat(ctx, e.At(p))
 	if old == nil {
@@ -303,7 +352,7 @@ func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {
 	if err != nil {
 		return err
 	}
-	if current.Size != old.Size || current.IsDir != old.IsDir || !current.ModTime.Equal(old.ModTime) || current.ID != old.ID {
+	if current.Size != old.Size || current.IsDir != old.IsDir || !current.ModTime.Equal(old.ModTime) || !sameIdentity(current, *old) {
 		return fmt.Errorf("file changed after planning: %s", p)
 	}
 	return nil
@@ -390,7 +439,7 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 						serverMoved, err = tryServerMove(ctx, p.Source, p.Destination, a, o)
 					}
 					for attempt := 0; !serverMoved && attempt <= o.Retries; attempt++ {
-						err = copyAction(ctx, p.Source, p.Destination, a, o)
+						err = copyAction(ctx, p.Source, p.Destination, &a, o)
 						if err == nil || ctx.Err() != nil {
 							break
 						}
@@ -455,7 +504,7 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 		}
 		for k, old := range p.SourceSnapshot {
 			cur, ok := now[k]
-			if !ok || cur.IsDir != old.IsDir || (!cur.IsDir && (cur.Size != old.Size || !cur.ModTime.Equal(old.ModTime) || cur.ID != old.ID)) {
+			if !ok || cur.IsDir != old.IsDir || !sameIdentity(cur, old) || (!cur.IsDir && (cur.Size != old.Size || !cur.ModTime.Equal(old.ModTime))) {
 				return result, errors.New("source tree changed; deletion blocked")
 			}
 		}
@@ -470,6 +519,10 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 	}
 	for _, a := range p.Actions {
 		if a.Kind == "delete" {
+			// Earlier deletions may take long enough for later candidates to change.
+			if err := unchanged(ctx, p.Destination, a.Path, a.Destination); err != nil {
+				return result, err
+			}
 			if err := p.Destination.FS.Remove(ctx, p.Destination.At(a.Path), false); err != nil {
 				return result, err
 			}
@@ -503,6 +556,13 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
+	destination, err := dst.FS.Stat(ctx, dst.At(a.Path))
+	if err != nil {
+		return err
+	}
+	if destination.IsDir || destination.Size != a.Source.Size {
+		return errors.New("destination changed before verification; source retained")
+	}
 	// Never let --size-only, --update or --ignore-existing authorize data loss.
 	x, err := src.FS.Hash(ctx, src.At(a.Path))
 	if err != nil {
@@ -518,9 +578,29 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	if err = unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
+	// Recheck immediately before removal: the destination may have become an
+	// alias after planning. Equal hashes alone do not prove a second copy exists.
+	if _, local := src.FS.(*Local); local {
+		if _, local = dst.FS.(*Local); local {
+			sourceInfo, err := os.Stat(src.At(a.Path))
+			if err != nil {
+				return err
+			}
+			destinationInfo, err := os.Stat(dst.At(a.Path))
+			if err != nil {
+				return err
+			}
+			if os.SameFile(sourceInfo, destinationInfo) {
+				return errors.New("source and destination refer to the same file; source retained")
+			}
+		}
+	}
+	if err := unchanged(ctx, dst, a.Path, &destination); err != nil {
+		return fmt.Errorf("destination changed during verification; source retained: %w", err)
+	}
 	return src.FS.Remove(ctx, src.At(a.Path), false)
 }
-func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) error {
+func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) error {
 	ctx = context.WithValue(ctx, hashRateKey{}, perTransferRate(o))
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
@@ -607,6 +687,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) err
 	if got.IsDir || got.Size != a.Source.Size {
 		return errors.New("post-transfer size mismatch")
 	}
+	// A successful write replaces the planned destination. Keep its snapshot
+	// for retries after verification errors, without accepting later changes.
+	// If the write or stat failed, retain the old snapshot and fail closed.
+	a.Destination = &got
 	if o.Checksum {
 		x, err := src.FS.Hash(ctx, sp)
 		if err != nil {
@@ -620,7 +704,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) err
 			return errors.New("post-transfer checksum mismatch")
 		}
 	}
-	return nil
+	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
+		return err
+	}
+	return unchanged(ctx, dst, a.Path, a.Destination)
 }
 func perTransferRate(o Options) int64 {
 	if o.BWLimit <= 0 {
@@ -692,6 +779,9 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) e
 	}
 	for _, k := range keys {
 		if k != "" && !m[k].IsDir {
+			continue
+		}
+		if k != "" && o.Filter.excluded(k) {
 			continue
 		}
 		empty := true

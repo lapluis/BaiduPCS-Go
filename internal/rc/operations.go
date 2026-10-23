@@ -99,7 +99,10 @@ func Check(ctx context.Context, src, dst Endpoint, o Options) error {
 		if d.IsDir || !o.Filter.Match(k) {
 			continue
 		}
-		if _, ok := sm[k]; !ok {
+		if s, ok := sm[k]; ok && s.IsDir {
+			logAction(o, "different-type", k)
+			differences++
+		} else if !ok {
 			logAction(o, "missing-on-source", k)
 			differences++
 		}
@@ -171,6 +174,10 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 		if o.DryRun {
 			logAction(o, "would-delete", k)
 			continue
+		}
+		old := m[k]
+		if err = unchanged(ctx, e, k, &old); err != nil {
+			return err
 		}
 		if err = e.FS.Remove(ctx, e.At(k), false); err != nil {
 			return err

@@ -83,8 +83,14 @@ func NewFilter(include, exclude []string, files string) (Filter, error) {
 		f.Files = map[string]bool{}
 		scan := bufio.NewScanner(h)
 		scan.Buffer(make([]byte, 4096), 1024*1024)
+		firstLine := true
 		for scan.Scan() {
-			s := strings.TrimSpace(scan.Text())
+			line := scan.Text()
+			if firstLine {
+				line = strings.TrimPrefix(line, "\uFEFF")
+				firstLine = false
+			}
+			s := strings.TrimSpace(line)
 			if s == "" || strings.HasPrefix(s, "#") {
 				continue
 			}
