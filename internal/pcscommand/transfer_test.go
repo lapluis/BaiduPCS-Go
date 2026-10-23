@@ -1,6 +1,7 @@
 package pcscommand
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"reflect"
@@ -10,6 +11,42 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 )
+
+func TestCollectedTransferDownloadPaths(t *testing.T) {
+	client := requester.NewHTTPClient()
+	client.SetKeepAlive(false)
+	var savedPath string
+	client.Client.Transport = shareFixtureTransport(func(req *http.Request) (*http.Response, error) {
+		body := `{"loginstate":1,"bdstoken":"synthetic","shareid":1,"share_uk":2}`
+		switch req.URL.Path {
+		case "/share/verify":
+			body = `{"errno":0}`
+		case "/share/list":
+			body = `{"errno":0,"list":[{"fs_id":1,"server_filename":"a.txt"},{"fs_id":2,"server_filename":"b.txt"}]}`
+		case "/rest/2.0/pcs/file":
+			body = `{}`
+		case "/share/transfer":
+			if err := req.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			savedPath = req.Form.Get("path")
+			encoded, _ := json.Marshal(map[string]interface{}{"errno": 0, "info": []map[string]string{{"path": savedPath + "/a.txt"}, {"path": savedPath + "/b.txt"}}})
+			body = string(encoded)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	got, err := ShareTransferTo(baidupcs.NewPCSWithClient(1, client), []string{"https://pan.baidu.com/s/1fixture", "abcd"}, "/saved", &baidupcs.TransferOption{Collect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := "/saved/a.txt等文件"
+	if savedPath != wantDir || got.Path != wantDir {
+		t.Fatalf("wrong collect directory: %q", savedPath)
+	}
+	if !reflect.DeepEqual(got.downloadPaths(), []string{wantDir + "/a.txt", wantDir + "/b.txt"}) {
+		t.Fatalf("downloads do not target collected files: %q", got.downloadPaths())
+	}
+}
 
 type shareFixtureTransport func(*http.Request) (*http.Response, error)
 
@@ -36,6 +73,9 @@ func TestShareTransferPreservesCommaInFilename(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Filenames, []string{"a,b.txt", "c.txt"}) {
 		t.Fatalf("filenames changed: %q", got.Filenames)
+	}
+	if !reflect.DeepEqual(got.downloadPaths(), []string{"/saved/a,b.txt", "/saved/c.txt"}) {
+		t.Fatalf("ordinary transfer download paths changed: %q", got.downloadPaths())
 	}
 }
 

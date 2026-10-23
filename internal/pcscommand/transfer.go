@@ -23,6 +23,14 @@ type ShareTransferResult struct {
 	Path      string
 }
 
+func (r *ShareTransferResult) downloadPaths() []string {
+	paths := make([]string, len(r.Filenames))
+	for i, name := range r.Filenames {
+		paths[i] = path.Join(r.Path, name)
+	}
+	return paths
+}
+
 // ShareTransferTo saves a share link into savePath using pcs. It returns errors
 // instead of printing so that both the legacy command and pcsclone can report
 // them with their own output and exit-code rules.
@@ -168,6 +176,6 @@ func RunShareTransfer(params []string, opt *baidupcs.TransferOption) {
 	if opt != nil && opt.Download {
 		fmt.Println("10s后开始下载")
 		time.Sleep(10 * time.Second)
-		RunDownload(result.Filenames, nil)
+		RunDownload(result.downloadPaths(), nil)
 	}
 }
