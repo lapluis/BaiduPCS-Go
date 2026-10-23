@@ -8,14 +8,16 @@ import (
 func MultiReaderLen(readerLens ...ReaderLen) ReaderLen {
 	// TODO: 和copy对比
 	r := make([]io.Reader, 0, len(readerLens))
+	filtered := make([]ReaderLen, 0, len(readerLens))
 	for k := range readerLens {
 		if readerLens[k] == nil {
 			continue
 		}
 		r = append(r, readerLens[k])
+		filtered = append(filtered, readerLens[k])
 	}
 	return &multiReaderLen{
-		mrls:        readerLens,
+		mrls:        filtered,
 		multiReader: io.MultiReader(r...),
 	}
 }
@@ -41,14 +43,16 @@ func (mrl *multiReaderLen) Len() int {
 func MultiReaderLen64(readerLen64s ...ReaderLen64) ReaderLen64 {
 	// TODO: 和copy对比
 	r := make([]io.Reader, 0, len(readerLen64s))
+	filtered := make([]ReaderLen64, 0, len(readerLen64s))
 	for k := range readerLen64s {
 		if readerLen64s[k] == nil {
 			continue
 		}
 		r = append(r, readerLen64s[k])
+		filtered = append(filtered, readerLen64s[k])
 	}
 	return &multiReaderLen64{
-		mrl64s:      readerLen64s,
+		mrl64s:      filtered,
 		multiReader: io.MultiReader(r...),
 	}
 }
