@@ -63,3 +63,27 @@ func TestArchiveInstallsValidFileAndRejectsEmpty(t *testing.T) {
 		t.Fatal("valid update not installed")
 	}
 }
+
+func TestArchiveReadFailurePreservesAllOriginals(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one", "two"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("original"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := archiveFixture(t, "release/one", "release/two")
+	reader.File[1].CRC32++ // Fail after decoding the later entry's contents.
+	if err := installArchive(reader, dir, filepath.Join(dir, "one")); err == nil {
+		t.Fatal("corrupt archive accepted")
+	}
+	for _, name := range []string{"one", "two"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != "original" {
+			t.Errorf("corrupt later entry changed %s", name)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatal("archive staging files leaked")
+	}
+}

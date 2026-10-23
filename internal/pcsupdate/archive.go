@@ -3,6 +3,7 @@ package pcsupdate
 import (
 	"archive/zip"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -66,8 +67,38 @@ func installArchive(reader *zip.Reader, directory, executable string) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("update archive contains no files")
 	}
-	for _, entry := range entries {
+	staging, err := os.MkdirTemp(directory, ".pcs-archive-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	// Read every entry to EOF (including ZIP checksum validation) before any
+	// installed file is replaced. Keep large update contents on disk.
+	for i, entry := range entries {
 		source, err := entry.file.Open()
+		if err != nil {
+			return err
+		}
+		staged, err := os.Create(filepath.Join(staging, fmt.Sprint(i)))
+		if err != nil {
+			source.Close()
+			return err
+		}
+		_, err = io.Copy(staged, source)
+		closeErr := source.Close()
+		stagedCloseErr := staged.Close()
+		if err != nil {
+			return fmt.Errorf("update %s: %w", entry.file.Name, err)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if stagedCloseErr != nil {
+			return stagedCloseErr
+		}
+	}
+	for i, entry := range entries {
+		source, err := os.Open(filepath.Join(staging, fmt.Sprint(i)))
 		if err != nil {
 			return err
 		}
