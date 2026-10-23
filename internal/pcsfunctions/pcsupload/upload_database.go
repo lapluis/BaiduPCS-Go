@@ -57,7 +57,11 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 		return ud, nil
 	}
 
-	err = jsonhelper.UnmarshalData(file, ud)
+	loaded := ud
+	err = jsonhelper.UnmarshalData(file, &loaded)
+	if err == nil && loaded == nil {
+		err = errors.New("upload resume database must be an object, not null")
+	}
 	if err != nil {
 		file.Close()
 		return nil, fmt.Errorf("decode upload resume database: %w", err)

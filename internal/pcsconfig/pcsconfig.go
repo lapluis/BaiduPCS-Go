@@ -232,8 +232,9 @@ func (c *PCSConfig) loadConfigFromFile() (err error) {
 		return err
 	}
 
-	err = jsonhelper.UnmarshalData(c.configFile, c)
-	if err != nil {
+	loaded := c
+	err = jsonhelper.UnmarshalData(c.configFile, &loaded)
+	if err != nil || loaded == nil {
 		return ErrConfigContentsParseError
 	}
 	return nil

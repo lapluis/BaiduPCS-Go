@@ -1,8 +1,9 @@
 package baidupcs
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
@@ -10,7 +11,6 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -18,9 +18,9 @@ import (
 type (
 	// ShareOption 分享可选项
 	TransferOption struct {
-		Download bool // 是否直接开始下载
-		Collect  bool // 多文件整合
-		Rname    bool // 随机改文件名
+		Download bool   // 是否直接开始下载
+		Collect  bool   // 多文件整合
+		Rname    bool   // 随机改文件名
 		FsID     string // 指定fs_id转存
 	}
 )
@@ -40,6 +40,38 @@ func (pcs *BaiduPCS) GenerateShareQueryURL(subPath string, params map[string]str
 	return shareURL
 }
 
+func shareResponseErrno(body []byte) (int64, error) {
+	if !gjson.ValidBytes(body) {
+		return 0, fmt.Errorf("返回json解析错误")
+	}
+	code := gjson.GetBytes(body, "errno")
+	if code.Type != gjson.Number {
+		return 0, fmt.Errorf("分享响应缺少有效的errno")
+	}
+	return strconv.ParseInt(code.Raw, 10, 64)
+}
+
+// sharePageData finds a complete JSON object inside the page's JavaScript
+// wrappers. JSON decoding handles nested objects and braces inside strings.
+func sharePageData(body []byte) (gjson.Result, bool) {
+	for offset := 0; offset < len(body); {
+		next := bytes.IndexByte(body[offset:], '{')
+		if next < 0 {
+			break
+		}
+		offset += next
+		var raw json.RawMessage
+		if err := json.NewDecoder(bytes.NewReader(body[offset:])).Decode(&raw); err == nil {
+			data := gjson.ParseBytes(raw)
+			if state := data.Get("loginstate"); state.Exists() && state.Type != gjson.Null {
+				return data, true
+			}
+		}
+		offset++
+	}
+	return gjson.Result{}, false
+}
+
 func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken string) (res map[string]string) {
 	res = make(map[string]string)
 	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareURL, nil, map[string]string{
@@ -51,8 +83,16 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
-	errno := gjson.Get(string(body), `errno`).Int()
+	body, err := ioutil.ReadAll(dataReadCloser)
+	if err != nil {
+		res["ErrMsg"] = "读取分享项响应失败"
+		return
+	}
+	errno, err := shareResponseErrno(body)
+	if err != nil {
+		res["ErrMsg"] = "分享项响应格式错误"
+		return
+	}
 	if errno != 0 {
 		res["ErrMsg"] = fmt.Sprintf("未知错误, 错误码%d", errno)
 		if errno == 8001 {
@@ -60,12 +100,22 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 		}
 		return
 	}
-	res["filename"] = gjson.Get(string(body), `list.0.server_filename`).String()
-	fsidList := gjson.Get(string(body), `list.#.fs_id`).Array()
-	var fidsStr string = "["
-	for _, sid := range fsidList {
-		fidsStr += sid.String() + ","
+	list := gjson.GetBytes(body, "list")
+	if !list.IsArray() || len(list.Array()) == 0 {
+		res["ErrMsg"] = "分享项列表为空或格式错误"
+		return
 	}
+	fsidList := make([]string, 0, len(list.Array()))
+	for _, item := range list.Array() {
+		sid := item.Get("fs_id")
+		id, parseErr := strconv.ParseUint(sid.Raw, 10, 64)
+		if sid.Type != gjson.Number || parseErr != nil || id == 0 || item.Get("server_filename").String() == "" {
+			res["ErrMsg"] = "分享项元数据不完整"
+			return
+		}
+		fsidList = append(fsidList, sid.Raw)
+	}
+	res["filename"] = list.Array()[0].Get("server_filename").String()
 
 	res["shareid"] = shardID
 	res["from"] = shareUK
@@ -85,7 +135,7 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 	}
 	res["item_num"] = strconv.Itoa(len(fsidList))
 	res["ErrMsg"] = "success"
-	res["fs_id"] = fidsStr[:len(fidsStr)-1] + "]"
+	res["fs_id"] = "[" + strings.Join(fsidList, ",") + "]"
 	shareUrl.RawQuery = uv.Encode()
 	res["shareUrl"] = shareUrl.String()
 	return
@@ -103,8 +153,16 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
-	errno := gjson.Get(string(body), `errno`).Int()
+	body, err := ioutil.ReadAll(dataReadCloser)
+	if err != nil {
+		res["ErrMsg"] = "读取分享验证响应失败"
+		return
+	}
+	errno, err := shareResponseErrno(body)
+	if err != nil {
+		res["ErrMsg"] = "分享验证响应格式错误"
+		return
+	}
 	if errno != 0 {
 		res["ErrMsg"] = fmt.Sprintf("未知错误, 错误码%d", errno)
 		if errno == -9 {
@@ -120,6 +178,10 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[string]string) {
 	tokens = make(map[string]string)
 	tokens["ErrMsg"] = "0"
+	if len(featurestr) < 2 || featurestr[0] != '1' {
+		tokens["ErrMsg"] = "分享链接标识无效"
+		return
+	}
 	headers := make(map[string]string)
 	headers["User-Agent"] = NetdiskUA // 修 #534：Chrome 76 UA 被百度反爬弹到无 loginstate 的登录页；netdisk 客户端 UA 放行拿真实分享页
 	headers["Referer"] = "https://pan.baidu.com/disk/home"
@@ -135,7 +197,11 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
+	body, readErr := ioutil.ReadAll(dataReadCloser)
+	if readErr != nil {
+		tokens["ErrMsg"] = "读取分享页失败"
+		return
+	}
 	notFoundFlag := strings.Contains(string(body), "platform-non-found")
 	errorPageTitle := strings.Contains(string(body), "error-404")
 	if errorPageTitle {
@@ -146,16 +212,15 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 		tokens["ErrMsg"] = "分享链接已失效"
 		return
 	} else {
-		re, _ := regexp.Compile(`(\{.+?loginstate.+?\})`) // 修 #534：旧页 locals.mset({...}); 要求 )，新页 try{{...}}; 无 )，去 \)\; 终结符兼容两者
-		sub := re.FindSubmatch(body)
-		if len(sub) < 2 {
+		data, ok := sharePageData(body)
+		if !ok {
 			tokens["ErrMsg"] = "请确认登录参数中已经包含了网盘STOKEN"
 			return
 		}
-		tokens["bdstoken"] = gjson.Get(string(sub[1]), `bdstoken`).String()
-		tokens["uk"] = gjson.Get(string(sub[1]), `uk`).String()
-		tokens["share_uk"] = gjson.Get(string(sub[1]), `share_uk`).String()
-		tokens["shareid"] = gjson.Get(string(sub[1]), `shareid`).String()
+		tokens["bdstoken"] = data.Get("bdstoken").String()
+		tokens["uk"] = data.Get("uk").String()
+		tokens["share_uk"] = data.Get("share_uk").String()
+		tokens["shareid"] = data.Get("shareid").String()
 		return
 	}
 
@@ -187,12 +252,12 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 		res["ErrMsg"] = "未知错误"
 		return
 	}
-	if !gjson.Valid(string(body)) {
+	errno, err := shareResponseErrno(body)
+	if err != nil {
 		res["ErrNo"] = "2"
 		res["ErrMsg"] = "返回json解析错误"
 		return
 	}
-	errno := gjson.Get(string(body), `errno`).Int()
 	if errno != 0 {
 		res["ErrNo"] = "3"
 		res["ErrMsg"] = "获取分享项元数据错误"
@@ -218,18 +283,27 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 		return
 	}
 
-	_, res["filename"] = filepath.Split(gjson.Get(string(body), `info.0.path`).String())
-	filenames := gjson.Get(string(body), `info.#.path`).Array()
-	filenamesStr := ""
-	for _, _path := range filenames {
-		filenamesStr += "," + path.Base(_path.String())
+	info := gjson.GetBytes(body, "info")
+	if !info.IsArray() || len(info.Array()) == 0 {
+		res["ErrNo"], res["ErrMsg"] = "2", "转存响应缺少文件信息"
+		return
 	}
-	if len(filenamesStr) < 1 {
-		res["filenames"] = "default" + pcsutil.GenerateRandomString(5)
-	} else {
-		res["filenames"] = filenamesStr[1:]
+	filenames := make([]string, 0, len(info.Array()))
+	for _, item := range info.Array() {
+		filePath := item.Get("path")
+		name := path.Base(filePath.String())
+		if filePath.Type != gjson.String || !path.IsAbs(filePath.String()) || name == "/" || name == "." || name == ".." {
+			res["ErrNo"], res["ErrMsg"] = "2", "转存响应文件路径无效"
+			return
+		}
+		filenames = append(filenames, name)
 	}
-	if len(gjson.Get(string(body), `info.#.fsid`).Array()) > 1 {
+	res["filename"] = filenames[0]
+	// Keep the legacy display field, but use JSON for lossless filename transport.
+	res["filenames"] = strings.Join(filenames, ",")
+	encoded, _ := json.Marshal(filenames)
+	res["filenames_json"] = string(encoded)
+	if len(filenames) > 1 {
 		res["filename"] += "等多个文件/文件夹"
 	}
 	return
