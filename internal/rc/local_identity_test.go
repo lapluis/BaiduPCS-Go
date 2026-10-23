@@ -92,3 +92,23 @@ func TestMoveRetainsSourceOnSameMetadataTargetReplacement(t *testing.T) {
 		t.Fatal("source deleted", err)
 	}
 }
+
+func TestLocalIdentityWhileFileIsOpen(t *testing.T) {
+	s, _ := endpoints(t)
+	write(t, s, "file", "content")
+	held, err := os.Open(s.At("file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	entry, err := s.FS.Stat(context.Background(), s.At("file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = unchanged(context.Background(), s, "file", &entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.FS.Hash(context.Background(), s.At("file")); err != nil {
+		t.Fatal(err)
+	}
+}
