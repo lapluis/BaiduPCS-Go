@@ -1,6 +1,7 @@
 package rio
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,5 +37,33 @@ func TestFileReaderLengthStartsAtCurrentOffset(t *testing.T) {
 	at := NewFileReaderAtLen64(f)
 	if at.Len() != 1 {
 		t.Fatal("random access reader should expose full file length")
+	}
+}
+
+func TestFileReaderSnapshotRemainsStableAcrossReads(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "fixture.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewFileReaderLen64(f)
+	validator := reader.(SnapshotValidator)
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := validator.ValidateSnapshot(); err != nil {
+		t.Fatalf("ordinary reads invalidated snapshot: %v", err)
+	}
+	if err := f.Truncate(2); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(validator.ValidateSnapshot(), ErrSourceChanged) {
+		t.Fatal("truncation did not invalidate snapshot")
 	}
 }

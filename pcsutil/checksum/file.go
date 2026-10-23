@@ -2,12 +2,16 @@ package checksum
 
 import (
 	"bytes"
+	"crypto/md5"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"path/filepath"
 )
 
 // EqualLengthMD5 检测md5和大小是否相同
 func (lfm *LocalFileMeta) EqualLengthMD5(m *LocalFileMeta) bool {
+	if lfm == nil || m == nil || lfm.Length < 0 || len(lfm.MD5) != md5.Size || len(m.MD5) != md5.Size {
+		return false
+	}
 	if lfm.Length != m.Length {
 		return false
 	}

@@ -4,6 +4,7 @@ package checksum
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -31,13 +32,14 @@ const (
 type (
 	// LocalFileMeta 本地文件元信息
 	LocalFileMeta struct {
-		Path       string   `json:"path"`      // 本地路径
-		Length     int64    `json:"length"`    // 文件大小
-		SliceMD5   []byte   `json:"slicemd5"`  // 文件前 requiredSliceLen (256KB) 切片的 md5 值
-		BlocksList []string `json:"blocklist"` // 文件分块计算md5的切片
-		MD5        []byte   `json:"md5"`       // 文件的 md5
-		CRC32      uint32   `json:"crc32"`     // 文件的 crc32
-		ModTime    int64    `json:"modtime"`   // 修改日期
+		Path       string   `json:"path"`                 // 本地路径
+		Length     int64    `json:"length"`               // 文件大小
+		SliceMD5   []byte   `json:"slicemd5"`             // 文件前 requiredSliceLen (256KB) 切片的 md5 值
+		BlocksList []string `json:"blocklist"`            // 文件分块计算md5的切片
+		MD5        []byte   `json:"md5"`                  // 文件的 md5
+		CRC32      uint32   `json:"crc32"`                // 文件的 crc32
+		ModTime    int64    `json:"modtime"`              // 修改日期
+		ModTimeNS  int64    `json:"modtime_ns,omitempty"` // 修改时间，纳秒；0 表示旧记录未提供
 	}
 
 	// LocalFileChecksum 校验本地文件
@@ -68,21 +70,27 @@ func NewLocalFileChecksumWithBufSize(localPath string, bufSize, sliceSize int) *
 func (lfc *LocalFileChecksum) OpenPath() error {
 	if lfc.file != nil {
 		lfc.file.Close()
+		lfc.file = nil
 	}
+	// Digests belong to the previous open, even if this path now has the same
+	// size and timestamp. Resume metadata can be restored after validation.
+	lfc.LocalFileMeta = LocalFileMeta{Path: lfc.Path}
 
-	var err error
-	lfc.file, err = os.Open(lfc.Path)
+	file, err := os.Open(lfc.Path)
 	if err != nil {
 		return err
 	}
 
-	info, err := lfc.file.Stat()
+	info, err := file.Stat()
 	if err != nil {
+		file.Close()
 		return err
 	}
 
+	lfc.file = file
 	lfc.Length = info.Size()
 	lfc.ModTime = info.ModTime().Unix()
+	lfc.ModTimeNS = info.ModTime().UnixNano()
 	return nil
 }
 
@@ -144,34 +152,42 @@ func (lfc *LocalFileChecksum) repeatRead(wus ...*ChecksumWriteUnit) (err error) 
 	lfc.initBuf()
 
 	defer func() {
-		_, err = lfc.file.Seek(0, os.SEEK_SET) // 恢复文件指针
-		if err != nil {
-			return
+		if _, seekErr := lfc.file.Seek(0, io.SeekStart); seekErr != nil {
+			err = errors.Join(err, seekErr)
 		}
 	}()
+	if _, err = lfc.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 
-	// 读文件
-	var (
-		n int
-	)
-read:
 	for {
-		n, err = lfc.file.Read(lfc.buf)
-		switch err {
-		case io.EOF:
-			err = lfc.writeChecksum(lfc.buf[:n], wus...)
-			break read
-		case nil:
-			err = lfc.writeChecksum(lfc.buf[:n], wus...)
-		default:
-			return
+		n, readErr := lfc.file.Read(lfc.buf)
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		writeErr := lfc.writeChecksum(lfc.buf[:n], wus...)
+		if writeErr == ErrChecksumWriteAllStop {
+			return nil
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+		if readErr == io.EOF {
+			// An exact boundary may require a final empty write to publish the
+			// completed digest. An unfinished unit means the file ended early.
+			writeErr = lfc.writeChecksum(nil, wus...)
+			if writeErr == ErrChecksumWriteAllStop {
+				return nil
+			}
+			if writeErr != nil {
+				return writeErr
+			}
+			return io.ErrUnexpectedEOF
+		}
+		if n == 0 {
+			return io.ErrNoProgress
 		}
 	}
-	switch err {
-	case ErrChecksumWriteAllStop: // 全部结束
-		err = nil
-	}
-	return
 }
 
 func (lfc *LocalFileChecksum) createChecksumWriteUnit(cw ChecksumWriter, isAll, isSlice bool, getSumFunc func(sliceSum interface{}, sum interface{})) (wu *ChecksumWriteUnit, deferFunc func(err error)) {
@@ -196,6 +212,9 @@ func (lfc *LocalFileChecksum) createChecksumWriteUnit(cw ChecksumWriter, isAll, 
 // Sum 计算文件摘要值
 func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 	lfc.fix()
+	if err = lfc.checkSnapshot(); err != nil {
+		return err
+	}
 	wus := make([]*ChecksumWriteUnit, 0, 2)
 	if (checkSumFlag & (CHECKSUM_MD5 | CHECKSUM_SLICE_MD5)) != 0 {
 		md5w := md5.New()
@@ -214,7 +233,7 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 		)
 
 		wus = append(wus, wu)
-		defer d(err)
+		defer func() { d(err) }()
 	}
 	if (checkSumFlag & CHECKSUM_CRC32) != 0 {
 		crc32w := crc32.NewIEEE()
@@ -230,10 +249,13 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 		)
 
 		wus = append(wus, wu)
-		defer d(err)
+		defer func() { d(err) }()
 	}
 
 	err = lfc.repeatRead(wus...)
+	if err == nil {
+		err = lfc.checkSnapshot()
+	}
 	return
 }
 
@@ -244,17 +266,24 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	if chunkSize <= 0 {
 		return fmt.Errorf("invalid block size: %d", chunkSize)
 	}
-
+	if err := lfc.checkSnapshot(); err != nil {
+		return err
+	}
 	fileSize := lfc.Length
 	if fileSize == 0 {
+		lfc.BlocksList = nil
 		return nil // 空文件
 	}
 
 	// 计算分块数量
-	chunkCount := int((fileSize + chunkSize - 1) / chunkSize)
+	count := (fileSize-1)/chunkSize + 1
+	if count > int64(int(^uint(0)>>1)) {
+		return fmt.Errorf("too many checksum blocks: %d", count)
+	}
+	chunkCount := int(count)
 
 	// 初始化结果存储, 各 worker 按自己的块索引写入, 无需加锁
-	lfc.BlocksList = make([]string, chunkCount)
+	blocks := make([]string, chunkCount)
 
 	// worker 数: 不超过逻辑核数, 不超过分块数, 上限 16 (控制 4MB×N 的缓冲区内存)
 	workers := runtime.GOMAXPROCS(0)
@@ -266,7 +295,10 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, workers)
+	var failureOnce sync.Once
+	var firstErr error
+	stopped := make(chan struct{})
+	fail := func(err error) { failureOnce.Do(func() { firstErr = err; close(stopped) }) }
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(workerId int) {
@@ -276,18 +308,25 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 			chunkMD5 := md5.New()
 
 			for i := workerId; i < chunkCount; i += workers {
+				select {
+				case <-stopped:
+					return
+				default:
+				}
 				offset := int64(i) * chunkSize
 				// 计算当前分块的实际大小（最后一块可能较小）
-				currentChunkSize := chunkSize
-				if offset+chunkSize > fileSize {
-					currentChunkSize = fileSize - offset
-				}
+				currentChunkSize := min(chunkSize, fileSize-offset)
 
 				chunkMD5.Reset()
 				bytesRead := int64(0)
 
 				// 读取当前分块的所有数据
 				for bytesRead < currentChunkSize {
+					select {
+					case <-stopped:
+						return
+					default:
+					}
 					readSize := int64(len(buffer))
 					if readSize > currentChunkSize-bytesRead {
 						readSize = currentChunkSize - bytesRead
@@ -298,26 +337,32 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 						chunkMD5.Write(buffer[:n])
 						bytesRead += int64(n)
 					}
+					if rerr == io.EOF && bytesRead < currentChunkSize {
+						rerr = io.ErrUnexpectedEOF
+					}
 					if rerr != nil && rerr != io.EOF {
-						select {
-						case errCh <- rerr:
-						default:
-						}
+						fail(rerr)
+						return
+					}
+					if n == 0 {
+						fail(io.ErrNoProgress)
 						return
 					}
 				}
 
-				lfc.BlocksList[i] = hex.EncodeToString(chunkMD5.Sum(nil))
+				blocks[i] = hex.EncodeToString(chunkMD5.Sum(nil))
 			}
 		}(w)
 	}
 	wg.Wait()
 
-	select {
-	case err = <-errCh:
-		return err
-	default:
+	if firstErr != nil {
+		return firstErr
 	}
+	if err := lfc.checkSnapshot(); err != nil {
+		return err
+	}
+	lfc.BlocksList = blocks
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package pcsupload
 
 import (
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -222,17 +223,27 @@ func (ud *UploadingDatabase) Search(meta *checksum.LocalFileMeta) *uploader.Inst
 			return cloneUploadState(uploading.State)
 		}
 		if uploading.LocalFileMeta.Path == meta.Path {
-			// 移除旧的信息
-			// 目前只是比较了文件大小
-			if meta.Length != uploading.LocalFileMeta.Length {
+			verifiedCurrent := len(meta.MD5) == md5.Size
+			verifiedStored := len(uploading.MD5) == md5.Size
+			if meta.Length != uploading.LocalFileMeta.Length || (verifiedCurrent && verifiedStored && !uploading.LocalFileMeta.EqualLengthMD5(meta)) {
+				ud.deleteIndex(k)
+				return nil
+			}
+			// Legacy second-only timestamps cannot exclude a same-second
+			// rewrite. A verified matching MD5 already returned above.
+			if uploading.ModTime != -1 && uploading.ModTimeNS == 0 {
 				ud.deleteIndex(k)
 				return nil
 			}
 
-			cached := cloneUploadMeta(uploading.LocalFileMeta)
-			meta.MD5 = cached.MD5
-			meta.SliceMD5 = cached.SliceMD5
-			meta.BlocksList = cached.BlocksList
+			// An already verified current digest takes precedence over cached
+			// metadata, including an absent or incomplete cached digest.
+			if !verifiedCurrent {
+				cached := cloneUploadMeta(uploading.LocalFileMeta)
+				meta.MD5 = cached.MD5
+				meta.SliceMD5 = cached.SliceMD5
+				meta.BlocksList = cached.BlocksList
+			}
 			return cloneUploadState(uploading.State)
 		}
 	}
@@ -259,7 +270,7 @@ func (ud *UploadingDatabase) clearModTimeChangeLocked() {
 			continue
 		}
 
-		if uploading.LocalFileMeta.ModTime != info.ModTime().Unix() {
+		if uploading.Length != info.Size() || uploading.ModTime != info.ModTime().Unix() || (uploading.ModTimeNS != 0 && uploading.ModTimeNS != info.ModTime().UnixNano()) {
 			ud.deleteIndex(i)
 			i--
 			pcsUploadVerbose.Infof("clear modified file path: %s\n", uploading.LocalFileMeta.Path)

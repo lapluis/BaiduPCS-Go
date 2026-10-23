@@ -18,7 +18,7 @@ type cancelBackend struct {
 	started, canceled, release   chan struct{}
 }
 
-func (b *cancelBackend) Precreate() (string, pcserror.Error) {
+func (b *cancelBackend) Precreate(context.Context) (string, pcserror.Error) {
 	b.precreated.Add(1)
 	return "synthetic", nil
 }
@@ -33,7 +33,7 @@ func (b *cancelBackend) TmpFile(ctx context.Context, _ string, _ string, id int,
 	<-b.release
 	return "", ctx.Err()
 }
-func (b *cancelBackend) CreateSuperFile(_ string, _ string, _ string, _ int64, _ map[int]string) error {
+func (b *cancelBackend) CreateSuperFile(_ context.Context, _ string, _ string, _ string, _ int64, _ map[int]string) error {
 	b.merged.Add(1)
 	return nil
 }

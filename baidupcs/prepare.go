@@ -2,6 +2,7 @@ package baidupcs
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -49,6 +50,10 @@ func handleRespStatusError(operation string, resp *http.Response) pcserror.Error
 }
 
 func (pcs *BaiduPCS) sendReqReturnResp(rt reqType, op, method, urlStr string, post interface{}, header map[string]string) (resp *http.Response, pcsError pcserror.Error) {
+	return pcs.sendReqReturnRespContext(context.Background(), rt, op, method, urlStr, post, header)
+}
+
+func (pcs *BaiduPCS) sendReqReturnRespContext(ctx context.Context, rt reqType, op, method, urlStr string, post interface{}, header map[string]string) (resp *http.Response, pcsError pcserror.Error) {
 	if header == nil {
 		header = map[string]string{}
 	}
@@ -66,7 +71,10 @@ func (pcs *BaiduPCS) sendReqReturnResp(rt reqType, op, method, urlStr string, po
 		}
 	}
 
-	resp, err := pcs.client.Req(method, urlStr, post, header)
+	err := ctx.Err()
+	if err == nil {
+		resp, err = pcs.client.ReqWithContext(ctx, method, urlStr, post, header)
+	}
 	if err != nil {
 		handleRespClose(resp)
 		switch rt {
@@ -89,7 +97,11 @@ func (pcs *BaiduPCS) sendReqReturnResp(rt reqType, op, method, urlStr string, po
 }
 
 func (pcs *BaiduPCS) sendReqReturnReadCloser(rt reqType, op, method, urlStr string, post interface{}, header map[string]string) (readCloser io.ReadCloser, pcsError pcserror.Error) {
-	resp, pcsError := pcs.sendReqReturnResp(rt, op, method, urlStr, post, header)
+	return pcs.sendReqReturnReadCloserContext(context.Background(), rt, op, method, urlStr, post, header)
+}
+
+func (pcs *BaiduPCS) sendReqReturnReadCloserContext(ctx context.Context, rt reqType, op, method, urlStr string, post interface{}, header map[string]string) (readCloser io.ReadCloser, pcsError pcserror.Error) {
+	resp, pcsError := pcs.sendReqReturnRespContext(ctx, rt, op, method, urlStr, post, header)
 	if pcsError != nil {
 		return
 	}
@@ -116,6 +128,11 @@ func (pcs *BaiduPCS) PrepareUK() (dataReadCloser io.ReadCloser, pcsError pcserro
 
 // PreparePCSServers 获取推荐的pcs服务器URL
 func (pcs *BaiduPCS) PreparePCSServers() (dataReadCloser io.ReadCloser, pcsError pcserror.Error) {
+	return pcs.PreparePCSServersWithContext(context.Background())
+}
+
+// PreparePCSServersWithContext allows cancellation of upload-server discovery.
+func (pcs *BaiduPCS) PreparePCSServersWithContext(ctx context.Context) (dataReadCloser io.ReadCloser, pcsError pcserror.Error) {
 	pcs.lazyInit()
 	pcsURL := pcs.generatePCSURL("file", "locateupload", map[string]string{
 		"upload_version": "2.0",
@@ -123,7 +140,7 @@ func (pcs *BaiduPCS) PreparePCSServers() (dataReadCloser io.ReadCloser, pcsError
 	})
 	baiduPCSVerbose.Infof("%s URL: %s\n", OperationGetPCSServer, pcsURL)
 
-	dataReadCloser, pcsError = pcs.sendReqReturnReadCloser(reqTypePCS, OperationGetPCSServer, http.MethodGet, pcsURL.String(), nil, nil)
+	dataReadCloser, pcsError = pcs.sendReqReturnReadCloserContext(ctx, reqTypePCS, OperationGetPCSServer, http.MethodGet, pcsURL.String(), nil, nil)
 	return
 }
 
@@ -578,13 +595,18 @@ func (pcs *BaiduPCS) PrepareUploadTmpFile(uploadFunc UploadFunc) (dataReadCloser
 
 // PrepareUploadCreateSuperFile 分片上传—合并分片文件, 只返回服务器响应数据和错误信息
 func (pcs *BaiduPCS) PrepareUploadCreateSuperFile(uploadid, rtype string, fileSize int64, targetPath string, blockList []string) (dataReadCloser io.ReadCloser, pcsError pcserror.Error) {
+	return pcs.PrepareUploadCreateSuperFileWithContext(context.Background(), uploadid, rtype, fileSize, targetPath, blockList)
+}
+
+// PrepareUploadCreateSuperFileWithContext allows cancellation of the merge request.
+func (pcs *BaiduPCS) PrepareUploadCreateSuperFileWithContext(ctx context.Context, uploadid, rtype string, fileSize int64, targetPath string, blockList []string) (dataReadCloser io.ReadCloser, pcsError pcserror.Error) {
 	pcs.lazyInit()
 
 	panURL := pcs.generatePanURL("create", nil)
 
 	baiduPCSVerbose.Infof("%s URL: %s\n", OperationUploadCreateSuperFile, panURL)
 
-	dataReadCloser, pcsError = pcs.sendReqReturnReadCloser(reqTypePan, OperationUploadCreateSuperFile, http.MethodPost, panURL.String(), map[string]string{
+	dataReadCloser, pcsError = pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationUploadCreateSuperFile, http.MethodPost, panURL.String(), map[string]string{
 		"uploadid": uploadid,
 		"path":     targetPath,
 		"size":     strconv.FormatInt(fileSize, 10),

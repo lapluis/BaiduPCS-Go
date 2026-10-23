@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -203,9 +204,14 @@ func (pcs *BaiduPCS) UploadTmpFile(uploadid, targetPath string, partseq int, par
 
 // UploadCreateSuperFile 分片上传—合并分片文件
 func (pcs *BaiduPCS) UploadCreateSuperFile(uploadid, policy string, fileSize int64, targetPath string, checksumMap map[int]string) (panError pcserror.Error) {
+	return pcs.UploadCreateSuperFileWithContext(context.Background(), uploadid, policy, fileSize, targetPath, checksumMap)
+}
+
+// UploadCreateSuperFileWithContext merges uploaded parts using the caller's context.
+func (pcs *BaiduPCS) UploadCreateSuperFileWithContext(ctx context.Context, uploadid, policy string, fileSize int64, targetPath string, checksumMap map[int]string) (panError pcserror.Error) {
 	blockList := sortBlockList(checksumMap)
 	rtype := pcs.policyTortype(policy)
-	dataReadCloser, pcsError := pcs.PrepareUploadCreateSuperFile(uploadid, rtype, fileSize, targetPath, blockList)
+	dataReadCloser, pcsError := pcs.PrepareUploadCreateSuperFileWithContext(ctx, uploadid, rtype, fileSize, targetPath, blockList)
 	if pcsError != nil {
 		return pcsError
 	}
@@ -213,6 +219,11 @@ func (pcs *BaiduPCS) UploadCreateSuperFile(uploadid, policy string, fileSize int
 	defer dataReadCloser.Close()
 
 	errInfo := pcserror.DecodePanJSONError(OperationUploadCreateSuperFile, dataReadCloser)
+	if ctx.Err() != nil {
+		canceled := pcserror.NewPanErrorInfo(OperationUploadCreateSuperFile)
+		canceled.SetNetError(ctx.Err())
+		return canceled
+	}
 	if errInfo != nil {
 		return errInfo
 	}
@@ -224,10 +235,20 @@ func (pcs *BaiduPCS) UploadCreateSuperFile(uploadid, policy string, fileSize int
 
 // GetRandomPCSHost 随机获取一个可用的pcs地址
 func (pcs *BaiduPCS) GetRandomPCSHost() (pcsError pcserror.Error, pcsHost string) {
+	return pcs.GetRandomPCSHostWithContext(context.Background())
+}
+
+// GetRandomPCSHostWithContext discovers a server without detaching cancellation.
+func (pcs *BaiduPCS) GetRandomPCSHostWithContext(ctx context.Context) (pcsError pcserror.Error, pcsHost string) {
+	if ctx.Err() != nil {
+		canceled := pcserror.NewPCSErrorInfo(OperationGetPCSServer)
+		canceled.SetNetError(ctx.Err())
+		return canceled, ""
+	}
 	if pcs.fixPCSAddr {
 		return
 	}
-	dataReadCloser, pcsError := pcs.PreparePCSServers()
+	dataReadCloser, pcsError := pcs.PreparePCSServersWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -236,6 +257,10 @@ func (pcs *BaiduPCS) GetRandomPCSHost() (pcsError pcserror.Error, pcsHost string
 		PCSErrInfo: pcserror.NewPCSErrorInfo(OperationGetPCSServer),
 	}
 	pcsError = pcserror.HandleJSONParse(OperationGetPCSServer, dataReadCloser, pcsInfo)
+	if ctx.Err() != nil {
+		pcsInfo.SetNetError(ctx.Err())
+		return pcsInfo.PCSErrInfo, ""
+	}
 	if pcsError != nil {
 		return
 	}
