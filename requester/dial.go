@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires/cachemap"
-	"github.com/rs/dnscache"
 	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -36,12 +34,9 @@ var (
 
 	tcpCache = cachemap.GlobalCacheOpMap.LazyInitCachePoolOp("requester/tcp")
 
-	// dnsResolver 通过 singleflight 合并同 host 查询；dnsLookupMu 串行化对标准库解析器的调用，
-	// 避免并发 Lookup 时在 tryOneName 路径触发 panic。
-	dnsResolver = &dnscache.Resolver{
-		Timeout: 30 * time.Second,
-	}
-	dnsLookupMu sync.Mutex
+	// The host cache below handles expiration and coalescing; resolver calls
+	// remain serialized and keep the caller's cancellation context.
+	dnsResolver = &serialDNSResolver{resolver: net.DefaultResolver, gate: make(chan struct{}, 1)}
 )
 
 // SetLocalTCPAddrList 设置网卡地址
@@ -141,21 +136,17 @@ func getServerName(address string) string {
 // resolveTCPHost
 // 解析的tcpaddr没有port!!!
 func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// host 已是字面量 IP 时直接返回，无需 DNS 查询
 	if parsed := net.ParseIP(host); parsed != nil {
 		return parsed, nil
 	}
 
-	// 标准库 DNS 偶发 panic 时转为 error，避免进程崩溃
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("dns lookup panic for %q: %v", host, r)
-		}
-	}()
-
-	dnsLookupMu.Lock()
-	addrs, lookupErr := dnsResolver.LookupHost(ctx, host)
-	dnsLookupMu.Unlock()
+	lookupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	addrs, lookupErr := dnsResolver.LookupHost(lookupCtx, host)
 	if lookupErr != nil {
 		return nil, lookupErr
 	}
@@ -180,7 +171,7 @@ func dialContext(ctx context.Context, network, address string) (conn net.Conn, e
 		if err != nil {
 			return nil, err
 		}
-		data, err := cachemap.GlobalCacheOpMap.CacheOperationWithError("requester/tcp", host, func() (expires.DataExpires, error) {
+		data, err := cachemap.GlobalCacheOpMap.CacheOperationWithContext(ctx, "requester/tcp", host, func() (expires.DataExpires, error) {
 			ip, err := resolveTCPHost(ctx, host)
 			if err != nil {
 				return nil, err

@@ -1,6 +1,7 @@
 package cachemap
 
 import (
+	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"sync"
 )
@@ -111,25 +112,35 @@ func (cu *cacheUnit) Store(key interface{}, value expires.DataExpires) {
 }
 
 func (cu *cacheUnit) LockKey(key interface{}) {
-	muItf, _ := cu.keyMap.LoadOrStore(key, &sync.Mutex{})
-	mu := muItf.(*sync.Mutex)
-	mu.Lock()
+	_ = cu.lockKeyContext(context.Background(), key)
+}
+
+func (cu *cacheUnit) lockKeyContext(ctx context.Context, key interface{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	gateItf, _ := cu.keyMap.LoadOrStore(key, make(chan struct{}, 1))
+	gate := gateItf.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (cu *cacheUnit) UnlockKey(key interface{}) {
 	// 修复: 只检查已存在的key，避免创建新mutex
-	muItf, exists := cu.keyMap.Load(key)
+	gateItf, exists := cu.keyMap.Load(key)
 	if !exists {
 		return // key不存在说明从未lock过，安全返回
 	}
-	mu := muItf.(*sync.Mutex)
-
-	// 添加panic恢复机制，防止程序崩溃
-	defer func() {
-		if r := recover(); r != nil {
-			// 静默处理unlock错误，避免程序终止
-			return
-		}
-	}()
-	mu.Unlock()
+	select {
+	case <-gateItf.(chan struct{}):
+	default:
+	}
 }

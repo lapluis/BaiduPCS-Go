@@ -61,3 +61,47 @@ func TestTCPDialPreservesHostBinding(t *testing.T) {
 	}
 	conn.Close()
 }
+
+func TestTCPDialCancellationWhileWaitingForCache(t *testing.T) {
+	host := "dial-cache-wait-fixture.invalid"
+	SetTCPHostBind(host, "127.0.0.1")
+	defer tcpCache.Delete(host)
+	tcpCache.LockKey(host)
+	defer tcpCache.UnlockKey(host)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := dialContext(ctx, "tcp", net.JoinHostPort(host, "1"))
+		if conn != nil {
+			conn.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dial ignored cancellation while waiting for host cache")
+	}
+}
+
+func TestResolveTCPHostCancellationWhileWaitingForDNS(t *testing.T) {
+	gate := dnsResolver.gate
+	gate <- struct{}{}
+	defer func() { <-gate }()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := resolveTCPHost(ctx, "resolve-wait-fixture.invalid"); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DNS ignored cancellation while waiting for lookup slot")
+	}
+}
