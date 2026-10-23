@@ -105,10 +105,20 @@ func (mr *MultipartReader) CloseMultipart() error {
 
 	readers := make([]io.Reader, 0, numReaders)
 	readers = append(readers, strings.NewReader(mr.formBody))
+	partCount := 0
+	separator := func() {
+		if partCount > 0 {
+			readers = append(readers, strings.NewReader("\r\n"))
+			atomic.AddInt64(&mr.length, 2)
+		}
+		partCount++
+	}
 	for k := range mr.parts {
+		separator()
 		readers = append(readers, strings.NewReader(mr.parts[k].form), mr.parts[k].readerlen)
 	}
 	for k := range mr.part64s {
+		separator()
 		readers = append(readers, strings.NewReader(mr.part64s[k].form), mr.part64s[k].readerlen64)
 	}
 	readers = append(readers, strings.NewReader(mr.formClose))
