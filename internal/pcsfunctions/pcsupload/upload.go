@@ -34,10 +34,13 @@ var (
 func getUploadClient(jar http.CookieJar) *requester.HTTPClient {
 	uploadClientOnce.Do(func() {
 		uploadClient = pcsconfig.Config.PCSHTTPClient()
-		uploadClient.SetCookiejar(jar)
 		uploadClient.SetTimeout(200 * time.Second)
 	})
-	return uploadClient
+	// Keep the transport pooled, but never share mutable account state between
+	// requests. Updating the global client's jar would race with other accounts.
+	client := *uploadClient
+	client.SetCookiejar(jar)
+	return &client
 }
 
 var pcsPeriod = 256 // 上传多少个分片更换一次pcsHost
