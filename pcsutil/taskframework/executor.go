@@ -36,7 +36,7 @@ func (te *TaskExecutor) lazyInit() {
 	if te.parallel < 1 {
 		te.parallel = 1
 	}
-	if te.IsFailedDeque {
+	if te.IsFailedDeque && te.failedDeque == nil {
 		te.failedDeque = lane.NewDeque()
 	}
 }
