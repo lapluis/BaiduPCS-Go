@@ -78,6 +78,9 @@ func (muer *MultiUploader) SetInstanceState(is *InstanceState) {
 }
 
 func (muer *MultiUploader) lazyInit() {
+	if muer.instanceState == nil {
+		muer.instanceState = &InstanceState{}
+	}
 	if muer.finished == nil {
 		muer.finished = make(chan struct{}, 1)
 	}
@@ -124,6 +127,10 @@ func (muer *MultiUploader) Execute() {
 	}
 
 	// 分配任务
+	if err := validateUploadState(muer.instanceState, muer.file.Len()); err != nil {
+		muer.finish(err)
+		return
+	}
 	if muer.instanceState != nil && len(muer.instanceState.BlockList) > 0 {
 		muer.workers = muer.getWorkerListByInstanceState(muer.instanceState)
 		uploaderVerbose.Infof("upload task CREATED from instance state\n")
@@ -142,7 +149,10 @@ func (muer *MultiUploader) Execute() {
 	muer.uploadStatusEvent()
 
 	err := muer.upload()
+	muer.finish(err)
+}
 
+func (muer *MultiUploader) finish(err error) {
 	// 完成
 	muer.finished <- struct{}{}
 	if err != nil {
@@ -169,9 +179,13 @@ func (muer *MultiUploader) InstanceState() *InstanceState {
 			CheckSum: wer.checksum,
 		})
 	}
+	uploadID := ""
+	if muer.instanceState != nil {
+		uploadID = muer.instanceState.Uploadid
+	}
 	return &InstanceState{
 		BlockList: blockStates,
-		Uploadid:  muer.instanceState.Uploadid,
+		Uploadid:  uploadID,
 	}
 }
 
