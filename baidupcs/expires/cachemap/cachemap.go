@@ -24,6 +24,14 @@ func (cm *CacheOpMap) RemoveCachePoolOp(op string) {
 	cm.cachePool.Delete(op)
 }
 
+// InvalidateKeys removes matching entries and prevents pending CacheOperation
+// calls from repopulating this pool with responses obtained before invalidation.
+// Unrelated stored entries remain cached; unrelated pending responses may need
+// to be fetched again. The predicate must not call back into this cache pool.
+func (cm *CacheOpMap) InvalidateKeys(op string, match func(interface{}) bool) {
+	cm.LazyInitCachePoolOp(op).(*cacheUnit).invalidateKeys(match)
+}
+
 // ClearInvalidate 清除已过期的数据(一般用不到)
 func (cm *CacheOpMap) ClearInvalidate() {
 	cm.cachePool.Range(func(_, cacheItf interface{}) bool {

@@ -17,14 +17,47 @@ type (
 	}
 
 	cacheUnit struct {
-		unit   sync.Map
-		keyMap sync.Map
+		unit      sync.Map
+		keyMap    sync.Map
+		publishMu sync.Mutex
+		revision  uint64
 	}
+	cacheEntry struct{ value expires.DataExpires }
 )
+
+func (cu *cacheUnit) currentRevision() uint64 {
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	return cu.revision
+}
+
+func (cu *cacheUnit) storeAtRevision(key interface{}, value expires.DataExpires, revision uint64) {
+	if value == nil || value.IsExpires() {
+		return
+	}
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	if revision == cu.revision {
+		cu.unit.Store(key, &cacheEntry{value: value})
+	}
+}
+
+func (cu *cacheUnit) invalidateKeys(match func(interface{}) bool) {
+	cu.publishMu.Lock()
+	defer cu.publishMu.Unlock()
+	cu.revision++
+	cu.unit.Range(func(key, _ interface{}) bool {
+		if match(key) {
+			cu.unit.Delete(key)
+		}
+		return true
+	})
+}
 
 func (cu *cacheUnit) Delete(key interface{}) {
 	cu.unit.Delete(key)
-	cu.keyMap.Delete(key)
+	// A key lock may still be held or have waiters. Replacing it would split
+	// callers across different mutexes and strand the original lock.
 }
 
 func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) {
@@ -32,9 +65,10 @@ func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) 
 	if !ok {
 		return nil, ok
 	}
-	exp := val.(expires.DataExpires)
+	entry := val.(*cacheEntry)
+	exp := entry.value
 	if exp.IsExpires() {
-		cu.unit.Delete(key)
+		cu.unit.CompareAndDelete(key, entry)
 		return nil, false
 	}
 	return exp, ok
@@ -42,30 +76,38 @@ func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) 
 
 func (cu *cacheUnit) Range(f func(key interface{}, value expires.DataExpires) bool) {
 	cu.unit.Range(func(k, val interface{}) bool {
-		exp := val.(expires.DataExpires)
+		entry := val.(*cacheEntry)
+		exp := entry.value
 		if exp.IsExpires() {
-			cu.unit.Delete(k)
+			cu.unit.CompareAndDelete(k, entry)
 			return true
 		}
-		return f(k, val.(expires.DataExpires))
+		return f(k, exp)
 	})
 }
 
 func (cu *cacheUnit) LoadOrStore(key interface{}, value expires.DataExpires) (actual expires.DataExpires, loaded bool) {
-	ac, loaded := cu.unit.LoadOrStore(key, value)
-	exp := ac.(expires.DataExpires)
-	if exp.IsExpires() {
-		cu.unit.Delete(key)
-		return nil, false
+	if value == nil || value.IsExpires() {
+		return cu.Load(key)
 	}
-	return exp, loaded
+	for {
+		ac, loaded := cu.unit.LoadOrStore(key, &cacheEntry{value: value})
+		entry := ac.(*cacheEntry)
+		if !entry.value.IsExpires() {
+			return entry.value, loaded
+		}
+		cu.unit.CompareAndDelete(key, entry)
+		if value.IsExpires() {
+			return nil, false
+		}
+	}
 }
 
 func (cu *cacheUnit) Store(key interface{}, value expires.DataExpires) {
-	if value.IsExpires() {
+	if value == nil || value.IsExpires() {
 		return
 	}
-	cu.unit.Store(key, value)
+	cu.unit.Store(key, &cacheEntry{value: value})
 }
 
 func (cu *cacheUnit) LockKey(key interface{}) {

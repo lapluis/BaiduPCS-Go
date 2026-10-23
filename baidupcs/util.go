@@ -114,7 +114,7 @@ func mergeInt64List(si ...int64) string {
 
 func allRelatedDir(pcspaths []string) (dirs []string) {
 	for _, pcspath := range pcspaths {
-		pathDir := path.Dir(pcspath)
+		pathDir := path.Dir(directoryCachePath(pcspath))
 		if !pcsutil.ContainsString(dirs, pathDir) {
 			dirs = append(dirs, pathDir)
 		}

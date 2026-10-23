@@ -5,16 +5,20 @@ import (
 	"github.com/oleiade/lane"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type (
 	TaskExecutor struct {
-		incr     *incremental.Int // 任务id生成
-		deque    *lane.Deque      // 队列
-		parallel int              // 任务的最大并发量
-		stopped  int32            // 停止标志, 置位后不再派发新任务
+		incr      *incremental.Int // 任务id生成
+		deque     *lane.Deque      // 队列
+		parallel  int              // 任务的最大并发量
+		stopped   int32            // 停止标志, 置位后不再派发新任务
+		stopInit  sync.Once
+		stopClose sync.Once
+		stopChan  chan struct{}
 
 		// 是否统计失败队列
 		IsFailedDeque bool
@@ -36,7 +40,7 @@ func (te *TaskExecutor) lazyInit() {
 	if te.parallel < 1 {
 		te.parallel = 1
 	}
-	if te.IsFailedDeque {
+	if te.IsFailedDeque && te.failedDeque == nil {
 		te.failedDeque = lane.NewDeque()
 	}
 }
@@ -93,6 +97,12 @@ func (te *TaskExecutor) Execute() {
 			// 获取任务
 			task := e.(*TaskInfoItem)
 			wg.AddDelta()
+			// Acquiring a parallel slot may have blocked while Stop was called.
+			if te.Stopped() {
+				te.deque.Prepend(task)
+				wg.Done()
+				break
+			}
 
 			go func(task *TaskInfoItem) {
 				defer wg.Done()
@@ -132,8 +142,13 @@ func (te *TaskExecutor) Execute() {
 					task.Unit.OnRetry(result) // 调用重试
 					task.Unit.OnComplete(result)
 
-					time.Sleep(task.Unit.RetryWait()) // 等待
-					te.deque.Append(task)             // 重新加入队列末尾
+					timer := time.NewTimer(task.Unit.RetryWait())
+					select {
+					case <-timer.C:
+					case <-te.stopSignal():
+					}
+					timer.Stop()
+					te.deque.Append(task) // 重新加入队列末尾
 					return
 				}
 
@@ -168,6 +183,12 @@ func (te *TaskExecutor) FailedDeque() *lane.Deque {
 //Stop 停止执行: 不再派发新任务, 已在执行的任务继续运行直至完成
 func (te *TaskExecutor) Stop() {
 	atomic.StoreInt32(&te.stopped, 1)
+	te.stopClose.Do(func() { close(te.stopSignal()) })
+}
+
+func (te *TaskExecutor) stopSignal() chan struct{} {
+	te.stopInit.Do(func() { te.stopChan = make(chan struct{}) })
+	return te.stopChan
 }
 
 //Stopped 返回是否已请求停止
