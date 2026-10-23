@@ -12,6 +12,39 @@ type callbackUnit struct {
 	run func()
 }
 
+type waitingRetryUnit struct {
+	completedUnit
+	waiting chan struct{}
+}
+
+func (u *waitingRetryUnit) Run() *taskframework.TaskUnitRunResult {
+	return &taskframework.TaskUnitRunResult{NeedRetry: true}
+}
+func (u *waitingRetryUnit) OnRetry(*taskframework.TaskUnitRunResult) { close(u.waiting) }
+func (u *waitingRetryUnit) RetryWait() time.Duration                 { return time.Hour }
+
+func TestStopInterruptsRetryDelay(t *testing.T) {
+	executor := taskframework.NewTaskExecutor()
+	waiting, finished := make(chan struct{}), make(chan struct{})
+	executor.Append(&waitingRetryUnit{waiting: waiting}, 1)
+	go func() { executor.Execute(); close(finished) }()
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not start")
+	}
+	executor.Stop()
+	executor.Stop()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not interrupt retry delay")
+	}
+	if executor.Count() != 1 {
+		t.Fatal("pending retry lost")
+	}
+}
+
 func (u *callbackUnit) Run() *taskframework.TaskUnitRunResult {
 	u.run()
 	return &taskframework.TaskUnitRunResult{Succeed: true}
