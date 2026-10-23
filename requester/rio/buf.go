@@ -1,6 +1,8 @@
 package rio
 
 import (
+	"errors"
+	"io"
 	"unsafe"
 )
 
@@ -17,16 +19,38 @@ func NewBuffer(buf []byte) *Buffer {
 }
 
 // ReadAt 实现 io.ReadAt 接口
-// 不进行越界检查
 func (b *Buffer) ReadAt(p []byte, off int64) (n int, err error) {
+	if off < 0 {
+		return 0, errors.New("rio: negative buffer offset")
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off >= int64(len(b.Buf)) {
+		return 0, io.EOF
+	}
 	n = copy(p, b.Buf[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
 	return n, nil
 }
 
 // WriteAt 实现 io.WriterAt 接口
-// 不进行越界检查
 func (b *Buffer) WriteAt(p []byte, off int64) (n int, err error) {
+	if off < 0 {
+		return 0, errors.New("rio: negative buffer offset")
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off >= int64(len(b.Buf)) {
+		return 0, io.ErrShortWrite
+	}
 	n = copy(b.Buf[off:], p)
+	if n < len(p) {
+		return n, io.ErrShortWrite
+	}
 	return n, nil
 }
 
