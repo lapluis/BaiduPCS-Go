@@ -76,6 +76,31 @@ func TestMultipartRejectsNegativePartLength(t *testing.T) {
 	}
 }
 
+func TestMultipartRejectsLengthOverflow(t *testing.T) {
+	baseline := NewMultipartReader()
+	baseline.AddFormFile("file", "a", declaredFile{strings.NewReader(""), 0})
+	if err := baseline.CloseMultipart(); err != nil {
+		t.Fatal(err)
+	}
+	boundary := NewMultipartReader()
+	boundary.AddFormFile("file", "a", declaredFile{strings.NewReader(""), (1<<63 - 1) - baseline.Len()})
+	if err := boundary.CloseMultipart(); err != nil || boundary.Len() != 1<<63-1 {
+		t.Fatal("valid maximum total length rejected", err)
+	}
+	for _, sizes := range [][]int64{{1<<63 - 1}, {1 << 62, 1 << 62}} {
+		mr := NewMultipartReader()
+		for _, size := range sizes {
+			mr.AddFormFile("file", "a", declaredFile{strings.NewReader(""), size})
+		}
+		if err := mr.CloseMultipart(); err == nil {
+			t.Fatal("overflowing multipart length accepted")
+		}
+		if _, err := mr.Read(make([]byte, 1)); err == nil {
+			t.Fatal("invalid body became readable")
+		}
+	}
+}
+
 func TestMultipartPartsRemainSeparate(t *testing.T) {
 	mr := NewMultipartReader()
 	mr.AddFormField("first", strings.NewReader("alpha"))

@@ -106,19 +106,36 @@ func (mr *MultipartReader) CloseMultipart() error {
 	if mr.closed {
 		return errors.New("multipartreader already closed")
 	}
+	mr.formClose = "\r\n--" + mr.boundary + "--\r\n"
+	total := int64(len(mr.formBody))
+	add := func(size int64) bool {
+		if size < 0 || size > (1<<63-1)-total {
+			return false
+		}
+		total += size
+		return true
+	}
+	count := 0
+	addPart := func(header string, size int64) bool {
+		if count > 0 && !add(2) {
+			return false
+		}
+		count++
+		return add(int64(len(header))) && add(size)
+	}
 	for _, part := range mr.parts {
-		if part.size < 0 {
-			return errors.New("multipartreader: negative part length")
+		if !addPart(part.form, part.size) {
+			return errors.New("multipartreader: invalid or overflowing length")
 		}
 	}
 	for _, part := range mr.part64s {
-		if part.size < 0 {
-			return errors.New("multipartreader: negative part length")
+		if !addPart(part.form, part.size) {
+			return errors.New("multipartreader: invalid or overflowing length")
 		}
 	}
-
-	mr.formClose = "\r\n--" + mr.boundary + "--\r\n"
-	atomic.AddInt64(&mr.length, int64(len(mr.formClose)))
+	if !add(int64(len(mr.formClose))) {
+		return errors.New("multipartreader: overflowing length")
+	}
 
 	numReaders := 0
 	if mr.formBody != "" {
@@ -135,7 +152,6 @@ func (mr *MultipartReader) CloseMultipart() error {
 	separator := func() {
 		if partCount > 0 {
 			readers = append(readers, strings.NewReader("\r\n"))
-			atomic.AddInt64(&mr.length, 2)
 		}
 		partCount++
 	}
@@ -149,6 +165,7 @@ func (mr *MultipartReader) CloseMultipart() error {
 	}
 	readers = append(readers, strings.NewReader(mr.formClose))
 	mr.multiReader = io.MultiReader(readers...)
+	atomic.StoreInt64(&mr.length, total)
 
 	mr.closed = true
 	return nil
