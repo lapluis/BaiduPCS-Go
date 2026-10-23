@@ -59,8 +59,13 @@ func NewMultipartReader() (mr *MultipartReader) {
 	return
 }
 
-// AddFormField 增加 form 表单
+// AddFormField 增加 form 表单。封装完成后忽略新增字段。
 func (mr *MultipartReader) AddFormField(fieldname string, readerlen rio.ReaderLen) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if mr.closed {
+		return
+	}
 	if readerlen == nil {
 		return
 	}
@@ -74,8 +79,13 @@ func (mr *MultipartReader) AddFormField(fieldname string, readerlen rio.ReaderLe
 	mr.parts = append(mr.parts, mpart)
 }
 
-// AddFormFile 增加 form 文件表单
+// AddFormFile 增加 form 文件表单。封装完成后忽略新增字段。
 func (mr *MultipartReader) AddFormFile(fieldname, filename string, readerlen64 rio.ReaderLen64) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if mr.closed {
+		return
+	}
 	if readerlen64 == nil {
 		return
 	}
@@ -95,6 +105,16 @@ func (mr *MultipartReader) CloseMultipart() error {
 	defer mr.mu.Unlock()
 	if mr.closed {
 		return errors.New("multipartreader already closed")
+	}
+	for _, part := range mr.parts {
+		if part.size < 0 {
+			return errors.New("multipartreader: negative part length")
+		}
+	}
+	for _, part := range mr.part64s {
+		if part.size < 0 {
+			return errors.New("multipartreader: negative part length")
+		}
 	}
 
 	mr.formClose = "\r\n--" + mr.boundary + "--\r\n"
@@ -140,6 +160,8 @@ func (mr *MultipartReader) ContentType() string {
 }
 
 func (mr *MultipartReader) Read(p []byte) (n int, err error) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
 	if !mr.closed {
 		return 0, errors.New("multipartreader not closed")
 	}

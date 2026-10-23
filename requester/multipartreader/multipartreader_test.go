@@ -50,6 +50,32 @@ func TestMultipartRequiresDeclaredPartLength(t *testing.T) {
 	}
 }
 
+func TestMultipartClosedBodyCannotBeChanged(t *testing.T) {
+	mr := NewMultipartReader()
+	mr.AddFormField("first", strings.NewReader("value"))
+	if err := mr.CloseMultipart(); err != nil {
+		t.Fatal(err)
+	}
+	length := mr.Len()
+	mr.AddFormField("late", strings.NewReader("extra"))
+	mr.AddFormFile("late-file", "a", fileReader{strings.NewReader("extra")})
+	if mr.Len() != length {
+		t.Fatal("closed body's content length changed")
+	}
+	body, err := io.ReadAll(mr)
+	if err != nil || int64(len(body)) != length {
+		t.Fatal("closed body length incorrect")
+	}
+}
+
+func TestMultipartRejectsNegativePartLength(t *testing.T) {
+	mr := NewMultipartReader()
+	mr.AddFormFile("file", "a", declaredFile{strings.NewReader("abc"), -1})
+	if err := mr.CloseMultipart(); err == nil {
+		t.Fatal("negative part size accepted")
+	}
+}
+
 func TestMultipartPartsRemainSeparate(t *testing.T) {
 	mr := NewMultipartReader()
 	mr.AddFormField("first", strings.NewReader("alpha"))
