@@ -2,6 +2,7 @@ package pcsupload
 
 import (
 	"errors"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -48,6 +49,7 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 	}
 	info, err := file.Stat()
 	if err != nil {
+		file.Close()
 		return nil, err
 	}
 
@@ -57,9 +59,25 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 
 	err = jsonhelper.UnmarshalData(file, ud)
 	if err != nil {
-		_, err = file.Write([]byte(""))
-		if err != nil {
-			return nil, err
+		file.Close()
+		return nil, fmt.Errorf("decode upload resume database: %w", err)
+	}
+	for _, entry := range ud.UploadingList {
+		if entry == nil {
+			continue
+		}
+		if entry.State == nil {
+			if entry.LocalFileMeta != nil && entry.BlocksList != nil {
+				file.Close()
+				return nil, errors.New("invalid upload resume database: block checksums without upload state")
+			}
+			continue
+		}
+		for _, block := range entry.State.BlockList {
+			if block == nil {
+				file.Close()
+				return nil, errors.New("invalid upload resume database: null block")
+			}
 		}
 	}
 
@@ -108,7 +126,7 @@ func (ud *UploadingDatabase) UpdateUploading(meta *checksum.LocalFileMeta, state
 	}
 	meta.CompleteAbsPath()
 	for k, uploading := range ud.UploadingList {
-		if uploading.LocalFileMeta == nil {
+		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 		if uploading.LocalFileMeta.EqualLengthMD5(meta) || uploading.LocalFileMeta.Path == meta.Path {
@@ -132,7 +150,7 @@ func (ud *UploadingDatabase) UpdateFullBlock(meta *checksum.LocalFileMeta, state
 	}
 	meta.CompleteAbsPath()
 	for k, uploading := range ud.UploadingList {
-		if uploading.LocalFileMeta == nil {
+		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 		if uploading.LocalFileMeta.EqualLengthMD5(meta) || uploading.LocalFileMeta.Path == meta.Path {
@@ -160,7 +178,7 @@ func (ud *UploadingDatabase) Delete(meta *checksum.LocalFileMeta) bool {
 	}
 	meta.CompleteAbsPath()
 	for k, uploading := range ud.UploadingList {
-		if uploading.LocalFileMeta == nil {
+		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 		if uploading.LocalFileMeta.EqualLengthMD5(meta) || uploading.LocalFileMeta.Path == meta.Path {
@@ -180,7 +198,7 @@ func (ud *UploadingDatabase) Search(meta *checksum.LocalFileMeta) *uploader.Inst
 	meta.CompleteAbsPath()
 	ud.clearModTimeChange()
 	for _, uploading := range ud.UploadingList {
-		if uploading.LocalFileMeta == nil {
+		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 		if uploading.BlocksList == nil && (uploading.State == nil || uploading.State.Uploadid == "") {
@@ -211,7 +229,7 @@ func (ud *UploadingDatabase) clearModTimeChange() {
 	defer ud.lock.Unlock()
 	for i := 0; i < len(ud.UploadingList); i++ {
 		uploading := ud.UploadingList[i]
-		if uploading.LocalFileMeta == nil {
+		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 
