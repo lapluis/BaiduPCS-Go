@@ -16,7 +16,6 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"net/http"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -210,44 +209,8 @@ func CheckUpdate(version string, yes bool) {
 		return
 	}
 
-	execPath := pcsutil.ExecutablePath()
-
-	var fileNum, errTimes int
-	for _, zipFile := range reader.File {
-		if zipFile == nil {
-			continue
-		}
-
-		info := zipFile.FileInfo()
-
-		if info.IsDir() {
-			continue
-		}
-
-		rc, err := zipFile.Open()
-		if err != nil {
-			fmt.Printf("解析 zip 文件错误: %s\n", err)
-			continue
-		}
-
-		fileNum++
-
-		name := zipFile.Name[strings.Index(zipFile.Name, "/")+1:]
-		if name == "BaiduPCS-Go" {
-			err = update(pcsutil.Executable(), rc)
-		} else {
-			err = update(filepath.Join(execPath, name), rc)
-		}
-
-		if err != nil {
-			errTimes++
-			fmt.Printf("发生错误, zip 路径: %s, 错误: %s\n", zipFile.Name, err)
-			continue
-		}
-	}
-
-	if errTimes == fileNum {
-		fmt.Printf("更新失败\n")
+	if err := installArchive(reader, pcsutil.ExecutablePath(), pcsutil.Executable()); err != nil {
+		fmt.Printf("更新失败: %s\n", err)
 		return
 	}
 
