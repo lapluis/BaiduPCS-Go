@@ -83,8 +83,8 @@ const (
 )
 
 var (
-    panClient     *requester.HTTPClient
-    panClientOnce sync.Once
+	panClient     *requester.HTTPClient
+	panClientOnce sync.Once
 )
 
 func (dtu *DownloadTaskUnit) SetTaskInfo(info *taskframework.TaskInfo) {
@@ -248,22 +248,22 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 
 // panHTTPClient 获取包含特定User-Agent的HTTPClient
 func (dtu *DownloadTaskUnit) panHTTPClient() *requester.HTTPClient {
-    panClientOnce.Do(func() {
-        panClient = pcsconfig.Config.PanHTTPClient()
-        panClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-            // 去掉 Referer
-            if !pcsconfig.Config.EnableHTTPS {
-                req.Header.Del("Referer")
-            }
-            if len(via) >= 10 {
-                return errors.New("stopped after 10 redirects")
-            }
-            return nil
-        }
-        panClient.SetTimeout(6 * time.Minute)
-        panClient.SetKeepAlive(true)
-    })
-    return panClient
+	panClientOnce.Do(func() {
+		panClient = pcsconfig.Config.PanHTTPClient()
+		panClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			// 去掉 Referer
+			if !pcsconfig.Config.EnableHTTPS {
+				req.Header.Del("Referer")
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		}
+		panClient.SetTimeout(6 * time.Minute)
+		panClient.SetKeepAlive(true)
+	})
+	return panClient
 }
 
 func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult) {
@@ -450,6 +450,31 @@ func (dtu *DownloadTaskUnit) RetryWait() time.Duration {
 	return pcsfunctions.RetryWait(dtu.taskInfo.Retry())
 }
 
+func createEmptyDownloadFile(filename string, overwrite bool) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0777); err != nil {
+		return err
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
+	if overwrite {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	file, err := os.OpenFile(filename, flags, 0666)
+	if err != nil {
+		if !overwrite && os.IsExist(err) {
+			info, statErr := os.Stat(filename)
+			if statErr != nil {
+				return statErr
+			}
+			if info.Mode().IsRegular() {
+				return nil
+			}
+			return &os.PathError{Op: "create", Path: filename, Err: errors.New("target is not a regular file")}
+		}
+		return err
+	}
+	return file.Close()
+}
+
 func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	result = &taskframework.TaskUnitRunResult{}
 	// 获取文件信息
@@ -475,7 +500,12 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	// 如果是一个目录, 将子文件和子目录加入队列
 	if dtu.FileInfo.Isdir {
 		if !dtu.Cfg.IsTest { // 测试下载, 不建立空目录
-			os.MkdirAll(dtu.SavePath, 0777) // 首先在本地创建目录, 保证空目录也能被保存
+			if err := os.MkdirAll(dtu.SavePath, 0777); err != nil {
+				result.ResultMessage = StrDownloadInitError
+				result.Err = err
+				dtu.handleError(result)
+				return
+			}
 		}
 
 		// 获取该目录下的文件列表
@@ -507,7 +537,12 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	if dtu.FileInfo.Size == 0 {
 		if !dtu.Cfg.IsTest {
-			os.Create(dtu.SavePath)
+			if err := createEmptyDownloadFile(dtu.SavePath, dtu.IsOverwrite); err != nil {
+				result.ResultMessage = StrDownloadInitError
+				result.Err = err
+				dtu.handleError(result)
+				return
+			}
 		}
 		result.Succeed = true // 执行成功
 		return
