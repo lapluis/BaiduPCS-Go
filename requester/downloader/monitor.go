@@ -6,6 +6,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type (
 		err             error
 		resetController *ResetController
 		isReloadWorker  bool //是否重载worker, 单线程模式不重载
+		paused          atomic.Bool
 
 		// 临时变量
 		lastAvaliableIndex int
@@ -175,6 +177,9 @@ func (mt *Monitor) allWorkersCompleted() bool {
 
 // ResetFailedAndNetErrorWorkers 重设部分网络错误的worker
 func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
+	if mt.paused.Load() {
+		return
+	}
 	for k := range mt.workers {
 		if !mt.resetController.CanReset() {
 			continue
@@ -208,6 +213,7 @@ func (mt *Monitor) RangeWorker(f RangeWorkerFunc) {
 
 // Pause 暂停所有的下载
 func (mt *Monitor) Pause() {
+	mt.paused.Store(true)
 	for k := range mt.workers {
 		mt.workers[k].Pause()
 	}
@@ -215,6 +221,7 @@ func (mt *Monitor) Pause() {
 
 // Resume 恢复所有的下载
 func (mt *Monitor) Resume() {
+	mt.paused.Store(false)
 	for k := range mt.workers {
 		mt.workers[k].Resume()
 	}
@@ -222,6 +229,9 @@ func (mt *Monitor) Resume() {
 
 // TryAddNewWork 尝试加入新range
 func (mt *Monitor) TryAddNewWork() {
+	if mt.paused.Load() {
+		return
+	}
 	if mt.status == nil {
 		return
 	}
@@ -256,11 +266,14 @@ func (mt *Monitor) TryAddNewWork() {
 
 // DynamicSplitWorker 动态分配线程
 func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
+	if mt.paused.Load() {
+		return
+	}
 	if !mt.resetController.CanReset() {
 		return
 	}
 
-	switch worker.status.statusCode {
+	switch worker.status.StatusCode() {
 	case StatusCodeDownloading, StatusCodeFailed, StatusCodeNetError:
 	//pass
 	default:
@@ -297,6 +310,9 @@ func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
 
 // ResetWorker 重设长时间无响应, 和下载速度为 0 的 Worker
 func (mt *Monitor) ResetWorker(worker *Worker) {
+	if mt.paused.Load() {
+		return
+	}
 	if !mt.resetController.CanReset() { //达到最大重载次数
 		return
 	}
