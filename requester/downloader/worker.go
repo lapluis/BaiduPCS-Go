@@ -256,12 +256,13 @@ func (wer *Worker) Execute() {
 	wer.resetFunc = resetFunc
 
 	header := map[string]string{}
+	requestBegin, requestEnd := wer.wrange.LoadBegin(), wer.wrange.LoadEnd()
 	if wer.referer != "" {
 		header["Referer"] = wer.referer
 	}
 	//检测是否支持range
 	if wer.acceptRanges != "" && wer.wrange.Len() >= 0 {
-		header["Range"] = fmt.Sprintf("%s=%d-%d", wer.acceptRanges, wer.wrange.LoadBegin(), wer.wrange.LoadEnd()-1)
+		header["Range"] = fmt.Sprintf("%s=%d-%d", wer.acceptRanges, requestBegin, requestEnd-1)
 	}
 
 	wer.status.statusCode = StatusCodePending
@@ -318,22 +319,35 @@ func (wer *Worker) Execute() {
 	)
 
 	if !single {
-		// 检查请求长度
-		if contentLength != rangeLength && wer.firstResp == nil { // 跳过检查第一个连接
-			wer.status.statusCode = StatusCodeNetError
-			wer.err = fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, rangeLength)
-			return
-		}
-		// 检查总大小
-		if wer.totalSize > 0 {
-			total := ParseContentRange(resp.Header.Get("Content-Range"))
-			if total > 0 {
-				if total != wer.totalSize {
-					wer.status.statusCode = StatusCodeInternalError // 这里设置为内部错误, 强制停止下载
-					wer.err = fmt.Errorf("Content-Range total length is unexpected: %d, need %d", total, wer.totalSize)
-					return
-				}
+		// An initial URL probe supplies a prefix from offset zero. Subsequent
+		// ranged responses must describe the exact interval sent in the request.
+		initialFull := wer.firstResp != nil && resp.StatusCode == http.StatusOK
+		expectedLength := requestEnd - requestBegin
+		if initialFull {
+			if requestBegin != 0 || contentLength != wer.totalSize || contentLength < requestEnd {
+				wer.status.statusCode = StatusCodeInternalError
+				wer.err = errors.New("initial full response does not cover requested range")
+				return
 			}
+		} else {
+			begin, end, total, ok := parseContentRangeBounds(resp.Header.Get("Content-Range"))
+			if resp.StatusCode != http.StatusPartialContent || !ok || begin != requestBegin || (wer.firstResp == nil && end != requestEnd-1) || (wer.firstResp != nil && requestBegin != 0) || (wer.totalSize > 0 && total != wer.totalSize) {
+				wer.status.statusCode = StatusCodeInternalError
+				wer.err = fmt.Errorf("unexpected Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), requestBegin, requestEnd-1, wer.totalSize)
+				return
+			}
+			// The URL probe may return only a prefix of the first block. Its
+			// own Content-Range must agree with its body length; the monitor
+			// can request the remainder after this response is consumed.
+			if wer.firstResp != nil {
+				expectedLength = end - begin + 1
+			}
+		}
+		// 检查请求长度
+		if contentLength != expectedLength && !initialFull {
+			wer.status.statusCode = StatusCodeNetError
+			wer.err = fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, expectedLength)
+			return
 		}
 	}
 
