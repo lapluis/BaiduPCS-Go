@@ -67,6 +67,17 @@ func (bfb *bufioFileBlock) Read(b []byte) (n int, err error) {
 	return bfb.bufio.Read(b) // 间接调用fileBlock 的Read
 }
 
+func (bfb *bufioFileBlock) Seek(offset int64, whence int) (int64, error) {
+	if whence == io.SeekCurrent {
+		offset -= int64(bfb.bufio.Buffered())
+	}
+	position, err := bfb.fileBlock.Seek(offset, whence)
+	if err == nil {
+		bfb.bufio.Reset(bfb.fileBlock)
+	}
+	return position, err
+}
+
 // Read 只允许一个线程读同一个文件
 func (fb *fileBlock) Read(b []byte) (n int, err error) {
 	fb.mu.Lock()
