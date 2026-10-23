@@ -51,7 +51,13 @@ func (c *PCSConfig) PanHTTPClient() *requester.HTTPClient {
 
 // NumLogins 获取登录的用户数量
 func (c *PCSConfig) NumLogins() int {
-	return len(c.BaiduUserList)
+	count := 0
+	for _, user := range c.BaiduUserList {
+		if user != nil {
+			count++
+		}
+	}
+	return count
 }
 
 // AverageParallel 返回平均的下载最大并发量

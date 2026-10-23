@@ -27,6 +27,10 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		fail bool
 	}{
 		{"help", []string{"--help"}, false},
+		{"sparse accounts", []string{"loglist"}, false},
+		{"switch sparse account", []string{"su"}, false},
+		{"switch null account", []string{"su"}, true},
+		{"logout without active account", []string{"logout", "-y"}, true},
 		{"valid combined settings", []string{"config", "set", "-appid", "42", "-cache_size", "64KB", "-max_download_rate", "2MB", "-max_upload_rate", "1MB", "-pcs_addr", "c1.pcs.baidu.com"}, false},
 		{"bad flag", []string{"--nonexistent-fixture-flag"}, true},
 		{"bad option value", []string{"config", "set", "-max_download_rate", "invalid-fixture-value"}, true},
@@ -52,13 +56,26 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 			}
 			configDir := t.TempDir()
 			configPath := filepath.Join(configDir, "pcs_config.json")
-			if err := os.WriteFile(configPath, []byte(`{"appid":266719,"user_agent":"fixture-original"}`), 0600); err != nil {
+			fixture := `{"appid":266719,"user_agent":"fixture-original"}`
+			if tc.name == "sparse accounts" || tc.name == "logout without active account" || strings.HasPrefix(tc.name, "switch ") {
+				fixture = `{"appid":266719,"user_agent":"fixture-original","baidu_user_list":[null,{"uid":7,"name":"fixture-user"}]}`
+			}
+			if tc.name == "switch sparse account" {
+				cmd.Stdin = strings.NewReader("1\n")
+			}
+			if tc.name == "switch null account" {
+				cmd.Stdin = strings.NewReader("0\n")
+			}
+			if err := os.WriteFile(configPath, []byte(fixture), 0600); err != nil {
 				t.Fatal(err)
 			}
 			cmd.Env = append(cmd.Env, "BAIDUPCS_GO_CONFIG_DIR="+configDir)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			err := cmd.Run()
+			if bytes.Contains(stderr.Bytes(), []byte("panic:")) {
+				t.Fatal("CLI panicked")
+			}
 			if tc.fail {
 				if err == nil {
 					t.Fatal("failed command returned success")
@@ -85,6 +102,21 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Fatalf("successful command failed: %v\n%s", err, stderr.String())
+			}
+			if tc.name == "switch sparse account" {
+				data, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var config struct {
+					UID uint64 `json:"baidu_active_uid"`
+				}
+				if err := json.Unmarshal(data, &config); err != nil {
+					t.Fatal(err)
+				}
+				if config.UID != 7 {
+					t.Fatal("displayed sparse account index was not selected")
+				}
 			}
 			if tc.name == "valid combined settings" {
 				data, err := os.ReadFile(configPath)

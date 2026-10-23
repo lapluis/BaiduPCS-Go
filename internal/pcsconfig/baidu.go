@@ -22,7 +22,7 @@ var (
 	ErrBaiduUserNotFound = errors.New("baidu user not found")
 )
 
-//BaiduBase Baidu基
+// BaiduBase Baidu基
 type BaiduBase struct {
 	UID  uint64 `json:"uid"`  // 百度ID对应的uid
 	Name string `json:"name"` // 真实ID
@@ -133,6 +133,9 @@ func (bl *BaiduUserList) String() string {
 	tb.SetHeader([]string{"#", "uid", "用户名", "性别", "age"})
 
 	for k, baiduInfo := range *bl {
+		if baiduInfo == nil {
+			continue
+		}
 		tb.Append([]string{strconv.Itoa(k), strconv.FormatUint(baiduInfo.UID, 10), baiduInfo.Name, baiduInfo.Sex, fmt.Sprint(baiduInfo.Age)})
 	}
 

@@ -537,11 +537,11 @@ func main() {
 						return nil
 					}
 
-					if n, err := strconv.Atoi(index); err == nil && n >= 0 && n < numLogins {
+					users := pcsconfig.Config.BaiduUserList
+					if n, err := strconv.Atoi(index); err == nil && n >= 0 && n < len(users) && users[n] != nil {
 						uid = pcsconfig.Config.BaiduUserList[n].UID
 					} else {
-						fmt.Printf("切换用户失败, 请检查 # 值是否正确\n")
-						return nil
+						return fmt.Errorf("切换用户失败, 请检查 # 值是否正确")
 					}
 				} else {
 					cli.ShowCommandHelp(c, c.Command.Name)
@@ -594,7 +594,7 @@ func main() {
 					UID: activeUser.UID,
 				})
 				if err != nil {
-					fmt.Printf("退出用户 %s, 失败, 错误: %s\n", activeUser.Name, err)
+					return fmt.Errorf("退出用户 %s, 失败: %w", activeUser.Name, err)
 				}
 
 				fmt.Printf("退出用户成功, %s\n", deletedUser.Name)
