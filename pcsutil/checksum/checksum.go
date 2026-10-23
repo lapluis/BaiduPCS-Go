@@ -4,6 +4,7 @@ package checksum
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -144,34 +145,42 @@ func (lfc *LocalFileChecksum) repeatRead(wus ...*ChecksumWriteUnit) (err error) 
 	lfc.initBuf()
 
 	defer func() {
-		_, err = lfc.file.Seek(0, os.SEEK_SET) // 恢复文件指针
-		if err != nil {
-			return
+		if _, seekErr := lfc.file.Seek(0, io.SeekStart); seekErr != nil {
+			err = errors.Join(err, seekErr)
 		}
 	}()
+	if _, err = lfc.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 
-	// 读文件
-	var (
-		n int
-	)
-read:
 	for {
-		n, err = lfc.file.Read(lfc.buf)
-		switch err {
-		case io.EOF:
-			err = lfc.writeChecksum(lfc.buf[:n], wus...)
-			break read
-		case nil:
-			err = lfc.writeChecksum(lfc.buf[:n], wus...)
-		default:
-			return
+		n, readErr := lfc.file.Read(lfc.buf)
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		writeErr := lfc.writeChecksum(lfc.buf[:n], wus...)
+		if writeErr == ErrChecksumWriteAllStop {
+			return nil
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+		if readErr == io.EOF {
+			// An exact boundary may require a final empty write to publish the
+			// completed digest. An unfinished unit means the file ended early.
+			writeErr = lfc.writeChecksum(nil, wus...)
+			if writeErr == ErrChecksumWriteAllStop {
+				return nil
+			}
+			if writeErr != nil {
+				return writeErr
+			}
+			return io.ErrUnexpectedEOF
+		}
+		if n == 0 {
+			return io.ErrNoProgress
 		}
 	}
-	switch err {
-	case ErrChecksumWriteAllStop: // 全部结束
-		err = nil
-	}
-	return
 }
 
 func (lfc *LocalFileChecksum) createChecksumWriteUnit(cw ChecksumWriter, isAll, isSlice bool, getSumFunc func(sliceSum interface{}, sum interface{})) (wu *ChecksumWriteUnit, deferFunc func(err error)) {
@@ -214,7 +223,7 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 		)
 
 		wus = append(wus, wu)
-		defer d(err)
+		defer func() { d(err) }()
 	}
 	if (checkSumFlag & CHECKSUM_CRC32) != 0 {
 		crc32w := crc32.NewIEEE()
@@ -230,7 +239,7 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 		)
 
 		wus = append(wus, wu)
-		defer d(err)
+		defer func() { d(err) }()
 	}
 
 	err = lfc.repeatRead(wus...)

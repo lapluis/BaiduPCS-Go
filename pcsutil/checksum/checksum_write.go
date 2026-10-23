@@ -43,11 +43,6 @@ func (wi *ChecksumWriteUnit) handleEnd() error {
 }
 
 func (wi *ChecksumWriteUnit) write(p []byte) (n int, err error) {
-	if wi.End <= 0 {
-		// do nothing
-		err = ErrChecksumWriteStop
-		return
-	}
 	err = wi.handleEnd()
 	if err != nil {
 		return
@@ -68,6 +63,9 @@ func (wi *ChecksumWriteUnit) write(p []byte) (n int, err error) {
 	if err != nil {
 		return
 	}
+	if n != i {
+		return n, io.ErrShortWrite
+	}
 	wi.ptr += int64(n)
 	if left < int64(lenP) {
 		err = wi.handleEnd()
@@ -77,6 +75,9 @@ func (wi *ChecksumWriteUnit) write(p []byte) (n int, err error) {
 }
 
 func (wi *ChecksumWriteUnit) Write(p []byte) (n int, err error) {
+	if wi.End == 0 && wi.SliceEnd > 0 {
+		wi.SliceSum = wi.ChecksumWriter.Sum()
+	}
 	if wi.SliceEnd <= 0 { // 忽略Slice
 		// 读取全部
 		n, err = wi.write(p)
@@ -116,6 +117,9 @@ func (wi *ChecksumWriteUnit) Write(p []byte) (n int, err error) {
 			return
 		}
 		wi.SliceSum = wi.ChecksumWriter.Sum().([]byte)
+		if wi.OnlySliceSum {
+			return n, ErrChecksumWriteStop
+		}
 		n2, err = wi.write(p[sliceLeft:])
 		n += n2
 		if err != nil {
