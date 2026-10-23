@@ -57,7 +57,10 @@ func (muer *MultiUploader) upload() (uperr error) {
 		}
 	}()
 	defer func() { cancel(); <-watchDone }()
-	originPCSHost, err := muer.multiUpload.Precreate()
+	originPCSHost, err := muer.multiUpload.Precreate(ctx)
+	if muer.isCanceled() || ctx.Err() != nil {
+		return context.Canceled
+	}
 	if err != nil {
 		return err
 	}
@@ -195,7 +198,13 @@ func (muer *MultiUploader) upload() (uperr error) {
 	if err := muer.validateSource(); err != nil {
 		return err
 	}
-	cerr := muer.multiUpload.CreateSuperFile(originPCSHost, muer.config.Policy, muer.instanceState.Uploadid, muer.fileSize, checksumMap)
+	if muer.isCanceled() || muer.isStopped() || ctx.Err() != nil {
+		return context.Canceled
+	}
+	cerr := muer.multiUpload.CreateSuperFile(ctx, originPCSHost, muer.config.Policy, muer.instanceState.Uploadid, muer.fileSize, checksumMap)
+	if muer.isCanceled() || ctx.Err() != nil {
+		return context.Canceled
+	}
 	if cerr != nil {
 		return cerr
 	}

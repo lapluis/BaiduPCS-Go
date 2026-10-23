@@ -21,11 +21,11 @@ type changingSourceBackend struct {
 	mutationErr error
 }
 
-func (b *changingSourceBackend) Precreate() (string, pcserror.Error) {
+func (b *changingSourceBackend) Precreate(ctx context.Context) (string, pcserror.Error) {
 	if b.stage == "precreate" {
 		b.mutationErr = b.mutate()
 	}
-	return b.resumeBackend.Precreate()
+	return b.resumeBackend.Precreate(ctx)
 }
 
 func (b *changingSourceBackend) TmpFile(ctx context.Context, uploadid, path string, id int, offset int64, reader rio.ReaderLen64) (string, error) {
@@ -38,13 +38,13 @@ func (b *changingSourceBackend) TmpFile(ctx context.Context, uploadid, path stri
 	return checksum, err
 }
 
-func (b *changingSourceBackend) CreateSuperFile(host, policy, id string, size int64, sums map[int]string) error {
+func (b *changingSourceBackend) CreateSuperFile(ctx context.Context, host, policy, id string, size int64, sums map[int]string) error {
 	if b.stage == "merge" {
 		if err := b.mutate(); err != nil {
 			return err
 		}
 	}
-	return b.resumeBackend.CreateSuperFile(host, policy, id, size, sums)
+	return b.resumeBackend.CreateSuperFile(ctx, host, policy, id, size, sums)
 }
 
 func TestUploadRejectsSourceChanges(t *testing.T) {

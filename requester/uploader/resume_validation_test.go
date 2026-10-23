@@ -25,7 +25,10 @@ type resumeBackend struct {
 	checksums                    map[int]string
 }
 
-func (b *resumeBackend) Precreate() (string, pcserror.Error) { b.precreated++; return "synthetic", nil }
+func (b *resumeBackend) Precreate(context.Context) (string, pcserror.Error) {
+	b.precreated++
+	return "synthetic", nil
+}
 func (b *resumeBackend) TmpFile(_ context.Context, _ string, _ string, id int, _ int64, r rio.ReaderLen64) (string, error) {
 	data, err := io.ReadAll(r)
 	b.mu.Lock()
@@ -37,7 +40,7 @@ func (b *resumeBackend) TmpFile(_ context.Context, _ string, _ string, id int, _
 	b.parts[id] = data
 	return fmt.Sprint("checksum-", id), err
 }
-func (b *resumeBackend) CreateSuperFile(_ string, _ string, _ string, _ int64, checksums map[int]string) error {
+func (b *resumeBackend) CreateSuperFile(_ context.Context, _ string, _ string, _ string, _ int64, checksums map[int]string) error {
 	b.merged++
 	b.checksums = checksums
 	return nil

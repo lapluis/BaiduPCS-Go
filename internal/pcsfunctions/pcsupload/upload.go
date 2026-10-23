@@ -67,9 +67,16 @@ func (pu *PCSUpload) lazyInit() {
 }
 
 // Precreate 上传前准备, 获取本次上传用的pcs服务器
-func (pu *PCSUpload) Precreate() (originPCSHost string, pcsError pcserror.Error) {
+func (pu *PCSUpload) Precreate(ctx context.Context) (originPCSHost string, pcsError pcserror.Error) {
+	pu.lazyInit()
 	originPCSHost = pu.pcs.GetPCSAddr()
-	_, newPCSHost := pu.pcs.GetRandomPCSHost()
+	discoveryErr, newPCSHost := pu.pcs.GetRandomPCSHostWithContext(ctx)
+	if ctx.Err() != nil {
+		canceled := pcserror.NewPCSErrorInfo(baidupcs.OperationGetPCSServer)
+		canceled.SetNetError(ctx.Err())
+		return originPCSHost, canceled
+	}
+	_ = discoveryErr // Discovery is best effort; the original server remains usable.
 	pu.pcs.SetPCSAddr(newPCSHost)
 	return
 }
@@ -81,10 +88,14 @@ func (pu *PCSUpload) TmpFile(ctx context.Context, uploadId, targetPath string, p
 
 	// 每上传一定量分片切换一次动态pcs addr
 	if partSeq%pcsPeriod == pcsPeriod-1 {
-		go func() {
-			_, newPCSHost := pu.pcs.GetRandomPCSHost()
-			pu.pcs.SetPCSAddr(newPCSHost)
-		}()
+		pcsError, newPCSHost := pu.pcs.GetRandomPCSHostWithContext(ctx)
+		if ctx.Err() != nil {
+			canceled := pcserror.NewPCSErrorInfo(baidupcs.OperationUploadTmpFile)
+			canceled.SetNetError(ctx.Err())
+			return "", canceled
+		}
+		_ = pcsError
+		pu.pcs.SetPCSAddr(newPCSHost)
 	}
 
 	checksum, pcsError := pu.pcs.UploadTmpFile(uploadId, targetPath, partSeq, partOffset, func(uploadURL string, jar http.CookieJar) (resp *http.Response, err error) {
@@ -118,8 +129,8 @@ func (pu *PCSUpload) TmpFile(ctx context.Context, uploadId, targetPath string, p
 	return checksum, pcsError
 }
 
-func (pu *PCSUpload) CreateSuperFile(pcsHost, policy, uploadId string, fileSize int64, checksumMap map[int]string) (err error) {
+func (pu *PCSUpload) CreateSuperFile(ctx context.Context, pcsHost, policy, uploadId string, fileSize int64, checksumMap map[int]string) (err error) {
 	pu.lazyInit()
 	pu.pcs.SetPCSAddr(pcsHost) // 恢复默认pcs服务器
-	return pu.pcs.UploadCreateSuperFile(uploadId, policy, fileSize, pu.targetPath, checksumMap)
+	return pu.pcs.UploadCreateSuperFileWithContext(ctx, uploadId, policy, fileSize, pu.targetPath, checksumMap)
 }
