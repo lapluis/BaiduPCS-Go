@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -429,7 +430,19 @@ func runConfigImport(c *commandContext) error {
 	imported, existing, skipped := 0, 0, 0
 	valid := 0
 	for _, user := range legacy.BaiduUserList {
-		if user == nil || user.UID == 0 || (user.BDUSS == "" && !strings.Contains(user.COOKIES, "BDUSS=")) {
+		if user == nil || user.UID == 0 {
+			skipped++
+			continue
+		}
+		bduss := user.BDUSS
+		if bduss == "" {
+			req := &http.Request{Header: make(http.Header)}
+			req.Header.Set("Cookie", user.COOKIES)
+			if cookie, cookieErr := req.Cookie("BDUSS"); cookieErr == nil {
+				bduss = cookie.Value
+			}
+		}
+		if bduss == "" {
 			skipped++
 			continue
 		}
@@ -439,6 +452,7 @@ func runConfigImport(c *commandContext) error {
 			continue
 		}
 		copied := *user
+		copied.BDUSS = bduss
 		copied.Workdir = "/"
 		pcsconfig.Config.BaiduUserList = append(pcsconfig.Config.BaiduUserList, &copied)
 		knownUIDs[user.UID] = true
