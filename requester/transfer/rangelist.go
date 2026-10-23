@@ -34,32 +34,32 @@ var (
 	ErrUnknownRangeGenMode = errors.New("Unknown RangeGenMode")
 )
 
-//Len 长度
+// Len 长度
 func (r *Range) Len() int64 {
 	return r.LoadEnd() - r.LoadBegin()
 }
 
-//LoadBegin 读取Begin, 原子操作
+// LoadBegin 读取Begin, 原子操作
 func (r *Range) LoadBegin() int64 {
 	return atomic.LoadInt64(&r.Begin)
 }
 
-//AddBegin 增加Begin, 原子操作
+// AddBegin 增加Begin, 原子操作
 func (r *Range) AddBegin(i int64) (newi int64) {
 	return atomic.AddInt64(&r.Begin, i)
 }
 
-//LoadEnd 读取End, 原子操作
+// LoadEnd 读取End, 原子操作
 func (r *Range) LoadEnd() int64 {
 	return atomic.LoadInt64(&r.End)
 }
 
-//StoreBegin 储存End, 原子操作
+// StoreBegin 储存End, 原子操作
 func (r *Range) StoreBegin(end int64) {
 	atomic.StoreInt64(&r.Begin, end)
 }
 
-//StoreEnd 储存End, 原子操作
+// StoreEnd 储存End, 原子操作
 func (r *Range) StoreEnd(end int64) {
 	atomic.StoreInt64(&r.End, end)
 }
@@ -69,7 +69,7 @@ func (r *Range) ShowDetails() string {
 	return fmt.Sprintf("{%d-%d}", r.LoadBegin(), r.LoadEnd())
 }
 
-//Len 获取所有的Range的剩余长度
+// Len 获取所有的Range的剩余长度
 func (rl *RangeList) Len() int64 {
 	var l int64
 	for _, wrange := range *rl {
@@ -83,6 +83,9 @@ func (rl *RangeList) Len() int64 {
 
 // NewRangeListGenDefault 初始化默认Range生成器, 根据parallel平均生成
 func NewRangeListGenDefault(totalSize, begin int64, count, parallel int) *RangeListGen {
+	if parallel < 1 {
+		parallel = 1
+	}
 	return &RangeListGen{
 		total:        totalSize,
 		begin:        begin,
@@ -112,6 +115,11 @@ func (gen *RangeListGen) RangeGenMode() RangeGenMode {
 
 // RangeCount 返回预计生成的Range数量
 func (gen *RangeListGen) RangeCount() (rangeCount int) {
+	gen.mu.Lock()
+	defer gen.mu.Unlock()
+	if gen.begin >= gen.total {
+		return 0
+	}
 	switch gen.rangeGenMode {
 	case RangeGenMode_Default:
 		rangeCount = gen.parallel - gen.count
@@ -139,6 +147,12 @@ func (gen *RangeListGen) LoadBegin() (begin int64) {
 
 // LoadBlockSize 返回blockSize
 func (gen *RangeListGen) LoadBlockSize() (blockSize int64) {
+	gen.mu.Lock()
+	defer gen.mu.Unlock()
+	return gen.loadBlockSizeLocked()
+}
+
+func (gen *RangeListGen) loadBlockSizeLocked() (blockSize int64) {
 	switch gen.rangeGenMode {
 	case RangeGenMode_Default:
 		if gen.blockSize <= 0 {
@@ -156,11 +170,15 @@ func (gen *RangeListGen) LoadBlockSize() (blockSize int64) {
 
 // IsDone 是否已分配完成
 func (gen *RangeListGen) IsDone() bool {
+	gen.mu.Lock()
+	defer gen.mu.Unlock()
 	return gen.begin >= gen.total
 }
 
 // GenRange 生成 Range
 func (gen *RangeListGen) GenRange() (index int, r *Range) {
+	gen.mu.Lock()
+	defer gen.mu.Unlock()
 	var (
 		end int64
 	)
@@ -169,16 +187,14 @@ func (gen *RangeListGen) GenRange() (index int, r *Range) {
 	}
 	switch gen.rangeGenMode {
 	case RangeGenMode_Default:
-		gen.LoadBlockSize()
-		gen.mu.Lock()
-		defer gen.mu.Unlock()
+		gen.loadBlockSizeLocked()
 
-		if gen.IsDone() {
+		if gen.begin >= gen.total {
 			return gen.count, nil
 		}
 
 		gen.count++
-		if gen.count >= gen.parallel {
+		if gen.count >= gen.parallel || gen.blockSize >= gen.total-gen.begin {
 			end = gen.total
 		} else {
 			end = gen.begin + gen.blockSize
@@ -201,10 +217,7 @@ func (gen *RangeListGen) GenRange() (index int, r *Range) {
 		if gen.blockSize <= 0 {
 			gen.blockSize = DefaultBlockSize
 		}
-		gen.mu.Lock()
-		defer gen.mu.Unlock()
-
-		if gen.IsDone() {
+		if gen.begin >= gen.total {
 			return gen.count, nil
 		}
 
