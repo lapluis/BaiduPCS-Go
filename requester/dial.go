@@ -121,7 +121,7 @@ func SetProxyHostnameRules(hostnames string) {
 
 // SetTCPHostBind 设置host绑定ip
 func SetTCPHostBind(host, ip string) {
-	tcpCache.Store(host, expires.NewDataExpires(net.ParseIP(ip), MaxDuration))
+	tcpCache.Store(host, expires.NewDataExpires([]net.IP{net.ParseIP(ip)}, MaxDuration))
 	return
 }
 
@@ -135,13 +135,13 @@ func getServerName(address string) string {
 
 // resolveTCPHost
 // 解析的tcpaddr没有port!!!
-func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
+func resolveTCPHost(ctx context.Context, host string) ([]net.IP, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	// host 已是字面量 IP 时直接返回，无需 DNS 查询
 	if parsed := net.ParseIP(host); parsed != nil {
-		return parsed, nil
+		return []net.IP{parsed}, nil
 	}
 
 	lookupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -154,11 +154,19 @@ func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
 		return nil, fmt.Errorf("no IP addresses found for host %q", host)
 	}
 
-	ip = net.ParseIP(addrs[0])
-	if ip == nil {
-		return nil, fmt.Errorf("invalid IP address %q for host %q", addrs[0], host)
+	ips := make([]net.IP, 0, len(addrs))
+	seen := make(map[string]bool)
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip != nil && !seen[ip.String()] {
+			seen[ip.String()] = true
+			ips = append(ips, ip)
+		}
 	}
-	return ip, nil
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no valid IP addresses found for host %q", host)
+	}
+	return ips, nil
 }
 
 func dialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
@@ -182,7 +190,7 @@ func dialContext(ctx context.Context, network, address string) (conn net.Conn, e
 			return nil, err
 		}
 
-		return getDialer().DialContext(ctx, network, net.JoinHostPort(data.Data().(net.IP).String(), portStr))
+		return dialTCPAddresses(ctx, getDialer(), network, portStr, data.Data().([]net.IP))
 	}
 
 	// 非 tcp 请求
