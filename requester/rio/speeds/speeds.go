@@ -1,60 +1,60 @@
-// Package speeds 速度计算工具包
+// Package speeds provides transfer speed statistics.
 package speeds
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-type (
-	// Speeds 统计速度
-	Speeds struct {
-		count    int64
-		interval time.Duration // 刷新周期
-		nowTime  time.Time
-		once     sync.Once
-	}
-)
-
-func (sps *Speeds) initOnce() {
-	sps.once.Do(func() {
-		sps.nowTime = time.Now()
-		if sps.interval <= 0 {
-			sps.interval = 1 * time.Second
-		}
-	})
+type Speeds struct {
+	count    int64
+	interval time.Duration
+	nowTime  time.Time
+	mu       sync.Mutex
 }
 
-// SetInterval 设置刷新周期
+func (sps *Speeds) initLocked() {
+	if sps.nowTime.IsZero() {
+		sps.nowTime = time.Now()
+	}
+	if sps.interval <= 0 {
+		sps.interval = time.Second
+	}
+}
+
+// SetInterval sets the reporting interval; non-positive values are ignored.
 func (sps *Speeds) SetInterval(interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
+	sps.mu.Lock()
+	defer sps.mu.Unlock()
 	sps.interval = interval
 }
 
-// Add 原子操作, 增加数据量
+// Add accounts for transferred bytes.
 func (sps *Speeds) Add(count int64) {
-	// 初始化
-	sps.initOnce()
-	atomic.AddInt64(&sps.count, count)
+	sps.mu.Lock()
+	defer sps.mu.Unlock()
+	sps.initLocked()
+	sps.count += count
 }
 
-// GetSpeeds 结束统计速度, 并返回速度
-func (sps *Speeds) GetSpeeds() (speeds int64) {
-	sps.initOnce()
-
-	since := time.Since(sps.nowTime)
+// GetSpeeds returns the rate for the configured interval and starts a new
+// sample once the interval elapses. Sampling and byte accounting are atomic.
+func (sps *Speeds) GetSpeeds() int64 {
+	sps.mu.Lock()
+	defer sps.mu.Unlock()
+	sps.initLocked()
+	now := time.Now()
+	since := now.Sub(sps.nowTime)
 	if since <= 0 {
 		return 0
 	}
-	speeds = int64(float64(atomic.LoadInt64(&sps.count)) * sps.interval.Seconds() / since.Seconds())
-
-	// 更新下一轮
+	rate := int64(float64(sps.count) * sps.interval.Seconds() / since.Seconds())
 	if since >= sps.interval {
-		atomic.StoreInt64(&sps.count, 0)
-		sps.nowTime = time.Now()
+		sps.count = 0
+		sps.nowTime = now
 	}
-	return
+	return rate
 }
