@@ -358,6 +358,12 @@ func (der *Downloader) Execute() error {
 			der.instanceState.Close()
 			return fmt.Errorf("%w: saved=%d, remote=%d", ErrResumeSizeMismatch, bii.DownloadStatus.TotalSize(), der.firstInfo.ContentLength)
 		}
+		if bii != nil && bii.DownloadStatus != nil {
+			if err := der.validateResumeFile(bii); err != nil {
+				der.instanceState.Close()
+				return err
+			}
+		}
 	}
 
 	var (
