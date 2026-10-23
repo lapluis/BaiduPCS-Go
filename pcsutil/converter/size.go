@@ -3,7 +3,7 @@ package converter
 import (
 	"errors"
 	"fmt"
-	"strconv"
+	"math/big"
 	"strings"
 )
 
@@ -61,38 +61,37 @@ func ParseFileSizeStr(ss string) (size int64, err error) {
 	}
 
 	var i int
-	for i = range ss[1:] {
-		i++
-		if ss[i] == '.' || ('0' <= ss[i] && ss[i] <= '9') {
-			// 属于数字
-			continue
-		}
-		break
-	}
-	if ss[i] == '.' || ('0' <= ss[i] && ss[i] <= '9') { // 最后一个分隔符是否为数字
+	for i < len(ss) && (ss[i] == '.' || ('0' <= ss[i] && ss[i] <= '9')) {
 		i++
 	}
-
-	var (
-		sizeStr      = ss[:i] // 数字部分
-		unitStr      = ss[i:] // 单位部分
-		sizeFloat, _ = strconv.ParseFloat(sizeStr, 10)
-	)
+	sizeStr, unitStr := ss[:i], ss[i:]
+	amount, ok := new(big.Rat).SetString(sizeStr)
+	if !ok {
+		return 0, errors.New("converter: invalid size: " + ss)
+	}
+	var unit int64
 	switch strings.ToUpper(unitStr) {
 	case "", "B":
-		size = int64(sizeFloat)
+		unit = B
 	case "K", "KB":
-		size = int64(sizeFloat * float64(KB))
+		unit = KB
 	case "M", "MB":
-		size = int64(sizeFloat * float64(MB))
+		unit = MB
 	case "G", "GB":
-		size = int64(sizeFloat * float64(GB))
+		unit = GB
 	case "T", "TB":
-		size = int64(sizeFloat * float64(TB))
+		unit = TB
 	case "P", "PB":
-		size = int64(sizeFloat * float64(PB))
+		unit = PB
 	default:
-		err = errors.New("converter: invalid unit " + unitStr)
+		return 0, errors.New("converter: invalid unit " + unitStr)
 	}
-	return
+	// Exact decimal arithmetic avoids losing bytes above float64's integer
+	// precision, and allows range checks before converting to int64.
+	amount.Mul(amount, new(big.Rat).SetInt64(unit))
+	if amount.Cmp(new(big.Rat).SetInt64(1<<63-1)) > 0 {
+		return 0, errors.New("converter: size exceeds int64 range")
+	}
+	whole := new(big.Int).Quo(amount.Num(), amount.Denom())
+	return whole.Int64(), nil
 }
