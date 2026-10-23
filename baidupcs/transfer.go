@@ -18,9 +18,9 @@ import (
 type (
 	// ShareOption 分享可选项
 	TransferOption struct {
-		Download bool // 是否直接开始下载
-		Collect  bool // 多文件整合
-		Rname    bool // 随机改文件名
+		Download bool   // 是否直接开始下载
+		Collect  bool   // 多文件整合
+		Rname    bool   // 随机改文件名
 		FsID     string // 指定fs_id转存
 	}
 )
@@ -40,6 +40,17 @@ func (pcs *BaiduPCS) GenerateShareQueryURL(subPath string, params map[string]str
 	return shareURL
 }
 
+func shareResponseErrno(body []byte) (int64, error) {
+	if !gjson.ValidBytes(body) {
+		return 0, fmt.Errorf("返回json解析错误")
+	}
+	code := gjson.GetBytes(body, "errno")
+	if code.Type != gjson.Number {
+		return 0, fmt.Errorf("分享响应缺少有效的errno")
+	}
+	return strconv.ParseInt(code.Raw, 10, 64)
+}
+
 func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken string) (res map[string]string) {
 	res = make(map[string]string)
 	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareURL, nil, map[string]string{
@@ -51,8 +62,16 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
-	errno := gjson.Get(string(body), `errno`).Int()
+	body, err := ioutil.ReadAll(dataReadCloser)
+	if err != nil {
+		res["ErrMsg"] = "读取分享项响应失败"
+		return
+	}
+	errno, err := shareResponseErrno(body)
+	if err != nil {
+		res["ErrMsg"] = "分享项响应格式错误"
+		return
+	}
 	if errno != 0 {
 		res["ErrMsg"] = fmt.Sprintf("未知错误, 错误码%d", errno)
 		if errno == 8001 {
@@ -60,12 +79,22 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 		}
 		return
 	}
-	res["filename"] = gjson.Get(string(body), `list.0.server_filename`).String()
-	fsidList := gjson.Get(string(body), `list.#.fs_id`).Array()
-	var fidsStr string = "["
-	for _, sid := range fsidList {
-		fidsStr += sid.String() + ","
+	list := gjson.GetBytes(body, "list")
+	if !list.IsArray() || len(list.Array()) == 0 {
+		res["ErrMsg"] = "分享项列表为空或格式错误"
+		return
 	}
+	fsidList := make([]string, 0, len(list.Array()))
+	for _, item := range list.Array() {
+		sid := item.Get("fs_id")
+		id, parseErr := strconv.ParseUint(sid.Raw, 10, 64)
+		if sid.Type != gjson.Number || parseErr != nil || id == 0 || item.Get("server_filename").String() == "" {
+			res["ErrMsg"] = "分享项元数据不完整"
+			return
+		}
+		fsidList = append(fsidList, sid.Raw)
+	}
+	res["filename"] = list.Array()[0].Get("server_filename").String()
 
 	res["shareid"] = shardID
 	res["from"] = shareUK
@@ -85,7 +114,7 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 	}
 	res["item_num"] = strconv.Itoa(len(fsidList))
 	res["ErrMsg"] = "success"
-	res["fs_id"] = fidsStr[:len(fidsStr)-1] + "]"
+	res["fs_id"] = "[" + strings.Join(fsidList, ",") + "]"
 	shareUrl.RawQuery = uv.Encode()
 	res["shareUrl"] = shareUrl.String()
 	return
@@ -103,8 +132,16 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
-	errno := gjson.Get(string(body), `errno`).Int()
+	body, err := ioutil.ReadAll(dataReadCloser)
+	if err != nil {
+		res["ErrMsg"] = "读取分享验证响应失败"
+		return
+	}
+	errno, err := shareResponseErrno(body)
+	if err != nil {
+		res["ErrMsg"] = "分享验证响应格式错误"
+		return
+	}
 	if errno != 0 {
 		res["ErrMsg"] = fmt.Sprintf("未知错误, 错误码%d", errno)
 		if errno == -9 {
@@ -187,12 +224,12 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 		res["ErrMsg"] = "未知错误"
 		return
 	}
-	if !gjson.Valid(string(body)) {
+	errno, err := shareResponseErrno(body)
+	if err != nil {
 		res["ErrNo"] = "2"
 		res["ErrMsg"] = "返回json解析错误"
 		return
 	}
-	errno := gjson.Get(string(body), `errno`).Int()
 	if errno != 0 {
 		res["ErrNo"] = "3"
 		res["ErrMsg"] = "获取分享项元数据错误"
