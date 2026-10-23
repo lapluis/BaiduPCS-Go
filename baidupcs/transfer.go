@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
@@ -10,7 +11,6 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -49,6 +49,27 @@ func shareResponseErrno(body []byte) (int64, error) {
 		return 0, fmt.Errorf("分享响应缺少有效的errno")
 	}
 	return strconv.ParseInt(code.Raw, 10, 64)
+}
+
+// sharePageData finds a complete JSON object inside the page's JavaScript
+// wrappers. JSON decoding handles nested objects and braces inside strings.
+func sharePageData(body []byte) (gjson.Result, bool) {
+	for offset := 0; offset < len(body); {
+		next := bytes.IndexByte(body[offset:], '{')
+		if next < 0 {
+			break
+		}
+		offset += next
+		var raw json.RawMessage
+		if err := json.NewDecoder(bytes.NewReader(body[offset:])).Decode(&raw); err == nil {
+			data := gjson.ParseBytes(raw)
+			if state := data.Get("loginstate"); state.Exists() && state.Type != gjson.Null {
+				return data, true
+			}
+		}
+		offset++
+	}
+	return gjson.Result{}, false
 }
 
 func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken string) (res map[string]string) {
@@ -191,16 +212,15 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 		tokens["ErrMsg"] = "分享链接已失效"
 		return
 	} else {
-		re, _ := regexp.Compile(`(?s)(\{.+?loginstate.+?\})`) // 支持跨行页面数据以及旧版和新版脚本包装。
-		sub := re.FindSubmatch(body)
-		if len(sub) < 2 {
+		data, ok := sharePageData(body)
+		if !ok {
 			tokens["ErrMsg"] = "请确认登录参数中已经包含了网盘STOKEN"
 			return
 		}
-		tokens["bdstoken"] = gjson.Get(string(sub[1]), `bdstoken`).String()
-		tokens["uk"] = gjson.Get(string(sub[1]), `uk`).String()
-		tokens["share_uk"] = gjson.Get(string(sub[1]), `share_uk`).String()
-		tokens["shareid"] = gjson.Get(string(sub[1]), `shareid`).String()
+		tokens["bdstoken"] = data.Get("bdstoken").String()
+		tokens["uk"] = data.Get("uk").String()
+		tokens["share_uk"] = data.Get("share_uk").String()
+		tokens["shareid"] = data.Get("shareid").String()
 		return
 	}
 

@@ -127,3 +127,23 @@ func TestSharePageRejectsEmptyFeature(t *testing.T) {
 		t.Error("empty feature accepted")
 	}
 }
+
+func TestSharePageSelectsCompleteObject(t *testing.T) {
+	for _, page := range []string{
+		`var unrelated={"bdstoken":"wrong"}; locals.mset({"loginstate":1,"bdstoken":"right","shareid":123,"share_uk":456});`,
+		`locals.mset({"loginstate":1,"nested":{"value":2},"bdstoken":"right","shareid":123,"share_uk":456});`,
+		`try{{"loginstate":1,"name":"a}b\"c","bdstoken":"right","shareid":123,"share_uk":456}}`,
+	} {
+		pcs := fixturePCS(func(req *http.Request) (*http.Response, error) { return response(req, page), nil })
+		got := pcs.AccessSharePage("1fixture", false)
+		if got["ErrMsg"] != "0" || got["bdstoken"] != "right" || got["shareid"] != "123" || got["share_uk"] != "456" {
+			t.Errorf("wrong page data: %v", got)
+		}
+	}
+	pcs := fixturePCS(func(req *http.Request) (*http.Response, error) {
+		return response(req, `locals.mset({"loginstate":1,"bdstoken":"partial",broken});`), nil
+	})
+	if got := pcs.AccessSharePage("1fixture", false); got["ErrMsg"] == "0" {
+		t.Error("invalid object accepted")
+	}
+}
