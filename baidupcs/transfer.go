@@ -157,6 +157,10 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[string]string) {
 	tokens = make(map[string]string)
 	tokens["ErrMsg"] = "0"
+	if len(featurestr) < 2 || featurestr[0] != '1' {
+		tokens["ErrMsg"] = "分享链接标识无效"
+		return
+	}
 	headers := make(map[string]string)
 	headers["User-Agent"] = NetdiskUA // 修 #534：Chrome 76 UA 被百度反爬弹到无 loginstate 的登录页；netdisk 客户端 UA 放行拿真实分享页
 	headers["Referer"] = "https://pan.baidu.com/disk/home"
@@ -172,7 +176,11 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 		return
 	}
 	defer dataReadCloser.Close()
-	body, _ := ioutil.ReadAll(dataReadCloser)
+	body, readErr := ioutil.ReadAll(dataReadCloser)
+	if readErr != nil {
+		tokens["ErrMsg"] = "读取分享页失败"
+		return
+	}
 	notFoundFlag := strings.Contains(string(body), "platform-non-found")
 	errorPageTitle := strings.Contains(string(body), "error-404")
 	if errorPageTitle {
@@ -183,7 +191,7 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 		tokens["ErrMsg"] = "分享链接已失效"
 		return
 	} else {
-		re, _ := regexp.Compile(`(\{.+?loginstate.+?\})`) // 修 #534：旧页 locals.mset({...}); 要求 )，新页 try{{...}}; 无 )，去 \)\; 终结符兼容两者
+		re, _ := regexp.Compile(`(?s)(\{.+?loginstate.+?\})`) // 支持跨行页面数据以及旧版和新版脚本包装。
 		sub := re.FindSubmatch(body)
 		if len(sub) < 2 {
 			tokens["ErrMsg"] = "请确认登录参数中已经包含了网盘STOKEN"

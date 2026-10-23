@@ -96,3 +96,34 @@ func TestShareTransferRequiresResultPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestSharePageReadFailureAndMultiline(t *testing.T) {
+	page := "<script>locals.mset({\n\"loginstate\":1,\n\"bdstoken\":\"synthetic\",\n\"shareid\":123,\n\"share_uk\":456\n});</script>"
+	pcs := fixturePCS(func(req *http.Request) (*http.Response, error) { return response(req, page), nil })
+	if got := pcs.AccessSharePage("1fixture", false); got["ErrMsg"] != "0" || got["shareid"] != "123" || got["share_uk"] != "456" {
+		t.Errorf("multiline page failed: %v", got)
+	}
+	body := &shareTrackedBody{Reader: io.MultiReader(strings.NewReader(`{"loginstate":1,"bdstoken":"synthetic","shareid":123,"share_uk":456}`), shareReadFailure{})}
+	pcs = fixturePCS(func(req *http.Request) (*http.Response, error) { r := response(req, ""); r.Body = body; return r, nil })
+	if got := pcs.AccessSharePage("1fixture", true); got["ErrMsg"] == "0" {
+		t.Error("partial page reported as success")
+	}
+	if !body.closed {
+		t.Error("page response was not closed")
+	}
+}
+
+func TestSharePageRejectsEmptyFeature(t *testing.T) {
+	pcs := fixturePCS(func(req *http.Request) (*http.Response, error) {
+		t.Error("invalid feature sent request")
+		return response(req, ""), nil
+	})
+	defer func() {
+		if recover() != nil {
+			t.Fatal("empty feature caused panic")
+		}
+	}()
+	if got := pcs.AccessSharePage("", false); got["ErrMsg"] == "0" {
+		t.Error("empty feature accepted")
+	}
+}
