@@ -37,19 +37,15 @@ func (w *WaitGroup) AddDelta() {
 
 // Done sync.WaitGroup.Done()
 func (w *WaitGroup) Done() {
-	w.wg.Done()
-
 	if w.p != nil {
 		<-w.p
 	}
+	w.wg.Done()
 }
 
 // Wait 参照 sync.WaitGroup 的 Wait 方法
 func (w *WaitGroup) Wait() {
 	w.wg.Wait()
-	if w.p != nil {
-		close(w.p)
-	}
 }
 
 // Parallel 返回当前正在进行的任务数量
