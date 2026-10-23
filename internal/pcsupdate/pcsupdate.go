@@ -8,12 +8,10 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsliner"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkaccess"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/jsonhelper"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/downloader"
-	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"net/http"
 	"regexp"
@@ -158,15 +156,15 @@ func CheckUpdate(version string, yes bool) {
 		target = *targetList[i]
 	}
 
-	if target.size > 0x7fffffff {
-		fmt.Printf("file size too large: %d\n", target.size)
+	buf, err := newUpdateBuffer(target.size)
+	if err != nil {
+		fmt.Printf("%s\n", err)
 		return
 	}
 
 	fmt.Printf("准备下载更新: %s\n", target.filename)
 
 	// 开始下载
-	buf := rio.NewBuffer(cachepool.RawMallocByteSlice(int(target.size)))
 	der := downloader.NewDownloader(target.downloadURL, buf, &downloader.Config{
 		MaxParallel: 20,
 		CacheSize:   10000,
