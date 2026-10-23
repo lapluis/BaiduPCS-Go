@@ -94,6 +94,9 @@ func NewRangeListGenDefault(totalSize, begin int64, count, parallel int) *RangeL
 
 // NewRangeListGenBlockSize 初始化Range生成器, 根据blockSize生成
 func NewRangeListGenBlockSize(totalSize, begin, blockSize int64) *RangeListGen {
+	if blockSize <= 0 {
+		blockSize = DefaultBlockSize
+	}
 	return &RangeListGen{
 		total:        totalSize,
 		begin:        begin,
@@ -114,8 +117,12 @@ func (gen *RangeListGen) RangeCount() (rangeCount int) {
 		rangeCount = gen.parallel - gen.count
 		//rangeCount = int(math.Ceil(float64(gen.total) / float64(gen.blockSize)))
 	case RangeGenMode_BlockSize:
-		rangeCount = int((gen.total - gen.begin) / gen.blockSize)
-		if gen.total%gen.blockSize != 0 {
+		if gen.begin >= gen.total {
+			return 0
+		}
+		remaining := gen.total - gen.begin
+		rangeCount = int(remaining / gen.blockSize)
+		if remaining%gen.blockSize != 0 {
 			rangeCount++
 		}
 	}
@@ -136,7 +143,7 @@ func (gen *RangeListGen) LoadBlockSize() (blockSize int64) {
 	case RangeGenMode_Default:
 		if gen.blockSize <= 0 {
 			gen.blockSize = (gen.total - gen.begin) / int64(gen.parallel)
-			if gen.blockSize < 256 * converter.KB {
+			if gen.blockSize < 256*converter.KB {
 				gen.blockSize = 256 * converter.KB
 			}
 		}
@@ -202,9 +209,10 @@ func (gen *RangeListGen) GenRange() (index int, r *Range) {
 		}
 
 		gen.count++
-		end = gen.begin + gen.blockSize
-		if end >= gen.total {
+		if gen.blockSize >= gen.total-gen.begin {
 			end = gen.total
+		} else {
+			end = gen.begin + gen.blockSize
 		}
 		r = &Range{
 			Begin: gen.begin,
