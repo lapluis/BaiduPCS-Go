@@ -1,9 +1,43 @@
 package pcscommand
 
 import (
+	"io"
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
+	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 )
+
+type shareFixtureTransport func(*http.Request) (*http.Response, error)
+
+func (f shareFixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestShareTransferPreservesCommaInFilename(t *testing.T) {
+	client := requester.NewHTTPClient()
+	client.SetKeepAlive(false)
+	client.Client.Transport = shareFixtureTransport(func(req *http.Request) (*http.Response, error) {
+		body := `{"loginstate":1,"bdstoken":"synthetic","shareid":1,"share_uk":2}`
+		switch req.URL.Path {
+		case "/share/verify":
+			body = `{"errno":0,"randsk":"synthetic"}`
+		case "/share/list":
+			body = `{"errno":0,"list":[{"fs_id":1,"server_filename":"a,b.txt"},{"fs_id":2,"server_filename":"c.txt"}]}`
+		case "/share/transfer":
+			body = `{"errno":0,"info":[{"fsid":1,"path":"/saved/a,b.txt"},{"fsid":2,"path":"/saved/c.txt"}]}`
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	got, err := ShareTransferTo(baidupcs.NewPCSWithClient(1, client), []string{"https://pan.baidu.com/s/1fixture", "abcd"}, "/saved", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Filenames, []string{"a,b.txt", "c.txt"}) {
+		t.Fatalf("filenames changed: %q", got.Filenames)
+	}
+}
 
 // These cases fail before any network request, so a nil client is safe and the
 // validation shared by the legacy command and pcsclone is covered.

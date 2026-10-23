@@ -1,8 +1,8 @@
 package baidupcs
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
@@ -255,18 +255,27 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 		return
 	}
 
-	_, res["filename"] = filepath.Split(gjson.Get(string(body), `info.0.path`).String())
-	filenames := gjson.Get(string(body), `info.#.path`).Array()
-	filenamesStr := ""
-	for _, _path := range filenames {
-		filenamesStr += "," + path.Base(_path.String())
+	info := gjson.GetBytes(body, "info")
+	if !info.IsArray() || len(info.Array()) == 0 {
+		res["ErrNo"], res["ErrMsg"] = "2", "转存响应缺少文件信息"
+		return
 	}
-	if len(filenamesStr) < 1 {
-		res["filenames"] = "default" + pcsutil.GenerateRandomString(5)
-	} else {
-		res["filenames"] = filenamesStr[1:]
+	filenames := make([]string, 0, len(info.Array()))
+	for _, item := range info.Array() {
+		filePath := item.Get("path")
+		name := path.Base(filePath.String())
+		if filePath.Type != gjson.String || !path.IsAbs(filePath.String()) || name == "/" || name == "." || name == ".." {
+			res["ErrNo"], res["ErrMsg"] = "2", "转存响应文件路径无效"
+			return
+		}
+		filenames = append(filenames, name)
 	}
-	if len(gjson.Get(string(body), `info.#.fsid`).Array()) > 1 {
+	res["filename"] = filenames[0]
+	// Keep the legacy display field, but use JSON for lossless filename transport.
+	res["filenames"] = strings.Join(filenames, ",")
+	encoded, _ := json.Marshal(filenames)
+	res["filenames_json"] = string(encoded)
+	if len(filenames) > 1 {
 		res["filename"] += "等多个文件/文件夹"
 	}
 	return

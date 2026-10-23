@@ -1,6 +1,7 @@
 package pcscommand
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -145,8 +146,10 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 	}
 
 	result := &ShareTransferResult{Filename: resp["filename"], Path: transMetas["path"]}
-	if resp["filenames"] != "" {
-		result.Filenames = strings.Split(resp["filenames"], ",")
+	if resp["filenames_json"] != "" {
+		if err := json.Unmarshal([]byte(resp["filenames_json"]), &result.Filenames); err != nil {
+			return nil, fmt.Errorf("转存文件名解析失败: %w", err)
+		}
 	}
 	if len(result.Filenames) == 0 && result.Filename != "" {
 		result.Filenames = []string{result.Filename}

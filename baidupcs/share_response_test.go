@@ -87,3 +87,12 @@ func TestShareListRequiresItems(t *testing.T) {
 		t.Fatalf("valid list failed: %v", got)
 	}
 }
+
+func TestShareTransferRequiresResultPaths(t *testing.T) {
+	for _, body := range []string{`{"errno":0}`, `{"errno":0,"info":[]}`, `{"errno":0,"info":[null]}`, `{"errno":0,"info":[{"path":""}]}`, `{"errno":0,"info":[{"path":12}]}`, `{"errno":0,"info":[{"path":"/"}]}`} {
+		pcs := fixturePCS(func(req *http.Request) (*http.Response, error) { return response(req, body), nil })
+		if got := pcs.GenerateRequestQuery("POST", map[string]string{"shareUrl": "https://pan.baidu.com/share/transfer"}); got["ErrNo"] == "0" {
+			t.Errorf("incomplete result accepted: %s", body)
+		}
+	}
+}
