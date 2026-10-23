@@ -23,6 +23,7 @@ func NewHTTPClient() *HTTPClient {
 			Timeout: 50 * time.Second,
 		},
 		UserAgent: UserAgent,
+		https:     true,
 	}
 	h.Client.Jar, _ = cookiejar.New(nil)
 	h.lazyInit()
@@ -35,9 +36,6 @@ func (h *HTTPClient) lazyInit() {
 			Proxy:       proxyFunc,
 			DialContext: dialContext,
 			// DialTLS:     h.dialTLSFunc(),
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
 			TLSHandshakeTimeout:   20 * time.Second,
 			DisableKeepAlives:     false,
 			DisableCompression:    false, // gzip
@@ -89,17 +87,16 @@ func (h *HTTPClient) ResetCookiejar() {
 	h.Jar, _ = cookiejar.New(nil)
 }
 
-// SetHTTPSecure 是否启用 https 安全检查, 强制不检查
+// SetHTTPSecure 设置是否启用 HTTPS 证书校验。
 func (h *HTTPClient) SetHTTPSecure(b bool) {
 	h.https = b
 	transport := h.configuredTransport()
-	// 	if b {
-	// 		h.transport.TLSClientConfig = nil
-	// 	} else {
-	transport.TLSClientConfig = &tls.Config{
-		InsecureSkipVerify: true,
+	config := &tls.Config{}
+	if transport.TLSClientConfig != nil {
+		config = transport.TLSClientConfig.Clone()
 	}
-	// 	}
+	config.InsecureSkipVerify = !b
+	transport.TLSClientConfig = config
 }
 
 // SetKeepAlive 设置 Keep-Alive

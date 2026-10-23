@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,6 +171,9 @@ func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
 }
 
 func dialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch network {
 	case "tcp", "tcp4", "tcp6":
 		host, portStr, err := net.SplitHostPort(address)
@@ -189,15 +191,7 @@ func dialContext(ctx context.Context, network, address string) (conn net.Conn, e
 			return nil, err
 		}
 
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			return nil, err
-		}
-
-		return net.DialTCP(network, getLocalTCPAddr(), &net.TCPAddr{
-			IP:   data.Data().(net.IP),
-			Port: port, // 设置端口
-		})
+		return getDialer().DialContext(ctx, network, net.JoinHostPort(data.Data().(net.IP).String(), portStr))
 	}
 
 	// 非 tcp 请求
