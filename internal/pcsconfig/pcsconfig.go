@@ -240,6 +240,8 @@ func (c *PCSConfig) InitDefaultConfig() {
 	c.MaxUploadParallel = 4
 	c.MaxUploadLoad = 4
 	c.MaxDownloadLoad = 1
+	c.MaxDownloadRate = 0
+	c.MaxUploadRate = 0
 	c.UserAgent = requester.UserAgent
 	c.PCSUA = ""
 	c.PCSAddr = "pcs.baidu.com"
@@ -248,6 +250,8 @@ func (c *PCSConfig) InitDefaultConfig() {
 	c.NoCheck = true
 	c.UPolicy = baidupcs.SkipPolicy
 	c.Proxy = ""
+	c.ProxyHostnames = ""
+	c.FixPCSAddr = false
 	c.LocalAddrs = ""
 	c.IgnoreIllegal = true
 	c.ForceLogin = ""

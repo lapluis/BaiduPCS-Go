@@ -58,6 +58,7 @@ func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
 		pcs = baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
 	}
 	pcs.SetHTTPS(Config.EnableHTTPS)
+	pcs.SetStaticPCSAddr(Config.FixPCSAddr)
 	pcs.SetPCSUserAgent(Config.PCSUA)
 	pcs.SetPanUserAgent(Config.PanUA)
 	pcs.SetUID(baidu.UID)
