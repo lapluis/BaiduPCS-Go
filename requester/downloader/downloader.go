@@ -111,7 +111,10 @@ func (der *Downloader) SetStatusCodeBodyCheckFunc(f StatusCodeBodyCheckFunc) {
 func (der *Downloader) lazyInit() {
 	if der.config == nil {
 		der.config = NewConfig()
+	} else {
+		der.config = der.config.Copy()
 	}
+	der.config.Fix()
 	if der.client == nil {
 		der.client = requester.NewHTTPClient()
 		der.client.SetTimeout(2 * time.Minute)
