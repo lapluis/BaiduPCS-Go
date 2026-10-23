@@ -20,13 +20,14 @@ import (
 
 // Entry paths are relative to the requested root; hashes are content MD5 only.
 type Entry struct {
-	Path    string
-	Name    string
-	Size    int64
-	ModTime time.Time
-	IsDir   bool
-	Hash    string `json:"Hash,omitempty"`
-	ID      string `json:"-"`
+	Path      string
+	Name      string
+	Size      int64
+	ModTime   time.Time
+	IsDir     bool
+	Hash      string `json:"Hash,omitempty"`
+	ID        string `json:"-"`
+	localInfo os.FileInfo
 }
 type Backend interface {
 	Identity() string
@@ -63,7 +64,22 @@ func (*Local) Stat(ctx context.Context, p string) (Entry, error) {
 	if f.Mode()&os.ModeSymlink != 0 || (!f.IsDir() && !f.Mode().IsRegular()) {
 		return Entry{}, fmt.Errorf("unsupported special file or symlink: %s", p)
 	}
-	return Entry{Name: f.Name(), Size: f.Size(), ModTime: f.ModTime(), IsDir: f.IsDir()}, nil
+	// Windows loads file IDs lazily for path-based FileInfo. Capture the ID now,
+	// rather than accidentally looking up a replacement during a later check.
+	if !os.SameFile(f, f) {
+		return Entry{}, fmt.Errorf("cannot capture file identity: %s", p)
+	}
+	return Entry{Name: f.Name(), Size: f.Size(), ModTime: f.ModTime(), IsDir: f.IsDir(), localInfo: f}, nil
+}
+
+func sameIdentity(a, b Entry) bool {
+	if a.ID != b.ID {
+		return false
+	}
+	if a.localInfo == nil || b.localInfo == nil {
+		return a.localInfo == nil && b.localInfo == nil
+	}
+	return os.SameFile(a.localInfo, b.localInfo)
 }
 func (l *Local) List(ctx context.Context, p string) ([]Entry, error) {
 	ds, err := os.ReadDir(p)

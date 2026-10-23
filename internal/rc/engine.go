@@ -352,7 +352,7 @@ func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {
 	if err != nil {
 		return err
 	}
-	if current.Size != old.Size || current.IsDir != old.IsDir || !current.ModTime.Equal(old.ModTime) || current.ID != old.ID {
+	if current.Size != old.Size || current.IsDir != old.IsDir || !current.ModTime.Equal(old.ModTime) || !sameIdentity(current, *old) {
 		return fmt.Errorf("file changed after planning: %s", p)
 	}
 	return nil
@@ -504,7 +504,7 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 		}
 		for k, old := range p.SourceSnapshot {
 			cur, ok := now[k]
-			if !ok || cur.IsDir != old.IsDir || (!cur.IsDir && (cur.Size != old.Size || !cur.ModTime.Equal(old.ModTime) || cur.ID != old.ID)) {
+			if !ok || cur.IsDir != old.IsDir || !sameIdentity(cur, old) || (!cur.IsDir && (cur.Size != old.Size || !cur.ModTime.Equal(old.ModTime))) {
 				return result, errors.New("source tree changed; deletion blocked")
 			}
 		}
