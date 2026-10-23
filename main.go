@@ -1812,6 +1812,26 @@ func main() {
 							return nil
 						}
 
+						// Parse every fallible option before changing live configuration.
+						parsed := pcsconfig.NewConfig("")
+						if c.IsSet("pcs_addr") && !parsed.SETPCSAddr(c.String("pcs_addr")) {
+							return fmt.Errorf("设置 pcs_addr 错误: pcs服务器地址不合法")
+						}
+						for _, option := range []struct {
+							name  string
+							parse func(string) error
+						}{
+							{"cache_size", parsed.SetCacheSizeByStr},
+							{"max_download_rate", parsed.SetMaxDownloadRateByStr},
+							{"max_upload_rate", parsed.SetMaxUploadRateByStr},
+						} {
+							if c.IsSet(option.name) {
+								if err := option.parse(c.String(option.name)); err != nil {
+									return fmt.Errorf("设置 %s 错误: %w", option.name, err)
+								}
+							}
+						}
+
 						if c.IsSet("appid") {
 							pcsconfig.Config.SetAppID(c.Int("appid"))
 						}
@@ -1831,10 +1851,7 @@ func main() {
 							pcsconfig.Config.SetPCSUA(c.String("pcs_ua"))
 						}
 						if c.IsSet("pcs_addr") {
-							match := pcsconfig.Config.SETPCSAddr(c.String("pcs_addr"))
-							if !match {
-								return fmt.Errorf("设置 pcs_addr 错误: pcs服务器地址不合法")
-							}
+							pcsconfig.Config.SETPCSAddr(parsed.PCSAddr)
 						}
 						if c.IsSet("fix_pcs_addr") {
 							pcsconfig.Config.SetStaticPCSAddr(c.Bool("fix_pcs_addr"))
@@ -1846,10 +1863,7 @@ func main() {
 							pcsconfig.Config.SetPanUA(c.String("pan_ua"))
 						}
 						if c.IsSet("cache_size") {
-							err := pcsconfig.Config.SetCacheSizeByStr(c.String("cache_size"))
-							if err != nil {
-								return fmt.Errorf("设置 cache_size 错误: %w", err)
-							}
+							pcsconfig.Config.CacheSize = parsed.CacheSize
 						}
 						if c.IsSet("max_parallel") {
 							pcsconfig.Config.MaxParallel = c.Int("max_parallel")
@@ -1864,16 +1878,10 @@ func main() {
 							pcsconfig.Config.MaxUploadLoad = c.Int("max_upload_load")
 						}
 						if c.IsSet("max_download_rate") {
-							err := pcsconfig.Config.SetMaxDownloadRateByStr(c.String("max_download_rate"))
-							if err != nil {
-								return fmt.Errorf("设置 max_download_rate 错误: %w", err)
-							}
+							pcsconfig.Config.MaxDownloadRate = parsed.MaxDownloadRate
 						}
 						if c.IsSet("max_upload_rate") {
-							err := pcsconfig.Config.SetMaxUploadRateByStr(c.String("max_upload_rate"))
-							if err != nil {
-								return fmt.Errorf("设置 max_upload_rate 错误: %w", err)
-							}
+							pcsconfig.Config.MaxUploadRate = parsed.MaxUploadRate
 						}
 						if c.IsSet("savedir") {
 							pcsconfig.Config.SaveDir = c.String("savedir")
