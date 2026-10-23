@@ -99,7 +99,10 @@ func Check(ctx context.Context, src, dst Endpoint, o Options) error {
 		if d.IsDir || !o.Filter.Match(k) {
 			continue
 		}
-		if _, ok := sm[k]; !ok {
+		if s, ok := sm[k]; ok && s.IsDir {
+			logAction(o, "different-type", k)
+			differences++
+		} else if !ok {
 			logAction(o, "missing-on-source", k)
 			differences++
 		}

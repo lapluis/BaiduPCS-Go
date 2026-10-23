@@ -175,9 +175,6 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		s := sm[k]
 		d, exists := dm[k]
 		if s.IsDir {
-			if exists && !d.IsDir {
-				return nil, fmt.Errorf("file/directory conflict: %s", k)
-			}
 			p.SourceDirs = append(p.SourceDirs, k)
 			if o.CreateEmptyDirs && o.Filter.Match(k) {
 				if exists && !d.IsDir {
@@ -390,7 +387,7 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 						serverMoved, err = tryServerMove(ctx, p.Source, p.Destination, a, o)
 					}
 					for attempt := 0; !serverMoved && attempt <= o.Retries; attempt++ {
-						err = copyAction(ctx, p.Source, p.Destination, a, o)
+						err = copyAction(ctx, p.Source, p.Destination, &a, o)
 						if err == nil || ctx.Err() != nil {
 							break
 						}
@@ -520,7 +517,7 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	}
 	return src.FS.Remove(ctx, src.At(a.Path), false)
 }
-func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) error {
+func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) error {
 	ctx = context.WithValue(ctx, hashRateKey{}, perTransferRate(o))
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
@@ -607,6 +604,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) err
 	if got.IsDir || got.Size != a.Source.Size {
 		return errors.New("post-transfer size mismatch")
 	}
+	// A successful write replaces the planned destination. Keep its snapshot
+	// for retries after verification errors, without accepting later changes.
+	// If the write or stat failed, retain the old snapshot and fail closed.
+	a.Destination = &got
 	if o.Checksum {
 		x, err := src.FS.Hash(ctx, sp)
 		if err != nil {
@@ -620,7 +621,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a Action, o Options) err
 			return errors.New("post-transfer checksum mismatch")
 		}
 	}
-	return nil
+	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
+		return err
+	}
+	return unchanged(ctx, dst, a.Path, a.Destination)
 }
 func perTransferRate(o Options) int64 {
 	if o.BWLimit <= 0 {
