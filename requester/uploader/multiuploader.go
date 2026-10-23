@@ -2,6 +2,7 @@ package uploader
 
 import (
 	"context"
+	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -30,6 +31,9 @@ type (
 		onUploadStatusEvent UploadStatusFunc       //上传状态事件
 
 		instanceState *InstanceState
+		stateMu       sync.RWMutex
+		finishOnce    sync.Once
+		statusWG      sync.WaitGroup
 
 		multiUpload MultiUpload       // 上传体接口
 		file        rio.ReaderAtLen64 // 上传
@@ -74,13 +78,17 @@ func NewMultiUploader(multiUpload MultiUpload, file rio.ReaderAtLen64, config *M
 
 // SetInstanceState 设置InstanceState, 断点续传信息
 func (muer *MultiUploader) SetInstanceState(is *InstanceState) {
+	muer.stateMu.Lock()
+	defer muer.stateMu.Unlock()
 	muer.instanceState = is
 }
 
 func (muer *MultiUploader) lazyInit() {
+	muer.stateMu.Lock()
 	if muer.instanceState == nil {
 		muer.instanceState = &InstanceState{}
 	}
+	muer.stateMu.Unlock()
 	if muer.finished == nil {
 		muer.finished = make(chan struct{}, 1)
 	}
@@ -131,16 +139,20 @@ func (muer *MultiUploader) Execute() {
 		muer.finish(err)
 		return
 	}
+	var workers workerList
 	if muer.instanceState != nil && len(muer.instanceState.BlockList) > 0 {
-		muer.workers = muer.getWorkerListByInstanceState(muer.instanceState)
+		workers = muer.getWorkerListByInstanceState(muer.instanceState)
 		uploaderVerbose.Infof("upload task CREATED from instance state\n")
 	} else {
-		muer.workers = muer.getWorkerListByInstanceState(&InstanceState{
+		workers = muer.getWorkerListByInstanceState(&InstanceState{
 			BlockList: SplitBlock(muer.file.Len(), muer.config.BlockSize),
 		})
 
-		uploaderVerbose.Infof("upload task CREATED: block size: %d, num: %d\n", muer.config.BlockSize, len(muer.workers))
+		uploaderVerbose.Infof("upload task CREATED: block size: %d, num: %d\n", muer.config.BlockSize, len(workers))
 	}
+	muer.stateMu.Lock()
+	muer.workers = workers
+	muer.stateMu.Unlock()
 
 	// 开始上传
 	muer.executeTime = time.Now()
@@ -154,9 +166,10 @@ func (muer *MultiUploader) Execute() {
 
 func (muer *MultiUploader) finish(err error) {
 	// 完成
-	muer.finished <- struct{}{}
+	muer.finishOnce.Do(func() { close(muer.finished) })
+	muer.statusWG.Wait()
 	if err != nil {
-		if err == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			if muer.onCancelEvent != nil {
 				muer.onCancelEvent()
 			}
@@ -171,6 +184,8 @@ func (muer *MultiUploader) finish(err error) {
 
 // InstanceState 返回断点续传信息
 func (muer *MultiUploader) InstanceState() *InstanceState {
+	muer.stateMu.RLock()
+	defer muer.stateMu.RUnlock()
 	blockStates := make([]*BlockState, 0, len(muer.workers))
 	for _, wer := range muer.workers {
 		blockStates = append(blockStates, &BlockState{
@@ -186,6 +201,15 @@ func (muer *MultiUploader) InstanceState() *InstanceState {
 	return &InstanceState{
 		BlockList: blockStates,
 		Uploadid:  uploadID,
+	}
+}
+
+func (muer *MultiUploader) isCanceled() bool {
+	select {
+	case <-muer.canceled:
+		return true
+	default:
+		return false
 	}
 }
 

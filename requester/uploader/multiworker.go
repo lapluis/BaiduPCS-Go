@@ -39,6 +39,23 @@ func (werl *workerList) Readed() int64 {
 }
 
 func (muer *MultiUploader) upload() (uperr error) {
+	if muer.isCanceled() || muer.isStopped() {
+		return context.Canceled
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-muer.canceled:
+			cancel()
+			if muer.rateLimit != nil {
+				muer.rateLimit.Stop()
+			}
+		case <-ctx.Done():
+		}
+	}()
+	defer func() { cancel(); <-watchDone }()
 	originPCSHost, err := muer.multiUpload.Precreate()
 	if err != nil {
 		return err
@@ -64,7 +81,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 	for {
 		wg := waitgroup.NewWaitGroup(muer.config.Parallel)
 		for {
-			if muer.isStopped() { // 优雅停止: 不再派发新分片
+			if muer.isStopped() || muer.isCanceled() { // 不再派发新分片
 				break
 			}
 
@@ -75,37 +92,38 @@ func (muer *MultiUploader) upload() (uperr error) {
 
 			wer := e.(*worker)
 			wg.AddDelta()
+			if muer.isStopped() || muer.isCanceled() {
+				wg.Done()
+				break
+			}
 			go func() {
 				defer wg.Done()
-
-				var (
-					ctx, cancel = context.WithCancel(context.Background())
-					doneChan    = make(chan struct{})
-					checksum    string
-					terr        error
-				)
-				go func() {
-					checksum, terr = muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
-					close(doneChan)
-				}()
-				select {
-				case <-muer.canceled:
-					cancel()
+				if muer.isCanceled() {
 					return
-				case <-doneChan:
-					// continue
 				}
-				cancel()
+				checksum, terr := muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
+				if muer.isCanceled() {
+					return
+				}
 				if terr != nil {
 					var me *MultiError
 					if errors.As(terr, &me) {
 						if me.Terminated { // 终止
-							muer.closeCanceledOnce.Do(func() { // 只关闭一次
-								close(muer.canceled)
-							})
-							uperr = me.Err
+							mu.Lock()
+							if uperr == nil {
+								uperr = me.Err
+								if uperr == nil {
+									uperr = errors.New("upload terminated")
+								}
+							}
+							mu.Unlock()
+							muer.Cancel()
 							return
 						}
+					}
+					if errors.Is(terr, context.Canceled) {
+						muer.Cancel()
+						return
 					}
 
 					uploaderVerbose.Warnf("upload err: %s, id: %d\n", terr, wer.id)
@@ -116,20 +134,23 @@ func (muer *MultiUploader) upload() (uperr error) {
 					uploadDeque.Append(wer)
 					return
 				}
+				muer.stateMu.Lock()
 				wer.checksum = checksum
+				muer.stateMu.Unlock()
 				mu.Lock()
 				checksumMap[wer.id] = checksum // 记录成功任务的 checksum
 				mu.Unlock()
 
 				// 通知更新
-				if muer.updateInstanceStateChan != nil && len(muer.updateInstanceStateChan) < cap(muer.updateInstanceStateChan) {
-					muer.updateInstanceStateChan <- struct{}{}
+				select {
+				case muer.updateInstanceStateChan <- struct{}{}:
+				default:
 				}
 			}()
 		}
 		wg.Wait()
 
-		if muer.isStopped() { // 优雅停止: 跳出外层循环
+		if muer.isStopped() || muer.isCanceled() {
 			break
 		}
 

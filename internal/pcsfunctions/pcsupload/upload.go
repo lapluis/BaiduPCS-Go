@@ -2,6 +2,7 @@ package pcsupload
 
 import (
 	"context"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -26,17 +27,17 @@ type (
 )
 
 var (
-    uploadClient     *requester.HTTPClient
-    uploadClientOnce sync.Once
+	uploadClient     *requester.HTTPClient
+	uploadClientOnce sync.Once
 )
 
 func getUploadClient(jar http.CookieJar) *requester.HTTPClient {
-    uploadClientOnce.Do(func() {
-        uploadClient = pcsconfig.Config.PCSHTTPClient()
-        uploadClient.SetCookiejar(jar)
-        uploadClient.SetTimeout(200 * time.Second)
-    })
-    return uploadClient
+	uploadClientOnce.Do(func() {
+		uploadClient = pcsconfig.Config.PCSHTTPClient()
+		uploadClient.SetCookiejar(jar)
+		uploadClient.SetTimeout(200 * time.Second)
+	})
+	return uploadClient
 }
 
 var pcsPeriod = 256 // 上传多少个分片更换一次pcsHost
@@ -89,34 +90,25 @@ func (pu *PCSUpload) TmpFile(ctx context.Context, uploadId, targetPath string, p
 		mr.AddFormFile("uploadedfile", "", r)
 		mr.CloseMultipart()
 
-		doneChan := make(chan struct{}, 1)
-		go func() {
-			cli := getUploadClient(jar)
-			resp, err = cli.Req(http.MethodPost, uploadURL, mr, nil)
-			doneChan <- struct{}{}
-
-			if resp != nil {
-				// 不可恢复的错误
-				switch resp.StatusCode {
-				case 400, 401, 403, 413: // 4xx通常是由客户端非法操作引发，直接深度重试
-					respErr = &uploader.MultiError{
-						Terminated: true,
-					}
+		cli := getUploadClient(jar)
+		resp, err = cli.ReqWithContext(ctx, http.MethodPost, uploadURL, mr, nil)
+		if resp != nil {
+			// 不可恢复的错误
+			switch resp.StatusCode {
+			case 400, 401, 403, 413: // 4xx通常是由客户端非法操作引发，直接深度重试
+				respErr = &uploader.MultiError{
+					Terminated: true,
+					Err:        fmt.Errorf("upload returned HTTP status %d", resp.StatusCode),
 				}
 			}
-		}()
-		select {
-		case <-ctx.Done(): // 取消
-			// 返回, 让那边关闭连接
-			return resp, ctx.Err()
-		case <-doneChan:
-			// return
 		}
 		return
 	})
 
 	if respErr != nil {
-		respErr.Err = pcsError
+		if pcsError != nil {
+			respErr.Err = pcsError
+		}
 		return checksum, respErr
 	}
 

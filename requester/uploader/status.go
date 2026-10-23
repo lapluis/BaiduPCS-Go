@@ -82,7 +82,9 @@ func (muer *MultiUploader) uploadStatusEvent() {
 		return
 	}
 
+	muer.statusWG.Add(1)
 	go func() {
+		defer muer.statusWG.Done()
 		ticker := time.NewTicker(3 * time.Second) // 每3秒统计
 		//ticker := time.NewTicker(990 * time.Millisecond) // 每秒统计
 		defer ticker.Stop()
