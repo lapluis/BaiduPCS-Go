@@ -68,10 +68,14 @@ func (c *PCSConfig) manipUser(op string, baiduBase *BaiduBase) (*Baidu, error) {
 			// 修改 正在使用的 百度帐号
 			// 如果要删除的帐号为当前登录的帐号, 则设置当前登录帐号为列表中第一个帐号
 			if c.BaiduActiveUID == user.UID {
-				if len(c.BaiduUserList) != 0 {
-					c.setupNewUser(c.BaiduUserList[0])
-				} else {
-					c.BaiduActiveUID = 0
+				c.BaiduActiveUID = 0
+				c.activeUser = nil
+				c.pcs = nil
+				for _, remaining := range c.BaiduUserList {
+					if remaining != nil {
+						c.setupNewUser(remaining)
+						break
+					}
 				}
 			}
 		case opGet:

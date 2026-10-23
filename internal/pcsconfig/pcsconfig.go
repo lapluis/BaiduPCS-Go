@@ -70,6 +70,7 @@ type PCSConfig struct {
 	fileMu         sync.Mutex
 	activeUser     *Baidu
 	pcs            *baidupcs.BaiduPCS
+	loadErr        error // Prevent saving partial state after a failed load.
 }
 
 // NewConfig 返回 PCSConfig 指针对象
@@ -102,6 +103,9 @@ func (c *PCSConfig) Close() error {
 
 // Save 保存配置信息到配置文件
 func (c *PCSConfig) Save() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
 	// 检测配置项是否合法, 不合法则自动修复
 	c.fix()
 
@@ -138,7 +142,9 @@ func (c *PCSConfig) Save() error {
 	return nil
 }
 
-func (c *PCSConfig) init() error {
+func (c *PCSConfig) init() (err error) {
+	c.loadErr = nil
+	defer func() { c.loadErr = err }()
 	if c.configFilePath == "" {
 		return ErrConfigFileNotExist
 	}
@@ -150,7 +156,7 @@ func (c *PCSConfig) init() error {
 	c.BaiduUserList = nil
 	c.activeUser = nil
 	c.pcs = nil
-	err := c.loadConfigFromFile()
+	err = c.loadConfigFromFile()
 	if err != nil {
 		return err
 	}

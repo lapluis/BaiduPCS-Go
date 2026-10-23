@@ -64,14 +64,14 @@ var (
 		if err != nil {
 			fmt.Printf("重载配置错误: %s\n", err)
 		}
-		return nil
+		return err
 	}
 	saveFunc = func(c *cli.Context) error {
 		err := pcsconfig.Config.Save()
 		if err != nil {
 			fmt.Printf("保存配置错误: %s\n", err)
 		}
-		return nil
+		return err
 	}
 
 	isCli bool
