@@ -37,6 +37,13 @@ func (pcs *BaiduPCS) cpmvOp(op string, cpmvJSON ...*CpMvJSON) (pcsError pcserror
 	}
 
 	// 更新缓存
-	pcs.deleteCache((*CpMvJSONList)(unsafe.Pointer(&cpmvJSON)).AllRelatedDir())
+	var subtrees []string
+	for _, entry := range cpmvJSON {
+		subtrees = append(subtrees, entry.To)
+		if op != OperationCopy {
+			subtrees = append(subtrees, entry.From)
+		}
+	}
+	pcs.deleteCache((*CpMvJSONList)(unsafe.Pointer(&cpmvJSON)).AllRelatedDir(), subtrees...)
 	return nil
 }

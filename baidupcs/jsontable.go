@@ -2,9 +2,9 @@ package baidupcs
 
 import (
 	"errors"
+	"github.com/json-iterator/go"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
-	"github.com/json-iterator/go"
 	"path"
 	"strconv"
 	"strings"
@@ -102,7 +102,7 @@ func (clj *CpMvListJSON) String() string {
 // AllRelatedDir 获取所有相关的目录
 func (cjl *CpMvJSONList) AllRelatedDir() (dirs []string) {
 	for _, cj := range *cjl {
-		fromDir, toDir := path.Dir(cj.From), path.Dir(cj.To)
+		fromDir, toDir := path.Dir(directoryCachePath(cj.From)), path.Dir(directoryCachePath(cj.To))
 		if !pcsutil.ContainsString(dirs, fromDir) {
 			dirs = append(dirs, fromDir)
 		}

@@ -79,3 +79,74 @@ func TestDirectoryCacheAcceptsDefaultOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDirectoryCacheRootAliases(t *testing.T) {
+	calls := 0
+	pcs := fixturePCS(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return response(req, `{"errno":0,"list":[]}`), nil
+	})
+	for _, dir := range []string{"", "/", "//", "/./"} {
+		if _, err := pcs.CacheFilesDirectoriesList(dir, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("root aliases did not share cache: %d requests", calls)
+	}
+	if err := pcs.Mkdir("/new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pcs.CacheFilesDirectoriesList("", nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("root listing stayed cached after mkdir: %d requests, want 3", calls)
+	}
+}
+
+func TestDirectoryMutationInvalidatesSubtrees(t *testing.T) {
+	for _, operation := range []string{"remove", "move", "rename", "copy"} {
+		t.Run(operation, func(t *testing.T) {
+			calls := 0
+			pcs := fixturePCS(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return response(req, `{"errno":0,"list":[]}`), nil
+			})
+			paths := []string{"/", "/dir", "/dir/sub", "/dir-other", "/other", "/new", "/new/sub"}
+			for _, dir := range paths {
+				if _, err := pcs.CacheFilesDirectoriesList(dir, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch operation {
+			case "remove":
+				if err := pcs.Remove("/dir/"); err != nil {
+					t.Fatal(err)
+				}
+			case "move":
+				if err := pcs.Move(&CpMvJSON{From: "/dir", To: "/new"}); err != nil {
+					t.Fatal(err)
+				}
+			case "rename":
+				if err := pcs.Rename("/dir", "/new"); err != nil {
+					t.Fatal(err)
+				}
+			case "copy":
+				if err := pcs.Copy(&CpMvJSON{From: "/dir", To: "/new"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, dir := range paths {
+				before := calls
+				if _, err := pcs.CacheFilesDirectoriesList(dir, nil); err != nil {
+					t.Fatal(err)
+				}
+				changed := dir == "/" || (operation != "copy" && (dir == "/dir" || dir == "/dir/sub")) || (operation != "remove" && (dir == "/new" || dir == "/new/sub"))
+				if (calls != before) != changed {
+					t.Errorf("%s: refreshed=%v, want %v", dir, calls != before, changed)
+				}
+			}
+		})
+	}
+}

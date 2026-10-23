@@ -3,8 +3,17 @@ package baidupcs
 import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
+	pathpkg "path"
+	"strings"
 	"time"
 )
+
+func directoryCachePath(dir string) string {
+	if dir == "" {
+		return PathSeparator
+	}
+	return pathpkg.Clean(dir)
+}
 
 type directoryCacheKey struct {
 	path  string
@@ -13,16 +22,29 @@ type directoryCacheKey struct {
 }
 
 // deleteCache 删除含有 dirs 的缓存
-func (pcs *BaiduPCS) deleteCache(dirs []string) {
+func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 	pcs.lazyInit()
 	cache := pcs.cacheOpMap.LazyInitCachePoolOp(OperationFilesDirectoriesList)
 	changed := make(map[string]bool, len(dirs))
 	for _, dir := range dirs {
-		changed[dir] = true
+		changed[directoryCachePath(dir)] = true
+	}
+	roots := make([]string, len(subtrees))
+	for i, dir := range subtrees {
+		roots[i] = directoryCachePath(dir)
 	}
 	cache.Range(func(key interface{}, _ expires.DataExpires) bool {
-		if listing, ok := key.(directoryCacheKey); ok && changed[listing.path] {
-			cache.Delete(key)
+		if listing, ok := key.(directoryCacheKey); ok {
+			remove := changed[listing.path]
+			for _, root := range roots {
+				if listing.path == root || strings.HasPrefix(listing.path, strings.TrimSuffix(root, "/")+"/") {
+					remove = true
+					break
+				}
+			}
+			if remove {
+				cache.Delete(key)
+			}
 		}
 		return true
 	})
@@ -31,6 +53,7 @@ func (pcs *BaiduPCS) deleteCache(dirs []string) {
 // CacheFilesDirectoriesList 缓存获取
 func (pcs *BaiduPCS) CacheFilesDirectoriesList(path string, options *OrderOptions) (fdl FileDirectoryList, pcsError pcserror.Error) {
 	pcs.lazyInit()
+	path = directoryCachePath(path)
 	if options == nil {
 		options = DefaultOrderOptions
 	}
