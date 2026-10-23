@@ -48,14 +48,16 @@ type Baidu struct {
 
 // BaiduPCS 初始化*baidupcs.BaiduPCS
 func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
-	pcs := baidupcs.NewPCS(Config.AppID, baidu.BDUSS)
-	pcs.SetStoken(baidu.STOKEN)
+	// Load cookie defaults once, then overlay explicitly configured credentials.
+	pcs := baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
+	if baidu.BDUSS != "" {
+		pcs.SetBDUSS(baidu.BDUSS)
+	}
+	if baidu.STOKEN != "" {
+		pcs.SetStoken(baidu.STOKEN)
+	}
 	if baidu.SBOXTKN != "" {
 		pcs.SetSboxtkn(baidu.SBOXTKN)
-	}
-	if strings.Contains(baidu.COOKIES, "STOKEN=") && baidu.STOKEN == "" {
-		// 未显式指定stoken则从cookies中读取
-		pcs = baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
 	}
 	pcs.SetHTTPS(Config.EnableHTTPS)
 	pcs.SetStaticPCSAddr(Config.FixPCSAddr)
