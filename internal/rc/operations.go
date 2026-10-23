@@ -175,6 +175,10 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			logAction(o, "would-delete", k)
 			continue
 		}
+		old := m[k]
+		if err = unchanged(ctx, e, k, &old); err != nil {
+			return err
+		}
 		if err = e.FS.Remove(ctx, e.At(k), false); err != nil {
 			return err
 		}

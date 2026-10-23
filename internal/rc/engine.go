@@ -519,6 +519,10 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 	}
 	for _, a := range p.Actions {
 		if a.Kind == "delete" {
+			// Earlier deletions may take long enough for later candidates to change.
+			if err := unchanged(ctx, p.Destination, a.Path, a.Destination); err != nil {
+				return result, err
+			}
 			if err := p.Destination.FS.Remove(ctx, p.Destination.At(a.Path), false); err != nil {
 				return result, err
 			}
@@ -552,6 +556,13 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
+	destination, err := dst.FS.Stat(ctx, dst.At(a.Path))
+	if err != nil {
+		return err
+	}
+	if destination.IsDir || destination.Size != a.Source.Size {
+		return errors.New("destination changed before verification; source retained")
+	}
 	// Never let --size-only, --update or --ignore-existing authorize data loss.
 	x, err := src.FS.Hash(ctx, src.At(a.Path))
 	if err != nil {
@@ -583,6 +594,9 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 				return errors.New("source and destination refer to the same file; source retained")
 			}
 		}
+	}
+	if err := unchanged(ctx, dst, a.Path, &destination); err != nil {
+		return fmt.Errorf("destination changed during verification; source retained: %w", err)
 	}
 	return src.FS.Remove(ctx, src.At(a.Path), false)
 }
