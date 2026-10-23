@@ -242,7 +242,7 @@ func (c *PCSConfig) InitDefaultConfig() {
 	c.MaxDownloadLoad = 1
 	c.MaxDownloadRate = 0
 	c.MaxUploadRate = 0
-	c.UserAgent = requester.UserAgent
+	c.UserAgent = requester.DefaultUserAgent
 	c.PCSUA = ""
 	c.PCSAddr = "pcs.baidu.com"
 	c.PanUA = baidupcs.NetdiskUA

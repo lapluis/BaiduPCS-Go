@@ -1,6 +1,8 @@
 package pcsconfig
 
 import (
+	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -117,9 +119,13 @@ func (c *PCSConfig) CheckBaiduUserExist(baidubase *BaiduBase) bool {
 // SetupUserByBDUSS 设置百度 bduss, ptoken, stoken, cookies 并保存
 func (c *PCSConfig) SetupUserByBDUSS(bduss, ptoken, stoken, cookies string) (baidu *Baidu, err error) {
 	if bduss == "" && cookies != "" {
-		re, _ := regexp.Compile(`BDUSS=(.+?);`)
-		sub := re.FindSubmatch([]byte(cookies))
-		bduss = string(sub[1])
+		req := &http.Request{Header: make(http.Header)}
+		req.Header.Set("Cookie", cookies)
+		cookie, cookieErr := req.Cookie("BDUSS")
+		if cookieErr != nil || cookie.Value == "" {
+			return nil, errors.New("login cookie is missing a non-empty BDUSS")
+		}
+		bduss = cookie.Value
 	}
 	b, err := NewUserInfoByInput(bduss, c.ForceLogin)
 	if c.ForceLogin == "" {
