@@ -4,6 +4,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -24,6 +25,9 @@ const (
 )
 
 var BlockSizeList = [4]int64{256 * converter.KB, 512 * converter.KB, 1 * converter.MB, 4 * converter.MB}
+
+// ErrResumeSizeMismatch means saved progress belongs to a different file size.
+var ErrResumeSizeMismatch = errors.New("download resume size does not match remote file")
 
 type (
 	// Downloader 下载
@@ -350,6 +354,10 @@ func (der *Downloader) Execute() error {
 			return err
 		}
 		bii = der.instanceState.Get()
+		if bii != nil && bii.DownloadStatus != nil && bii.DownloadStatus.TotalSize() != der.firstInfo.ContentLength {
+			der.instanceState.Close()
+			return fmt.Errorf("%w: saved=%d, remote=%d", ErrResumeSizeMismatch, bii.DownloadStatus.TotalSize(), der.firstInfo.ContentLength)
+		}
 	}
 
 	var (
