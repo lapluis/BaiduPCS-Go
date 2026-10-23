@@ -59,7 +59,7 @@ func CheckUpdate(version string, yes bool) {
 	}
 
 	// 没有更新, 或忽略 Beta 版本, 和版本前缀不符的
-	if strings.Contains(releaseInfo.TagName, "Beta") || !strings.HasPrefix(releaseInfo.TagName, "v") || version >= releaseInfo.TagName {
+	if !newerStableRelease(version, releaseInfo.TagName) {
 		fmt.Printf("未检测到更新!\n")
 		return
 	}
