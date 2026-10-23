@@ -86,12 +86,11 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 
 // Save 保存内容
 func (ud *UploadingDatabase) Save() error {
+	ud.lock.Lock()
+	defer ud.lock.Unlock()
 	if ud.dataFile == nil {
 		return errors.New("dataFile is nil")
 	}
-
-	ud.lock.Lock()
-	defer ud.lock.Unlock()
 
 	ud.Timestamp = time.Now().Unix()
 
@@ -124,13 +123,15 @@ func (ud *UploadingDatabase) UpdateUploading(meta *checksum.LocalFileMeta, state
 	if meta == nil {
 		return
 	}
+	meta = cloneUploadMeta(meta)
+	state = cloneUploadState(state)
 	meta.CompleteAbsPath()
 	for k, uploading := range ud.UploadingList {
 		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
 		if uploading.LocalFileMeta.EqualLengthMD5(meta) || uploading.LocalFileMeta.Path == meta.Path {
-			ud.UploadingList[k].State = state
+			ud.UploadingList[k] = &Uploading{LocalFileMeta: meta, State: state}
 			return
 		}
 	}
@@ -145,8 +146,15 @@ func (ud *UploadingDatabase) UpdateUploading(meta *checksum.LocalFileMeta, state
 func (ud *UploadingDatabase) UpdateFullBlock(meta *checksum.LocalFileMeta, state *uploader.InstanceState) {
 	ud.lock.Lock()
 	defer ud.lock.Unlock()
-	if meta == nil {
+	if meta == nil || state == nil || len(state.BlockList) < len(meta.BlocksList) {
 		return
+	}
+	meta = cloneUploadMeta(meta)
+	state = cloneUploadState(state)
+	for i := range meta.BlocksList {
+		if state.BlockList[i] == nil {
+			return
+		}
 	}
 	meta.CompleteAbsPath()
 	for k, uploading := range ud.UploadingList {
@@ -159,7 +167,7 @@ func (ud *UploadingDatabase) UpdateFullBlock(meta *checksum.LocalFileMeta, state
 					state.BlockList[index].CheckSum = md5
 				}
 			}
-			ud.UploadingList[k].State = state
+			ud.UploadingList[k] = &Uploading{LocalFileMeta: meta, State: state}
 			return
 		}
 	}
@@ -196,8 +204,10 @@ func (ud *UploadingDatabase) Search(meta *checksum.LocalFileMeta) *uploader.Inst
 	}
 
 	meta.CompleteAbsPath()
-	ud.clearModTimeChange()
-	for _, uploading := range ud.UploadingList {
+	ud.lock.Lock()
+	defer ud.lock.Unlock()
+	ud.clearModTimeChangeLocked()
+	for k, uploading := range ud.UploadingList {
 		if uploading == nil || uploading.LocalFileMeta == nil {
 			continue
 		}
@@ -205,28 +215,28 @@ func (ud *UploadingDatabase) Search(meta *checksum.LocalFileMeta) *uploader.Inst
 			continue
 		}
 		if uploading.LocalFileMeta.MD5 != nil && uploading.LocalFileMeta.EqualLengthMD5(meta) {
-			return uploading.State
+			return cloneUploadState(uploading.State)
 		}
 		if uploading.LocalFileMeta.Path == meta.Path {
 			// 移除旧的信息
 			// 目前只是比较了文件大小
 			if meta.Length != uploading.LocalFileMeta.Length {
-				ud.Delete(meta)
+				ud.deleteIndex(k)
 				return nil
 			}
 
-			meta.MD5 = uploading.LocalFileMeta.MD5
-			meta.SliceMD5 = uploading.LocalFileMeta.SliceMD5
-			meta.BlocksList = uploading.LocalFileMeta.BlocksList
-			return uploading.State
+			cached := cloneUploadMeta(uploading.LocalFileMeta)
+			meta.MD5 = cached.MD5
+			meta.SliceMD5 = cached.SliceMD5
+			meta.BlocksList = cached.BlocksList
+			return cloneUploadState(uploading.State)
 		}
 	}
 	return nil
 }
 
-func (ud *UploadingDatabase) clearModTimeChange() {
-	ud.lock.Lock()
-	defer ud.lock.Unlock()
+// Caller holds ud.lock throughout cleanup and lookup.
+func (ud *UploadingDatabase) clearModTimeChangeLocked() {
 	for i := 0; i < len(ud.UploadingList); i++ {
 		uploading := ud.UploadingList[i]
 		if uploading == nil || uploading.LocalFileMeta == nil {
@@ -256,5 +266,45 @@ func (ud *UploadingDatabase) clearModTimeChange() {
 
 // Close 关闭数据库
 func (ud *UploadingDatabase) Close() error {
-	return ud.dataFile.Close()
+	ud.lock.Lock()
+	defer ud.lock.Unlock()
+	if ud.dataFile == nil {
+		return nil
+	}
+	err := ud.dataFile.Close()
+	ud.dataFile = nil
+	return err
+}
+
+// Stored and returned snapshots must not share mutable slices or blocks with
+// upload tasks, which continue updating their own state outside ud.lock.
+func cloneUploadMeta(meta *checksum.LocalFileMeta) *checksum.LocalFileMeta {
+	copy := *meta
+	if meta.MD5 != nil {
+		copy.MD5 = append([]byte{}, meta.MD5...)
+	}
+	if meta.SliceMD5 != nil {
+		copy.SliceMD5 = append([]byte{}, meta.SliceMD5...)
+	}
+	if meta.BlocksList != nil {
+		copy.BlocksList = append([]string{}, meta.BlocksList...)
+	}
+	return &copy
+}
+
+func cloneUploadState(state *uploader.InstanceState) *uploader.InstanceState {
+	if state == nil {
+		return nil
+	}
+	copy := *state
+	if state.BlockList != nil {
+		copy.BlockList = make([]*uploader.BlockState, len(state.BlockList))
+		for i, block := range state.BlockList {
+			if block != nil {
+				value := *block
+				copy.BlockList[i] = &value
+			}
+		}
+	}
+	return &copy
 }
