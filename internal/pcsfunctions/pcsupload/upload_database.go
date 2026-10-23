@@ -229,6 +229,12 @@ func (ud *UploadingDatabase) Search(meta *checksum.LocalFileMeta) *uploader.Inst
 				ud.deleteIndex(k)
 				return nil
 			}
+			// Legacy second-only timestamps cannot exclude a same-second
+			// rewrite. A verified matching MD5 already returned above.
+			if uploading.ModTime != -1 && uploading.ModTimeNS == 0 {
+				ud.deleteIndex(k)
+				return nil
+			}
 
 			// An already verified current digest takes precedence over cached
 			// metadata, including an absent or incomplete cached digest.
@@ -264,7 +270,7 @@ func (ud *UploadingDatabase) clearModTimeChangeLocked() {
 			continue
 		}
 
-		if uploading.LocalFileMeta.ModTime != info.ModTime().Unix() {
+		if uploading.Length != info.Size() || uploading.ModTime != info.ModTime().Unix() || (uploading.ModTimeNS != 0 && uploading.ModTimeNS != info.ModTime().UnixNano()) {
 			ud.deleteIndex(i)
 			i--
 			pcsUploadVerbose.Infof("clear modified file path: %s\n", uploading.LocalFileMeta.Path)

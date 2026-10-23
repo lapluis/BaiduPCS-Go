@@ -32,13 +32,14 @@ const (
 type (
 	// LocalFileMeta 本地文件元信息
 	LocalFileMeta struct {
-		Path       string   `json:"path"`      // 本地路径
-		Length     int64    `json:"length"`    // 文件大小
-		SliceMD5   []byte   `json:"slicemd5"`  // 文件前 requiredSliceLen (256KB) 切片的 md5 值
-		BlocksList []string `json:"blocklist"` // 文件分块计算md5的切片
-		MD5        []byte   `json:"md5"`       // 文件的 md5
-		CRC32      uint32   `json:"crc32"`     // 文件的 crc32
-		ModTime    int64    `json:"modtime"`   // 修改日期
+		Path       string   `json:"path"`                 // 本地路径
+		Length     int64    `json:"length"`               // 文件大小
+		SliceMD5   []byte   `json:"slicemd5"`             // 文件前 requiredSliceLen (256KB) 切片的 md5 值
+		BlocksList []string `json:"blocklist"`            // 文件分块计算md5的切片
+		MD5        []byte   `json:"md5"`                  // 文件的 md5
+		CRC32      uint32   `json:"crc32"`                // 文件的 crc32
+		ModTime    int64    `json:"modtime"`              // 修改日期
+		ModTimeNS  int64    `json:"modtime_ns,omitempty"` // 修改时间，纳秒；0 表示旧记录未提供
 	}
 
 	// LocalFileChecksum 校验本地文件
@@ -89,6 +90,7 @@ func (lfc *LocalFileChecksum) OpenPath() error {
 	lfc.file = file
 	lfc.Length = info.Size()
 	lfc.ModTime = info.ModTime().Unix()
+	lfc.ModTimeNS = info.ModTime().UnixNano()
 	return nil
 }
 
@@ -210,6 +212,9 @@ func (lfc *LocalFileChecksum) createChecksumWriteUnit(cw ChecksumWriter, isAll, 
 // Sum 计算文件摘要值
 func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 	lfc.fix()
+	if err = lfc.checkSnapshot(); err != nil {
+		return err
+	}
 	wus := make([]*ChecksumWriteUnit, 0, 2)
 	if (checkSumFlag & (CHECKSUM_MD5 | CHECKSUM_SLICE_MD5)) != 0 {
 		md5w := md5.New()
@@ -248,6 +253,9 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 	}
 
 	err = lfc.repeatRead(wus...)
+	if err == nil {
+		err = lfc.checkSnapshot()
+	}
 	return
 }
 
@@ -258,30 +266,10 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	if chunkSize <= 0 {
 		return fmt.Errorf("invalid block size: %d", chunkSize)
 	}
-	if lfc.file == nil {
-		return ErrFileIsNil
-	}
-
-	fileSize := lfc.Length
-	if fileSize < 0 {
-		return fmt.Errorf("invalid file size: %d", fileSize)
-	}
-	checkSize := func() error {
-		info, err := lfc.file.Stat()
-		if err != nil {
-			return err
-		}
-		if info.Size() < fileSize {
-			return fmt.Errorf("file shrank from %d to %d bytes: %w", fileSize, info.Size(), io.ErrUnexpectedEOF)
-		}
-		if info.Size() > fileSize {
-			return fmt.Errorf("file size changed from %d to %d bytes", fileSize, info.Size())
-		}
-		return nil
-	}
-	if err := checkSize(); err != nil {
+	if err := lfc.checkSnapshot(); err != nil {
 		return err
 	}
+	fileSize := lfc.Length
 	if fileSize == 0 {
 		lfc.BlocksList = nil
 		return nil // 空文件
@@ -371,7 +359,7 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	if firstErr != nil {
 		return firstErr
 	}
-	if err := checkSize(); err != nil {
+	if err := lfc.checkSnapshot(); err != nil {
 		return err
 	}
 	lfc.BlocksList = blocks
