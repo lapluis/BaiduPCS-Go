@@ -31,6 +31,7 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		{"bad upload rate", []string{"config", "set", "-max_upload_rate", "invalid-fixture-value"}, true},
 		{"bad cache size", []string{"config", "set", "-cache_size", "invalid-fixture-value"}, true},
 		{"bad server", []string{"config", "set", "-pcs_addr", "fixture.invalid"}, true},
+		{"server suffix", []string{"config", "set", "-pcs_addr", "pcs.baidu.com.fixture.invalid"}, true},
 		{"unknown command", []string{"unknown-fixture-command"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -59,6 +59,7 @@ func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
 	}
 	pcs.SetHTTPS(Config.EnableHTTPS)
 	pcs.SetStaticPCSAddr(Config.FixPCSAddr)
+	pcs.SetPCSAddr(Config.PCSAddr)
 	pcs.SetPCSUserAgent(Config.PCSUA)
 	pcs.SetPanUserAgent(Config.PanUA)
 	pcs.SetUID(baidu.UID)
