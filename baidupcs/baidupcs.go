@@ -329,12 +329,18 @@ func (pcs *BaiduPCS) SetaccessToken(accessToken string) {
 // SetBDUSS updates the session credential without discarding other cookies.
 func (pcs *BaiduPCS) SetBDUSS(bduss string) {
 	pcs.lazyInit()
+	previous := pcs.GetBDUSS()
 	if pcs.client.Jar == nil {
 		pcs.client.ResetCookiejar()
 	}
 	pcs.client.Jar.SetCookies(baiduComURL, []*http.Cookie{{
 		Name: "BDUSS", Value: bduss, Domain: DotBaiduCom,
 	}})
+	if previous != pcs.GetBDUSS() {
+		// Copies share both the cookie jar and cache, so invalidate the shared
+		// directory pool instead of replacing this client's cache pointer.
+		pcs.cacheOpMap.RemoveCachePoolOp(OperationFilesDirectoriesList)
+	}
 }
 
 // SetStoken 设置stoken
