@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
+	"sync/atomic"
 )
 
 type (
@@ -16,7 +17,7 @@ type (
 
 	//WorkerStatus worker状态
 	WorkerStatus struct {
-		statusCode StatusCode
+		statusCode atomic.Int32
 	}
 
 	// DownloadStatusFunc 下载状态处理函数
@@ -84,22 +85,20 @@ func GetStatusText(sc StatusCode) string {
 
 //NewWorkerStatus 初始化WorkerStatus
 func NewWorkerStatus() *WorkerStatus {
-	return &WorkerStatus{
-		statusCode: StatusCodeInit,
-	}
+	return &WorkerStatus{}
 }
 
 //SetStatusCode 设置worker状态码
 func (ws *WorkerStatus) SetStatusCode(sc StatusCode) {
-	ws.statusCode = sc
+	ws.statusCode.Store(int32(sc))
 }
 
 //StatusCode 返回状态码
 func (ws *WorkerStatus) StatusCode() StatusCode {
-	return ws.statusCode
+	return StatusCode(ws.statusCode.Load())
 }
 
 //StatusText 返回状态信息
 func (ws *WorkerStatus) StatusText() string {
-	return GetStatusText(ws.statusCode)
+	return GetStatusText(ws.StatusCode())
 }

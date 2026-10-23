@@ -2,14 +2,63 @@ package downloader
 
 import (
 	"errors"
+	"fmt"
 	"github.com/golang/protobuf/proto"
+	"github.com/json-iterator/go"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
-	"github.com/json-iterator/go"
 	"os"
+	"sort"
 	"sync"
 )
+
+// ErrResumeFileMismatch means local data cannot support the saved progress.
+var ErrResumeFileMismatch = errors.New("local file does not match download resume progress")
+
+func (der *Downloader) validateResumeFile(info *transfer.DownloadInstanceInfo) error {
+	file, ok := der.writer.(interface{ Stat() (os.FileInfo, error) })
+	if !ok || der.config.IsTest {
+		return nil
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrResumeFileMismatch, err)
+	}
+	total := info.DownloadStatus.TotalSize()
+	if stat.Size() > total {
+		return fmt.Errorf("%w: local=%d, remote=%d", ErrResumeFileMismatch, stat.Size(), total)
+	}
+	generated := total
+	if gen := info.DownloadStatus.RangeListGen(); gen != nil && gen.RangeGenMode() == transfer.RangeGenMode_BlockSize {
+		generated = gen.LoadBegin()
+	}
+	if generated < 0 || generated > total {
+		return fmt.Errorf("%w: invalid generated extent", ErrResumeFileMismatch)
+	}
+	ranges := append(transfer.RangeList(nil), info.Ranges...)
+	for _, r := range ranges {
+		if r == nil || r.LoadBegin() < 0 || r.LoadBegin() > r.LoadEnd() || r.LoadEnd() > generated {
+			return fmt.Errorf("%w: invalid pending range", ErrResumeFileMismatch)
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].LoadBegin() < ranges[j].LoadBegin() })
+	// Every assigned byte beyond local EOF must still be pending. A gap means
+	// the saved progress would skip completed data that is no longer present.
+	covered := stat.Size()
+	for _, r := range ranges {
+		if r.LoadBegin() > covered {
+			break
+		}
+		if r.LoadEnd() > covered {
+			covered = r.LoadEnd()
+		}
+	}
+	if covered < generated {
+		return fmt.Errorf("%w: completed bytes extend beyond local size %d", ErrResumeFileMismatch, stat.Size())
+	}
+	return nil
+}
 
 type (
 	//InstanceState 状态, 断点续传信息

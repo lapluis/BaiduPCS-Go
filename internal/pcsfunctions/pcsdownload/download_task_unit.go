@@ -1,6 +1,7 @@
 package pcsdownload
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
@@ -83,8 +84,8 @@ const (
 )
 
 var (
-    panClient     *requester.HTTPClient
-    panClientOnce sync.Once
+	panClient     *requester.HTTPClient
+	panClientOnce sync.Once
 )
 
 func (dtu *DownloadTaskUnit) SetTaskInfo(info *taskframework.TaskInfo) {
@@ -135,13 +136,13 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			}
 		} else if !fileInfo.IsDir() {
 			// SavePath所在的目录不是目录
-			return fmt.Errorf("%s, path %s: not a directory", StrDownloadInitError, dir)
+			return fmt.Errorf("%s, %w", StrDownloadInitError, &os.PathError{Op: "mkdir", Path: dir, Err: errors.New("not a directory")})
 		}
 
 		// 打开文件
 		writer, file, err = downloader.NewDownloaderWriterByFilename(dtu.SavePath, os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
-			return fmt.Errorf("%s, %s", StrDownloadInitError, err)
+			return fmt.Errorf("%s, %w", StrDownloadInitError, err)
 		}
 		defer file.Close()
 	}
@@ -248,50 +249,50 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 
 // panHTTPClient 获取包含特定User-Agent的HTTPClient
 func (dtu *DownloadTaskUnit) panHTTPClient() *requester.HTTPClient {
-    panClientOnce.Do(func() {
-        panClient = pcsconfig.Config.PanHTTPClient()
-        panClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-            // 去掉 Referer
-            if !pcsconfig.Config.EnableHTTPS {
-                req.Header.Del("Referer")
-            }
-            if len(via) >= 10 {
-                return errors.New("stopped after 10 redirects")
-            }
-            return nil
-        }
-        panClient.SetTimeout(6 * time.Minute)
-        panClient.SetKeepAlive(true)
-    })
-    return panClient
+	panClientOnce.Do(func() {
+		panClient = pcsconfig.Config.PanHTTPClient()
+		panClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			// 去掉 Referer
+			if !pcsconfig.Config.EnableHTTPS {
+				req.Header.Del("Referer")
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		}
+		panClient.SetTimeout(6 * time.Minute)
+		panClient.SetKeepAlive(true)
+	})
+	return panClient
 }
 
 func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult) {
-	switch value := result.Err.(type) {
-	case pcserror.Error: // pcserror 接口
-		switch value.GetErrType() {
-		case pcserror.ErrTypeRemoteError:
-		// 远程服务器错误
-		case 31045: // user not exists
-			fallthrough
-		case 31066: // file does not exist
-			result.NeedRetry = false
-		case 31297: // file does not exist
-			result.NeedRetry = false
-		case 31626: // user is not authorized
-			//可能是User-Agent不对
-			//重试
-			fallthrough
-		default:
-			result.NeedRetry = true
-		}
-	case *os.PathError:
-		// 系统级别的错误, 可能是权限问题
-		result.NeedRetry = false
-	default:
-		// 其他错误, 需要重试
-		result.NeedRetry = true
+	result.NeedRetry = downloadNeedsRetry(result.Err)
+}
+
+func downloadNeedsRetry(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
 	}
+	var pcsErr pcserror.Error
+	if errors.As(err, &pcsErr) {
+		if pcsErr.GetErrType() == pcserror.ErrTypeRemoteError {
+			switch pcsErr.GetRemoteErrCode() {
+			case 31045, 31066, 31297: // user or file does not exist
+				return false
+			default:
+				return true
+			}
+		}
+		// PCS errors expose their underlying cause through GetError.
+		if cause := pcsErr.GetError(); cause != nil {
+			return downloadNeedsRetry(cause)
+		}
+		return true
+	}
+	var pathErr *os.PathError
+	return !errors.As(err, &pathErr)
 }
 
 func (dtu *DownloadTaskUnit) execPanDownload(dlink string, result *taskframework.TaskUnitRunResult, okPtr *bool) {
@@ -368,16 +369,31 @@ func (dtu *DownloadTaskUnit) pcsOrStreamingDownload(mode DownloadMode, result *t
 
 // checkFileValid 检测文件有效性
 func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunResult) (ok bool) {
-	fi, err := os.Stat(dtu.SavePath)
-	if err == nil {
-		if fi.Size() != dtu.FileInfo.Size {
-			result.ResultMessage = StrDownloadCheckLengthFailed
-			result.NeedNextdindex = true
-			result.NeedRetry = true
-			return
-		}
+	if dtu.Cfg.IsTest {
+		fmt.Printf("[%s] 跳过文件有效性检验\n", dtu.taskInfo.Id())
+		return true
 	}
-	if dtu.Cfg.IsTest || dtu.NoCheck {
+	fi, err := os.Stat(dtu.SavePath)
+	if err != nil {
+		result.ResultMessage = StrDownloadChecksumFailed
+		result.Err = err
+		dtu.handleError(result)
+		return
+	}
+	if !fi.Mode().IsRegular() {
+		result.ResultMessage = StrDownloadChecksumFailed
+		result.Err = &os.PathError{Op: "validate", Path: dtu.SavePath, Err: errors.New("target is not a regular file")}
+		dtu.handleError(result)
+		return
+	}
+	if fi.Size() != dtu.FileInfo.Size {
+		result.ResultMessage = StrDownloadCheckLengthFailed
+		result.NeedNextdindex = true
+		result.NeedRetry = true
+		dtu.IsOverwrite = true
+		return
+	}
+	if dtu.NoCheck {
 		// 不检测文件有效性
 		fmt.Printf("[%s] 跳过文件有效性检验\n", dtu.taskInfo.Id())
 		return true
@@ -450,6 +466,31 @@ func (dtu *DownloadTaskUnit) RetryWait() time.Duration {
 	return pcsfunctions.RetryWait(dtu.taskInfo.Retry())
 }
 
+func createEmptyDownloadFile(filename string, overwrite bool) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0777); err != nil {
+		return err
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
+	if overwrite {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	file, err := os.OpenFile(filename, flags, 0666)
+	if err != nil {
+		if !overwrite && os.IsExist(err) {
+			info, statErr := os.Stat(filename)
+			if statErr != nil {
+				return statErr
+			}
+			if info.Mode().IsRegular() {
+				return nil
+			}
+			return &os.PathError{Op: "create", Path: filename, Err: errors.New("target is not a regular file")}
+		}
+		return err
+	}
+	return file.Close()
+}
+
 func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	result = &taskframework.TaskUnitRunResult{}
 	// 获取文件信息
@@ -475,7 +516,12 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	// 如果是一个目录, 将子文件和子目录加入队列
 	if dtu.FileInfo.Isdir {
 		if !dtu.Cfg.IsTest { // 测试下载, 不建立空目录
-			os.MkdirAll(dtu.SavePath, 0777) // 首先在本地创建目录, 保证空目录也能被保存
+			if err := os.MkdirAll(dtu.SavePath, 0777); err != nil {
+				result.ResultMessage = StrDownloadInitError
+				result.Err = err
+				dtu.handleError(result)
+				return
+			}
 		}
 
 		// 获取该目录下的文件列表
@@ -507,7 +553,12 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	if dtu.FileInfo.Size == 0 {
 		if !dtu.Cfg.IsTest {
-			os.Create(dtu.SavePath)
+			if err := createEmptyDownloadFile(dtu.SavePath, dtu.IsOverwrite); err != nil {
+				result.ResultMessage = StrDownloadInitError
+				result.Err = err
+				dtu.handleError(result)
+				return
+			}
 		}
 		result.Succeed = true // 执行成功
 		return

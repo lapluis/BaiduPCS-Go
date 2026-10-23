@@ -1,8 +1,10 @@
 package pcsdownload
 
 import (
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
+	"github.com/qjfoidnh/BaiduPCS-Go/requester/downloader"
 	"net/http"
 	"strconv"
 )
@@ -31,6 +33,24 @@ func BaiduPCSURLCheckFunc(client *requester.HTTPClient, durl string) (contentLen
 	}
 
 	contentLengthStr := resp.Header.Get("x-bs-file-size")
-	contentLength, _ = strconv.ParseInt(contentLengthStr, 10, 64)
-	return contentLength, resp, nil
+	if contentLengthStr != "" {
+		contentLength, err = strconv.ParseInt(contentLengthStr, 10, 64)
+		if err != nil || contentLength < 0 {
+			return 0, resp, fmt.Errorf("invalid x-bs-file-size %q", contentLengthStr)
+		}
+	}
+	if resp.StatusCode == http.StatusPartialContent {
+		total := downloader.ParseContentRange(resp.Header.Get("Content-Range"))
+		if total < 0 || (contentLengthStr != "" && contentLength != total) {
+			return 0, resp, fmt.Errorf("invalid or conflicting download Content-Range %q", resp.Header.Get("Content-Range"))
+		}
+		return total, resp, nil
+	}
+	if contentLengthStr != "" {
+		if resp.StatusCode == http.StatusOK && ((resp.ContentLength >= 0 && contentLength != resp.ContentLength) || (contentLength == 0 && resp.ContentLength != 0)) {
+			return 0, resp, fmt.Errorf("download size %d conflicts with Content-Length %d", contentLength, resp.ContentLength)
+		}
+		return contentLength, resp, nil
+	}
+	return resp.ContentLength, resp, nil
 }

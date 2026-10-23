@@ -47,6 +47,13 @@ func (ds *DownloadStatus) SetRateLimit(rl *speeds.RateLimit) {
 	ds.rateLimit = rl
 }
 
+// StopRateLimit releases workers waiting for rate allowance during shutdown.
+func (ds *DownloadStatus) StopRateLimit() {
+	if ds.rateLimit != nil {
+		ds.rateLimit.Stop()
+	}
+}
+
 //SetTotalSize 返回总大小
 func (ds *DownloadStatus) SetTotalSize(size int64) {
 	ds.totalSize = size

@@ -4,6 +4,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -24,6 +25,9 @@ const (
 )
 
 var BlockSizeList = [4]int64{256 * converter.KB, 512 * converter.KB, 1 * converter.MB, 4 * converter.MB}
+
+// ErrResumeSizeMismatch means saved progress belongs to a different file size.
+var ErrResumeSizeMismatch = errors.New("download resume size does not match remote file")
 
 type (
 	// Downloader 下载
@@ -350,6 +354,17 @@ func (der *Downloader) Execute() error {
 			return err
 		}
 		bii = der.instanceState.Get()
+		defer der.instanceState.Close()
+		if bii != nil && bii.DownloadStatus != nil && bii.DownloadStatus.TotalSize() != der.firstInfo.ContentLength {
+			der.instanceState.Close()
+			return fmt.Errorf("%w: saved=%d, remote=%d", ErrResumeSizeMismatch, bii.DownloadStatus.TotalSize(), der.firstInfo.ContentLength)
+		}
+		if bii != nil && bii.DownloadStatus != nil {
+			if err := der.validateResumeFile(bii); err != nil {
+				der.instanceState.Close()
+				return err
+			}
+		}
 	}
 
 	var (
@@ -455,6 +470,7 @@ func (der *Downloader) Execute() error {
 
 	moniterCtx, moniterCancelFunc := context.WithCancel(context.Background())
 	der.monitorCancelFunc = moniterCancelFunc
+	defer moniterCancelFunc()
 
 	der.monitor.SetInstanceState(der.instanceState)
 
@@ -466,6 +482,11 @@ func (der *Downloader) Execute() error {
 
 	// 检查错误
 	err = der.monitor.Err()
+	if err == nil && !der.config.IsTest && der.firstInfo.ContentLength >= 0 {
+		if file, ok := der.writer.(interface{ Truncate(int64) error }); ok {
+			err = file.Truncate(der.firstInfo.ContentLength)
+		}
+	}
 	if err == nil { // 成功
 		pcsutil.Trigger(der.onSuccessEvent)
 		if !single {

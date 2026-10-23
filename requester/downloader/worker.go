@@ -29,8 +29,13 @@ type (
 		writerAt     io.WriterAt
 		writeMu      *sync.Mutex
 		execMu       sync.Mutex
+		runWG        sync.WaitGroup
+		parentCtx    context.Context
+		controlMu    sync.Mutex
+		paused       bool
+		pauseVersion uint64
+		pauseCancel  context.CancelFunc
 
-		pauseChan              chan struct{}
 		workerCancelFunc       context.CancelFunc
 		resetFunc              context.CancelFunc
 		readRespBodyCancelFunc func()
@@ -67,9 +72,6 @@ func (wer *Worker) ID() int {
 func (wer *Worker) lazyInit() {
 	if wer.client == nil {
 		wer.client = requester.NewHTTPClient()
-	}
-	if wer.pauseChan == nil {
-		wer.pauseChan = make(chan struct{})
 	}
 	if wer.wrange == nil {
 		wer.wrange = &transfer.Range{}
@@ -142,25 +144,35 @@ func (wer *Worker) GetSpeedsPerSecond() int64 {
 
 // Pause 暂停下载
 func (wer *Worker) Pause() {
-	wer.lazyInit()
+	wer.controlMu.Lock()
+	defer wer.controlMu.Unlock()
 	if wer.acceptRanges == "" {
 		pcsverbose.Verbosef("WARNING: worker unsupport pause")
 		return
 	}
 
-	if wer.status.statusCode == StatusCodePaused {
+	if wer.paused || wer.Completed() || wer.status.StatusCode() == StatusCodeInternalError {
 		return
 	}
-	wer.pauseChan <- struct{}{}
-	wer.status.statusCode = StatusCodePaused
+	wer.paused = true
+	wer.pauseVersion++
+	wer.status.SetStatusCode(StatusCodePaused)
+	if wer.pauseCancel != nil {
+		wer.pauseCancel()
+	}
 }
 
 // Resume 恢复下载
 func (wer *Worker) Resume() {
-	if wer.status.statusCode != StatusCodePaused {
+	wer.controlMu.Lock()
+	if !wer.paused {
+		wer.controlMu.Unlock()
 		return
 	}
-	go wer.Execute()
+	wer.paused = false
+	wer.status.SetStatusCode(StatusCodeInit)
+	wer.controlMu.Unlock()
+	wer.runAsync()
 }
 
 // Cancel 取消下载
@@ -177,6 +189,11 @@ func (wer *Worker) Cancel() error {
 
 // Reset 重设连接
 func (wer *Worker) Reset() {
+	wer.controlMu.Lock()
+	defer wer.controlMu.Unlock()
+	if wer.paused {
+		return
+	}
 	if wer.resetFunc == nil {
 		pcsverbose.Verbosef("DEBUG: worker: resetFunc not set")
 		return
@@ -186,17 +203,17 @@ func (wer *Worker) Reset() {
 		wer.readRespBodyCancelFunc()
 	}
 	wer.ClearStatus()
-	go wer.Execute()
+	wer.runAsync()
 }
 
 // Canceled 是否已经取消
 func (wer *Worker) Canceled() bool {
-	return wer.status.statusCode == StatusCodeCanceled
+	return wer.status.StatusCode() == StatusCodeCanceled
 }
 
 // Completed 是否已经完成
 func (wer *Worker) Completed() bool {
-	switch wer.status.statusCode {
+	switch wer.status.StatusCode() {
 	case StatusCodeSucceeded, StatusCodeCanceled:
 		return true
 	default:
@@ -206,7 +223,7 @@ func (wer *Worker) Completed() bool {
 
 // Failed 是否失败
 func (wer *Worker) Failed() bool {
-	switch wer.status.statusCode {
+	switch wer.status.StatusCode() {
 	case StatusCodeFailed, StatusCodeInternalError, StatusCodeTooManyConnections, StatusCodeNetError:
 		return true
 	default:
@@ -216,7 +233,7 @@ func (wer *Worker) Failed() bool {
 
 // ClearStatus 清空状态
 func (wer *Worker) ClearStatus() {
-	wer.status.statusCode = StatusCodeInit
+	wer.status.SetStatusCode(StatusCodeInit)
 }
 
 // Err 返回worker错误
@@ -224,20 +241,42 @@ func (wer *Worker) Err() error {
 	return wer.err
 }
 
+func (wer *Worker) runAsync() {
+	wer.runWG.Add(1)
+	go func() {
+		defer wer.runWG.Done()
+		wer.Execute()
+	}()
+}
+
 // Execute 执行任务
 func (wer *Worker) Execute() {
-	wer.lazyInit()
-
 	wer.execMu.Lock()
 	defer wer.execMu.Unlock()
-
-	wer.status.statusCode = StatusCodeInit
-	single := wer.acceptRanges == ""
-
-	// 如果已暂停, 退出
-	if wer.status.statusCode == StatusCodePaused {
+	wer.lazyInit()
+	wer.controlMu.Lock()
+	if wer.paused {
+		wer.status.SetStatusCode(StatusCodePaused)
+		wer.controlMu.Unlock()
 		return
 	}
+	pauseVersion := wer.pauseVersion
+	wer.status.SetStatusCode(StatusCodeInit)
+	wer.controlMu.Unlock()
+	defer func() {
+		wer.controlMu.Lock()
+		defer wer.controlMu.Unlock()
+		wer.pauseCancel = nil
+		if wer.pauseVersion != pauseVersion && !wer.Completed() {
+			if wer.paused {
+				wer.status.SetStatusCode(StatusCodePaused)
+			} else {
+				wer.status.SetStatusCode(StatusCodeReseted)
+			}
+			wer.err = nil
+		}
+	}()
+	single := wer.acceptRanges == ""
 
 	if !single {
 		// 已完成
@@ -245,34 +284,58 @@ func (wer *Worker) Execute() {
 			if rlen < 0 {
 				pcsverbose.Verbosef("DEBUG: RangeLen is negative at begin: %v, %d\n", wer.wrange, wer.wrange.Len())
 			}
-			wer.status.statusCode = StatusCodeSucceeded
+			wer.status.SetStatusCode(StatusCodeSucceeded)
 			return
 		}
 	}
 
-	workerCancelCtx, workerCancelFunc := context.WithCancel(context.Background())
+	parentCtx := wer.parentCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	workerCancelCtx, workerCancelFunc := context.WithCancel(parentCtx)
 	wer.workerCancelFunc = workerCancelFunc
-	resetCtx, resetFunc := context.WithCancel(context.Background())
+	defer workerCancelFunc()
+	resetCtx, resetFunc := context.WithCancel(workerCancelCtx)
+	wer.controlMu.Lock()
 	wer.resetFunc = resetFunc
+	wer.pauseCancel = resetFunc
+	if wer.paused || wer.pauseVersion != pauseVersion {
+		resetFunc()
+	}
+	wer.controlMu.Unlock()
+	defer resetFunc()
+	if err := resetCtx.Err(); err != nil {
+		wer.err = err
+		wer.status.SetStatusCode(StatusCodeCanceled)
+		if workerCancelCtx.Err() == nil {
+			wer.status.SetStatusCode(StatusCodeReseted)
+		}
+		return
+	}
 
 	header := map[string]string{}
+	requestBegin, requestEnd := wer.wrange.LoadBegin(), wer.wrange.LoadEnd()
 	if wer.referer != "" {
 		header["Referer"] = wer.referer
 	}
 	//检测是否支持range
 	if wer.acceptRanges != "" && wer.wrange.Len() >= 0 {
-		header["Range"] = fmt.Sprintf("%s=%d-%d", wer.acceptRanges, wer.wrange.LoadBegin(), wer.wrange.LoadEnd()-1)
+		header["Range"] = fmt.Sprintf("%s=%d-%d", wer.acceptRanges, requestBegin, requestEnd-1)
 	}
 
-	wer.status.statusCode = StatusCodePending
+	wer.status.SetStatusCode(StatusCodePending)
 
 	var resp *http.Response
 	if wer.firstResp != nil {
 		resp = wer.firstResp // 使用第一个连接
 	} else {
-		resp, wer.err = wer.client.Req(http.MethodGet, wer.url, nil, header)
+		resp, wer.err = wer.client.ReqWithContext(resetCtx, http.MethodGet, wer.url, nil, header)
 	}
 	if resp != nil {
+		// The reused URL-probe response was opened outside this worker context.
+		stopClose := context.AfterFunc(resetCtx, func() { resp.Body.Close() })
+		defer stopClose()
 		defer func() {
 			resp.Body.Close()
 			wer.firstResp = nil // 去掉第一个连接
@@ -282,7 +345,7 @@ func (wer *Worker) Execute() {
 		}
 	}
 	if wer.err != nil {
-		wer.status.statusCode = StatusCodeNetError
+		wer.status.SetStatusCode(StatusCodeNetError)
 		return
 	}
 
@@ -295,11 +358,11 @@ func (wer *Worker) Execute() {
 	case 403: // Forbidden
 		fallthrough
 	case 404: // file block not exists
-		wer.status.statusCode = StatusCodeInternalError
+		wer.status.SetStatusCode(StatusCodeInternalError)
 		wer.err = errors.New(resp.Status)
 		return
 	case 406: // Not Acceptable
-		wer.status.statusCode = StatusCodeNetError
+		wer.status.SetStatusCode(StatusCodeNetError)
 		wer.err = errors.New(resp.Status)
 		return
 	case 429, 509: // Too Many Requests
@@ -307,7 +370,7 @@ func (wer *Worker) Execute() {
 		wer.err = errors.New(resp.Status)
 		return
 	default:
-		wer.status.statusCode = StatusCodeNetError
+		wer.status.SetStatusCode(StatusCodeNetError)
 		wer.err = fmt.Errorf("unexpected http status code, %d, %s", resp.StatusCode, resp.Status)
 		return
 	}
@@ -318,22 +381,35 @@ func (wer *Worker) Execute() {
 	)
 
 	if !single {
-		// 检查请求长度
-		if contentLength != rangeLength && wer.firstResp == nil { // 跳过检查第一个连接
-			wer.status.statusCode = StatusCodeNetError
-			wer.err = fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, rangeLength)
-			return
-		}
-		// 检查总大小
-		if wer.totalSize > 0 {
-			total := ParseContentRange(resp.Header.Get("Content-Range"))
-			if total > 0 {
-				if total != wer.totalSize {
-					wer.status.statusCode = StatusCodeInternalError // 这里设置为内部错误, 强制停止下载
-					wer.err = fmt.Errorf("Content-Range total length is unexpected: %d, need %d", total, wer.totalSize)
-					return
-				}
+		// An initial URL probe supplies a prefix from offset zero. Subsequent
+		// ranged responses must describe the exact interval sent in the request.
+		initialFull := wer.firstResp != nil && resp.StatusCode == http.StatusOK
+		expectedLength := requestEnd - requestBegin
+		if initialFull {
+			if requestBegin != 0 || contentLength != wer.totalSize || contentLength < requestEnd {
+				wer.status.SetStatusCode(StatusCodeInternalError)
+				wer.err = errors.New("initial full response does not cover requested range")
+				return
 			}
+		} else {
+			begin, end, total, ok := parseContentRangeBounds(resp.Header.Get("Content-Range"))
+			if resp.StatusCode != http.StatusPartialContent || !ok || begin != requestBegin || (wer.firstResp == nil && end != requestEnd-1) || (wer.firstResp != nil && requestBegin != 0) || (wer.totalSize > 0 && total != wer.totalSize) {
+				wer.status.SetStatusCode(StatusCodeInternalError)
+				wer.err = fmt.Errorf("unexpected Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), requestBegin, requestEnd-1, wer.totalSize)
+				return
+			}
+			// The URL probe may return only a prefix of the first block. Its
+			// own Content-Range must agree with its body length; the monitor
+			// can request the remainder after this response is consumed.
+			if wer.firstResp != nil {
+				expectedLength = end - begin + 1
+			}
+		}
+		// 检查请求长度
+		if contentLength != expectedLength && !initialFull {
+			wer.status.SetStatusCode(StatusCodeNetError)
+			wer.err = fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, expectedLength)
+			return
 		}
 	}
 
@@ -347,15 +423,13 @@ func (wer *Worker) Execute() {
 	for {
 		select {
 		case <-workerCancelCtx.Done(): //取消
-			wer.status.statusCode = StatusCodeCanceled
+			wer.status.SetStatusCode(StatusCodeCanceled)
 			return
 		case <-resetCtx.Done(): //重设连接
-			wer.status.statusCode = StatusCodeReseted
-			return
-		case <-wer.pauseChan: //暂停
+			wer.status.SetStatusCode(StatusCodeReseted)
 			return
 		default:
-			wer.status.statusCode = StatusCodeDownloading
+			wer.status.SetStatusCode(StatusCodeDownloading)
 
 			// 初始化数据
 			var readErr error
@@ -386,7 +460,7 @@ func (wer *Worker) Execute() {
 
 				// 已完成 (未雨绸缪)
 				if rangeLength <= 0 {
-					wer.status.statusCode = StatusCodeCanceled
+					wer.status.SetStatusCode(StatusCodeCanceled)
 					wer.err = errors.New("worker already complete")
 					return
 				}
@@ -401,7 +475,7 @@ func (wer *Worker) Execute() {
 
 			// 写入数据
 			if wer.writerAt != nil {
-				wer.status.statusCode = StatusCodeWaitToWrite
+				wer.status.SetStatusCode(StatusCodeWaitToWrite)
 				if wer.writeMu != nil {
 					wer.writeMu.Lock() // 加锁, 减轻硬盘的压力
 				}
@@ -410,14 +484,14 @@ func (wer *Worker) Execute() {
 					if wer.writeMu != nil {
 						wer.writeMu.Unlock() //解锁
 					}
-					wer.status.statusCode = StatusCodeInternalError
+					wer.status.SetStatusCode(StatusCodeInternalError)
 					return
 				}
 
 				if wer.writeMu != nil {
 					wer.writeMu.Unlock() //解锁
 				}
-				wer.status.statusCode = StatusCodeDownloading
+				wer.status.SetStatusCode(StatusCodeDownloading)
 			}
 
 			// 更新下载统计数据
@@ -440,14 +514,14 @@ func (wer *Worker) Execute() {
 				case rlen <= 0:
 					// 下载完成
 					// 小于0可能是因为 worker 被 duplicate
-					wer.status.statusCode = StatusCodeSucceeded
+					wer.status.SetStatusCode(StatusCodeSucceeded)
 					if rlen < 0 {
 						pcsverbose.Verbosef("DEBUG: RangeLen is negative at end: %v, %d\n", wer.wrange, wer.wrange.Len())
 					}
 					return
 				default:
 					// 其他错误, 返回
-					wer.status.statusCode = StatusCodeFailed
+					wer.status.SetStatusCode(StatusCodeFailed)
 					wer.err = readErr
 					return
 				}

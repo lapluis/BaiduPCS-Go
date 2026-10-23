@@ -9,12 +9,14 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
 var (
 	// ContentRangeRE Content-Range 正则
-	ContentRangeRE = regexp.MustCompile(`^.*? \d*?-\d*?/(\d*?)$`)
+	ContentRangeRE       = regexp.MustCompile(`^.*? \d*?-\d*?/(\d*?)$`)
+	contentRangeBoundsRE = regexp.MustCompile(`(?i)^bytes ([0-9]+)-([0-9]+)/([0-9]+|\*)$`)
 
 	// ranSource 随机数种子
 	ranSource = mathrand.NewSource(time.Now().UnixNano())
@@ -22,6 +24,28 @@ var (
 	// ran 一个随机数实例
 	ran = mathrand.New(ranSource)
 )
+
+func parseContentRangeBounds(value string) (begin, end, total int64, ok bool) {
+	parts := contentRangeBoundsRE.FindStringSubmatch(strings.TrimSpace(value))
+	if len(parts) != 4 {
+		return
+	}
+	var err error
+	if begin, err = strconv.ParseInt(parts[1], 10, 64); err != nil {
+		return
+	}
+	if end, err = strconv.ParseInt(parts[2], 10, 64); err != nil || end < begin {
+		return
+	}
+	total = -1
+	if parts[3] != "*" {
+		if total, err = strconv.ParseInt(parts[3], 10, 64); err != nil || total <= end {
+			return
+		}
+	}
+	ok = true
+	return
+}
 
 // RandomNumber 生成指定区间随机数
 func RandomNumber(min, max int) int {
@@ -65,16 +89,11 @@ func GetFileName(uri string, client *requester.HTTPClient) (filename string, err
 
 // ParseContentRange 解析Content-Range
 func ParseContentRange(contentRange string) (contentLength int64) {
-	raw := ContentRangeRE.FindStringSubmatch(contentRange)
-	if len(raw) < 2 {
+	_, _, total, ok := parseContentRangeBounds(contentRange)
+	if !ok {
 		return -1
 	}
-
-	c, err := strconv.ParseInt(raw[1], 10, 64)
-	if err != nil {
-		return -1
-	}
-	return c
+	return total
 }
 
 func fixCacheSize(size *int) {
