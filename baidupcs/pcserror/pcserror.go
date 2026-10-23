@@ -73,7 +73,7 @@ func DecodeXPanJSONError(operation string, data io.Reader) Error {
 // HandleJSONParse 处理解析json
 func HandleJSONParse(op string, data io.Reader, info interface{}) (pcsError Error) {
 	var (
-		err     = jsonhelper.UnmarshalData(data, info)
+		err     = jsonhelper.UnmarshalObjectData(data, info)
 		errInfo = info.(Error)
 	)
 
