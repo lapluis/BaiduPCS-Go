@@ -1,6 +1,7 @@
 package cachemap
 
 import (
+	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 )
 
@@ -31,12 +32,20 @@ func (cm *CacheOpMap) CacheOperation(op string, key interface{}, opFunc OpFunc) 
 }
 
 func (cm *CacheOpMap) CacheOperationWithError(op string, key interface{}, opFunc OpFuncWithError) (data expires.DataExpires, err error) {
+	return cm.CacheOperationWithContext(context.Background(), op, key, opFunc)
+}
+
+// CacheOperationWithContext allows cancellation while waiting for a key.
+// The callback must observe ctx when performing blocking work.
+func (cm *CacheOpMap) CacheOperationWithContext(ctx context.Context, op string, key interface{}, opFunc OpFuncWithError) (data expires.DataExpires, err error) {
 	var (
 		cache = cm.LazyInitCachePoolOp(op).(*cacheUnit)
 		ok    bool
 	)
 
-	cache.LockKey(key)
+	if err = cache.lockKeyContext(ctx, key); err != nil {
+		return nil, err
+	}
 	defer cache.UnlockKey(key)
 	revision := cache.currentRevision()
 	data, ok = cache.Load(key)
@@ -44,6 +53,9 @@ func (cm *CacheOpMap) CacheOperationWithError(op string, key interface{}, opFunc
 		data, err = opFunc()
 		if err != nil {
 			return
+		}
+		if err = ctx.Err(); err != nil {
+			return nil, err
 		}
 		if data == nil {
 			// 数据为空时也不存

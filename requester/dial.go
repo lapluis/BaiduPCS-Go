@@ -7,14 +7,11 @@ import (
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires/cachemap"
-	"github.com/rs/dnscache"
 	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -37,12 +34,9 @@ var (
 
 	tcpCache = cachemap.GlobalCacheOpMap.LazyInitCachePoolOp("requester/tcp")
 
-	// dnsResolver 通过 singleflight 合并同 host 查询；dnsLookupMu 串行化对标准库解析器的调用，
-	// 避免并发 Lookup 时在 tryOneName 路径触发 panic。
-	dnsResolver = &dnscache.Resolver{
-		Timeout: 30 * time.Second,
-	}
-	dnsLookupMu sync.Mutex
+	// The host cache below handles expiration and coalescing; resolver calls
+	// remain serialized and keep the caller's cancellation context.
+	dnsResolver = &serialDNSResolver{resolver: net.DefaultResolver, gate: make(chan struct{}, 1)}
 )
 
 // SetLocalTCPAddrList 设置网卡地址
@@ -127,7 +121,7 @@ func SetProxyHostnameRules(hostnames string) {
 
 // SetTCPHostBind 设置host绑定ip
 func SetTCPHostBind(host, ip string) {
-	tcpCache.Store(host, expires.NewDataExpires(net.ParseIP(ip), MaxDuration))
+	tcpCache.Store(host, expires.NewDataExpires([]net.IP{net.ParseIP(ip)}, MaxDuration))
 	return
 }
 
@@ -141,22 +135,18 @@ func getServerName(address string) string {
 
 // resolveTCPHost
 // 解析的tcpaddr没有port!!!
-func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
+func resolveTCPHost(ctx context.Context, host string) ([]net.IP, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// host 已是字面量 IP 时直接返回，无需 DNS 查询
 	if parsed := net.ParseIP(host); parsed != nil {
-		return parsed, nil
+		return []net.IP{parsed}, nil
 	}
 
-	// 标准库 DNS 偶发 panic 时转为 error，避免进程崩溃
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("dns lookup panic for %q: %v", host, r)
-		}
-	}()
-
-	dnsLookupMu.Lock()
-	addrs, lookupErr := dnsResolver.LookupHost(ctx, host)
-	dnsLookupMu.Unlock()
+	lookupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	addrs, lookupErr := dnsResolver.LookupHost(lookupCtx, host)
 	if lookupErr != nil {
 		return nil, lookupErr
 	}
@@ -164,21 +154,32 @@ func resolveTCPHost(ctx context.Context, host string) (ip net.IP, err error) {
 		return nil, fmt.Errorf("no IP addresses found for host %q", host)
 	}
 
-	ip = net.ParseIP(addrs[0])
-	if ip == nil {
-		return nil, fmt.Errorf("invalid IP address %q for host %q", addrs[0], host)
+	ips := make([]net.IP, 0, len(addrs))
+	seen := make(map[string]bool)
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip != nil && !seen[ip.String()] {
+			seen[ip.String()] = true
+			ips = append(ips, ip)
+		}
 	}
-	return ip, nil
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no valid IP addresses found for host %q", host)
+	}
+	return ips, nil
 }
 
 func dialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch network {
 	case "tcp", "tcp4", "tcp6":
 		host, portStr, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
 		}
-		data, err := cachemap.GlobalCacheOpMap.CacheOperationWithError("requester/tcp", host, func() (expires.DataExpires, error) {
+		data, err := cachemap.GlobalCacheOpMap.CacheOperationWithContext(ctx, "requester/tcp", host, func() (expires.DataExpires, error) {
 			ip, err := resolveTCPHost(ctx, host)
 			if err != nil {
 				return nil, err
@@ -189,15 +190,7 @@ func dialContext(ctx context.Context, network, address string) (conn net.Conn, e
 			return nil, err
 		}
 
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			return nil, err
-		}
-
-		return net.DialTCP(network, getLocalTCPAddr(), &net.TCPAddr{
-			IP:   data.Data().(net.IP),
-			Port: port, // 设置端口
-		})
+		return dialTCPAddresses(ctx, getDialer(), network, portStr, data.Data().([]net.IP))
 	}
 
 	// 非 tcp 请求
