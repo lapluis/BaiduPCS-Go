@@ -7,10 +7,10 @@ import (
 type (
 	// PanErrorInfo 网盘网页的api错误
 	XPanErrorInfo struct {
-		Operation string
-		ErrType   ErrType
-		Err       error
-		ErrNo     int `json:"errno"`
+		Operation  string
+		ErrType    ErrType
+		Err        error
+		ErrNo      int `json:"errno"`
 		ReturnType int `json:"return_type"`
 	}
 )
@@ -52,7 +52,10 @@ func (pane *XPanErrorInfo) GetErrType() ErrType {
 
 // GetRemoteErrCode 获取远端服务器错误代码
 func (pane *XPanErrorInfo) GetRemoteErrCode() int {
-	return pane.ErrNo + pane.ReturnType - 2
+	if pane.ErrNo != 0 {
+		return pane.ErrNo
+	}
+	return pane.ReturnType - 2
 }
 
 // GetRemoteErrMsg 获取远端服务器错误消息

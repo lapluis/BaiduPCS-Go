@@ -28,7 +28,7 @@ func TestAPIErrorDecodersKeepSuccessAndRemoteErrors(t *testing.T) {
 	}{
 		{"PCS", DecodePCSJSONError, `{"error_code":0}`, `{"error_code":31066}`, 31066},
 		{"Pan", DecodePanJSONError, `{"errno":0}`, `{"errno":-9}`, -9},
-		{"XPan", DecodeXPanJSONError, `{"errno":0,"return_type":2}`, `{"errno":1,"return_type":0}`, -1},
+		{"XPan", DecodeXPanJSONError, `{"errno":0,"return_type":2}`, `{"errno":1,"return_type":0}`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.decode("synthetic", strings.NewReader(" \n"+tc.success+"\r\n")); err != nil {
