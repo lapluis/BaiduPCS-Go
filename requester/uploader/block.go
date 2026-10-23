@@ -69,7 +69,11 @@ func (bfb *bufioFileBlock) Read(b []byte) (n int, err error) {
 
 func (bfb *bufioFileBlock) Seek(offset int64, whence int) (int64, error) {
 	if whence == io.SeekCurrent {
-		offset -= int64(bfb.bufio.Buffered())
+		buffered := int64(bfb.bufio.Buffered())
+		if offset < (-1<<63)+buffered {
+			return 0, fmt.Errorf("seek offset overflow")
+		}
+		offset -= buffered
 	}
 	position, err := bfb.fileBlock.Seek(offset, whence)
 	if err == nil {
@@ -109,19 +113,21 @@ func (fb *fileBlock) Seek(offset int64, whence int) (int64, error) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
+	var base int64
 	switch whence {
 	case os.SEEK_SET:
-		fb.readed = offset
+		base = 0
 	case os.SEEK_CUR:
-		fb.readed += offset
+		base = fb.readed
 	case os.SEEK_END:
-		fb.readed = fb.readRange.End - fb.readRange.Begin + offset
+		base = fb.readRange.End - fb.readRange.Begin
 	default:
 		return 0, fmt.Errorf("unsupport whence: %d", whence)
 	}
-	if fb.readed < 0 {
-		fb.readed = 0
+	if base < 0 || offset < -base || offset > (1<<63-1)-base {
+		return 0, fmt.Errorf("invalid seek position")
 	}
+	fb.readed = base + offset
 	return fb.readed, nil
 }
 

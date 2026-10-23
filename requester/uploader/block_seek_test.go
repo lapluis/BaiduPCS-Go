@@ -46,3 +46,23 @@ func TestLargeSplitRangeDoesNotNarrowRemainingLength(t *testing.T) {
 		t.Fatal("remaining byte count changed incorrectly")
 	}
 }
+
+func TestFailedSeekPreservesBufferedPosition(t *testing.T) {
+	for _, tc := range []struct {
+		offset int64
+		whence int
+	}{{-1, io.SeekStart}, {-2, io.SeekCurrent}, {-7, io.SeekEnd}, {1<<63 - 1, io.SeekCurrent}, {-1 << 63, io.SeekCurrent}} {
+		reader := NewBufioSplitUnit(strings.NewReader("abcdef"), transfer.Range{Begin: 0, End: 6}, nil, nil)
+		one := make([]byte, 1)
+		if _, err := io.ReadFull(reader, one); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reader.Seek(tc.offset, tc.whence); err == nil {
+			t.Errorf("invalid seek accepted: %+v", tc)
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil || string(data) != "bcdef" {
+			t.Fatalf("failed seek changed position: %q, %v", data, err)
+		}
+	}
+}
