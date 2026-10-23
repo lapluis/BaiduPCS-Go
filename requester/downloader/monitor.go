@@ -141,9 +141,9 @@ func (mt *Monitor) IsLeftWorkersAllFailed() bool {
 		}
 
 		if !worker.Failed() {
-			failedNum++
 			return false
 		}
+		failedNum++
 	}
 	return failedNum != 0
 }
@@ -325,6 +325,8 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 	}
 
 	switch status.StatusCode() {
+	case StatusCodeInternalError: // fatal errors must reach registerAllCompleted
+		return
 	case StatusCodePending, StatusCodeReseted:
 		fallthrough
 	case StatusCodeWaitToWrite: // 正在写入数据
