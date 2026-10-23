@@ -368,16 +368,31 @@ func (dtu *DownloadTaskUnit) pcsOrStreamingDownload(mode DownloadMode, result *t
 
 // checkFileValid 检测文件有效性
 func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunResult) (ok bool) {
-	fi, err := os.Stat(dtu.SavePath)
-	if err == nil {
-		if fi.Size() != dtu.FileInfo.Size {
-			result.ResultMessage = StrDownloadCheckLengthFailed
-			result.NeedNextdindex = true
-			result.NeedRetry = true
-			return
-		}
+	if dtu.Cfg.IsTest {
+		fmt.Printf("[%s] 跳过文件有效性检验\n", dtu.taskInfo.Id())
+		return true
 	}
-	if dtu.Cfg.IsTest || dtu.NoCheck {
+	fi, err := os.Stat(dtu.SavePath)
+	if err != nil {
+		result.ResultMessage = StrDownloadChecksumFailed
+		result.Err = err
+		dtu.handleError(result)
+		return
+	}
+	if !fi.Mode().IsRegular() {
+		result.ResultMessage = StrDownloadChecksumFailed
+		result.Err = &os.PathError{Op: "validate", Path: dtu.SavePath, Err: errors.New("target is not a regular file")}
+		dtu.handleError(result)
+		return
+	}
+	if fi.Size() != dtu.FileInfo.Size {
+		result.ResultMessage = StrDownloadCheckLengthFailed
+		result.NeedNextdindex = true
+		result.NeedRetry = true
+		dtu.IsOverwrite = true
+		return
+	}
+	if dtu.NoCheck {
 		// 不检测文件有效性
 		fmt.Printf("[%s] 跳过文件有效性检验\n", dtu.taskInfo.Id())
 		return true
