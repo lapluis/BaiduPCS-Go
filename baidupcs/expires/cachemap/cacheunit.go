@@ -24,7 +24,8 @@ type (
 
 func (cu *cacheUnit) Delete(key interface{}) {
 	cu.unit.Delete(key)
-	cu.keyMap.Delete(key)
+	// A key lock may still be held or have waiters. Replacing it would split
+	// callers across different mutexes and strand the original lock.
 }
 
 func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) {
