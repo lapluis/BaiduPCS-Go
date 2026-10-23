@@ -14,7 +14,9 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 )
 
-var shareLinkRe = regexp.MustCompile(`(https?://pan\.baidu\.com/s/[0-9A-Za-z_-]+)(?:\?pwd=([0-9A-Za-z]{4}))?`)
+var shareLinkRe = regexp.MustCompile(`https?://pan\.baidu\.com/[^\s<>"，。]+`)
+var shareFeatureRe = regexp.MustCompile(`^1[0-9A-Za-z_-]{1,22}$`)
+var shareCodeRe = regexp.MustCompile(`^[0-9A-Za-z]{4}$`)
 
 // ShareTransferResult describes a completed share transfer.
 type ShareTransferResult struct {
@@ -45,20 +47,20 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		opt = &baidupcs.TransferOption{}
 	}
 
-	link := params[0]
+	link := strings.TrimSpace(params[0])
 	// 支持整段分享文本(如 "通过网盘分享的文件: 链接: https://... 提取码: xxxx ..."),
 	// 先从中提取出规范的分享链接, 再交给 net/url 解析
-	if shareLinkRe.MatchString(link) {
-		if m := shareLinkRe.FindStringSubmatch(link); len(m) >= 2 {
-			link = m[1]
-			if len(params) == 1 && len(m) == 3 && m[2] != "" {
-				params = append(params, m[2])
-			}
+	if !strings.HasPrefix(link, "https://") && !strings.HasPrefix(link, "http://") {
+		if extracted := shareLinkRe.FindString(link); extracted != "" {
+			link = extracted
 		}
 	}
 	parsedURL, err := url.Parse(link)
 	if err != nil {
 		return nil, errors.New("链接格式非法")
+	}
+	if (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") || !strings.EqualFold(parsedURL.Host, "pan.baidu.com") || parsedURL.User != nil {
+		return nil, errors.New("链接地址或提取码非法")
 	}
 	queryParams := parsedURL.Query()
 	extraCode := queryParams.Get("pwd")
@@ -70,11 +72,13 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		extraCode = params[1]
 	}
 
-	featureStr := path.Base(strings.TrimSuffix(parsedURL.Path, "/"))
-	if featureStr == "init" {
+	var featureStr string
+	if parsedURL.Path == "/share/init" {
 		featureStr = "1" + queryParams.Get("surl")
+	} else if strings.HasPrefix(parsedURL.Path, "/s/") {
+		featureStr = strings.TrimSuffix(strings.TrimPrefix(parsedURL.Path, "/s/"), "/")
 	}
-	if featureStr == "" || len(featureStr) > 23 || featureStr[0] != '1' || len(extraCode) != 4 {
+	if !shareFeatureRe.MatchString(featureStr) || !shareCodeRe.MatchString(extraCode) {
 		return nil, errors.New("链接地址或提取码非法")
 	}
 
