@@ -33,11 +33,13 @@ type (
 	}
 
 	part struct {
+		size      int64
 		form      string
 		readerlen rio.ReaderLen
 	}
 
 	part64 struct {
+		size        int64
 		form        string
 		readerlen64 rio.ReaderLen64
 	}
@@ -64,10 +66,11 @@ func (mr *MultipartReader) AddFormField(fieldname string, readerlen rio.ReaderLe
 	}
 
 	mpart := &part{
+		size:      int64(readerlen.Len()),
 		form:      fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", mr.boundary, headerParameterEscaper.Replace(fieldname)),
 		readerlen: readerlen,
 	}
-	atomic.AddInt64(&mr.length, int64(len(mpart.form)+mpart.readerlen.Len()))
+	atomic.AddInt64(&mr.length, int64(len(mpart.form))+mpart.size)
 	mr.parts = append(mr.parts, mpart)
 }
 
@@ -78,10 +81,11 @@ func (mr *MultipartReader) AddFormFile(fieldname, filename string, readerlen64 r
 	}
 
 	mpart64 := &part64{
+		size:        readerlen64.Len(),
 		form:        fmt.Sprintf("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n\r\n", mr.boundary, headerParameterEscaper.Replace(fieldname), headerParameterEscaper.Replace(filename)),
 		readerlen64: readerlen64,
 	}
-	atomic.AddInt64(&mr.length, int64(len(mpart64.form))+mpart64.readerlen64.Len())
+	atomic.AddInt64(&mr.length, int64(len(mpart64.form))+mpart64.size)
 	mr.part64s = append(mr.part64s, mpart64)
 }
 
@@ -117,11 +121,11 @@ func (mr *MultipartReader) CloseMultipart() error {
 	}
 	for k := range mr.parts {
 		separator()
-		readers = append(readers, strings.NewReader(mr.parts[k].form), mr.parts[k].readerlen)
+		readers = append(readers, strings.NewReader(mr.parts[k].form), &exactPartReader{io.LimitedReader{R: mr.parts[k].readerlen, N: mr.parts[k].size}})
 	}
 	for k := range mr.part64s {
 		separator()
-		readers = append(readers, strings.NewReader(mr.part64s[k].form), mr.part64s[k].readerlen64)
+		readers = append(readers, strings.NewReader(mr.part64s[k].form), &exactPartReader{io.LimitedReader{R: mr.part64s[k].readerlen64, N: mr.part64s[k].size}})
 	}
 	readers = append(readers, strings.NewReader(mr.formClose))
 	mr.multiReader = io.MultiReader(readers...)

@@ -13,6 +13,43 @@ type fileReader struct{ *strings.Reader }
 
 func (r fileReader) Len() int64 { return int64(r.Reader.Len()) }
 
+type declaredFile struct {
+	io.Reader
+	size int64
+}
+
+func (r declaredFile) Len() int64 { return r.size }
+
+func TestMultipartRequiresDeclaredPartLength(t *testing.T) {
+	mr := NewMultipartReader()
+	mr.AddFormFile("file", "a", declaredFile{strings.NewReader("abc"), 5})
+	if err := mr.CloseMultipart(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(mr); err != io.ErrUnexpectedEOF {
+		t.Fatalf("short source error = %v", err)
+	}
+
+	mr = NewMultipartReader()
+	mr.AddFormFile("file", "a", declaredFile{strings.NewReader("abcdef"), 3})
+	if err := mr.CloseMultipart(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(mr)
+	if err != nil || int64(len(body)) != mr.Len() {
+		t.Fatal("extra source bytes exceeded declared content length", err)
+	}
+	_, params, _ := mime.ParseMediaType(mr.ContentType())
+	part, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(part)
+	if err != nil || string(data) != "abc" {
+		t.Fatal("source was not bounded to declared length")
+	}
+}
+
 func TestMultipartPartsRemainSeparate(t *testing.T) {
 	mr := NewMultipartReader()
 	mr.AddFormField("first", strings.NewReader("alpha"))
