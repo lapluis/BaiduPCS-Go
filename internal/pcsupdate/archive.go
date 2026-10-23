@@ -71,7 +71,12 @@ func installArchive(reader *zip.Reader, directory, executable string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.RemoveAll(staging)
+		}
+	}()
 	// Read every entry to EOF (including ZIP checksum validation) before any
 	// installed file is replaced. Keep large update contents on disk.
 	for i, entry := range entries {
@@ -97,19 +102,24 @@ func installArchive(reader *zip.Reader, directory, executable string) error {
 			return stagedCloseErr
 		}
 	}
+	batch := make([]stagedUpdate, 0, len(entries))
 	for i, entry := range entries {
-		source, err := os.Open(filepath.Join(staging, fmt.Sprint(i)))
+		info, err := os.Lstat(entry.target)
 		if err != nil {
 			return err
 		}
-		err = update(entry.target, source)
-		closeErr := source.Close()
-		if err != nil {
-			return fmt.Errorf("update %s: %w", entry.file.Name, err)
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("update target is not a regular file: %s", entry.target)
 		}
-		if closeErr != nil {
-			return closeErr
+		staged := filepath.Join(staging, fmt.Sprint(i))
+		if err := os.Chmod(staged, info.Mode().Perm()); err != nil {
+			return err
 		}
+		batch = append(batch, stagedUpdate{entry.target, staged, filepath.Join(staging, fmt.Sprintf("original-%d", i))})
 	}
-	return nil
+	cleanup, err = commitUpdates(batch, os.Rename)
+	if !cleanup {
+		return fmt.Errorf("%w; recovery directory: %s", err, staging)
+	}
+	return err
 }
