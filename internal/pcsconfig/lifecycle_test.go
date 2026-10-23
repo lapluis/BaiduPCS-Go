@@ -32,7 +32,7 @@ func TestFailedReloadCannotOverwriteConfig(t *testing.T) {
 	if err := c.Init(); err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{`{"appid":1,`, `{"baidu_active_uid":7}`} {
+	for _, invalid := range []string{`{"appid":1,`, `{"baidu_active_uid":7}`, `{"appid":1} {"appid":2}`, `{"appid":1} garbage`} {
 		writeReloadFixture(t, c, invalid)
 		ran, saved := false, false
 		app := cli.NewApp()
