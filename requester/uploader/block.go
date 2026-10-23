@@ -67,17 +67,32 @@ func (bfb *bufioFileBlock) Read(b []byte) (n int, err error) {
 	return bfb.bufio.Read(b) // 间接调用fileBlock 的Read
 }
 
+func (bfb *bufioFileBlock) Seek(offset int64, whence int) (int64, error) {
+	if whence == io.SeekCurrent {
+		buffered := int64(bfb.bufio.Buffered())
+		if offset < (-1<<63)+buffered {
+			return 0, fmt.Errorf("seek offset overflow")
+		}
+		offset -= buffered
+	}
+	position, err := bfb.fileBlock.Seek(offset, whence)
+	if err == nil {
+		bfb.bufio.Reset(bfb.fileBlock)
+	}
+	return position, err
+}
+
 // Read 只允许一个线程读同一个文件
 func (fb *fileBlock) Read(b []byte) (n int, err error) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
-	left := int(fb.Left())
+	left := fb.Left()
 	if left <= 0 {
 		return 0, io.EOF
 	}
 
-	if len(b) > left {
+	if int64(len(b)) > left {
 		n, err = fb.readerAt.ReadAt(b[:left], fb.readed+fb.readRange.Begin)
 	} else {
 		n, err = fb.readerAt.ReadAt(b, fb.readed+fb.readRange.Begin)
@@ -98,19 +113,21 @@ func (fb *fileBlock) Seek(offset int64, whence int) (int64, error) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
+	var base int64
 	switch whence {
 	case os.SEEK_SET:
-		fb.readed = offset
+		base = 0
 	case os.SEEK_CUR:
-		fb.readed += offset
+		base = fb.readed
 	case os.SEEK_END:
-		fb.readed = fb.readRange.End - fb.readRange.Begin + offset
+		base = fb.readRange.End - fb.readRange.Begin
 	default:
 		return 0, fmt.Errorf("unsupport whence: %d", whence)
 	}
-	if fb.readed < 0 {
-		fb.readed = 0
+	if base < 0 || offset < -base || offset > (1<<63-1)-base {
+		return 0, fmt.Errorf("invalid seek position")
 	}
+	fb.readed = base + offset
 	return fb.readed, nil
 }
 

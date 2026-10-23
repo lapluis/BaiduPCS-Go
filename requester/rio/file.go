@@ -26,8 +26,13 @@ func NewFileReaderLen64(f *os.File) ReaderLen64 {
 		return nil
 	}
 
+	position, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		position = 0
+	}
 	return &fileReadedlen64{
-		f: f,
+		f:      f,
+		readed: position,
 	}
 }
 
@@ -68,7 +73,11 @@ func (fr *fileReadedlen64) Len() int64 {
 	if err != nil {
 		return 0
 	}
-	return info.Size() - fr.readed
+	remaining := info.Size() - atomic.LoadInt64(&fr.readed)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func (rr *rdReadedlen64) Read(b []byte) (n int, err error) {
@@ -83,5 +92,5 @@ func (rr *rdReadedlen64) ReadAt(b []byte, off int64) (n int, err error) {
 }
 
 func (rr *rdReadedlen64) Len() int64 {
-	return rr.size - rr.readed
+	return rr.size - atomic.LoadInt64(&rr.readed)
 }
