@@ -25,6 +25,7 @@ func NewHTTPClient() *HTTPClient {
 		UserAgent: UserAgent,
 	}
 	h.Client.Jar, _ = cookiejar.New(nil)
+	h.lazyInit()
 	return h
 }
 
@@ -47,8 +48,18 @@ func (h *HTTPClient) lazyInit() {
 			ResponseHeaderTimeout: 25 * time.Second,
 			ExpectContinueTimeout: 10 * time.Second,
 		}
+	}
+	if h.Client.Transport == nil {
 		h.Client.Transport = h.transport
 	}
+}
+
+func (h *HTTPClient) configuredTransport() *http.Transport {
+	h.lazyInit()
+	if transport, ok := h.Client.Transport.(*http.Transport); ok && transport != nil {
+		return transport
+	}
+	return h.transport
 }
 
 // SetUserAgent 设置 UserAgent 浏览器标识
@@ -58,14 +69,14 @@ func (h *HTTPClient) SetUserAgent(ua string) {
 
 // SetProxy 设置代理
 func (h *HTTPClient) SetProxy(proxyAddr string) {
-	h.lazyInit()
+	transport := h.configuredTransport()
 	u, err := checkProxyAddr(proxyAddr)
 	if err != nil {
-		h.transport.Proxy = http.ProxyFromEnvironment
+		transport.Proxy = http.ProxyFromEnvironment
 		return
 	}
 
-	h.transport.Proxy = http.ProxyURL(u)
+	transport.Proxy = http.ProxyURL(u)
 }
 
 // SetCookiejar 设置 cookie
@@ -81,11 +92,11 @@ func (h *HTTPClient) ResetCookiejar() {
 // SetHTTPSecure 是否启用 https 安全检查, 强制不检查
 func (h *HTTPClient) SetHTTPSecure(b bool) {
 	h.https = b
-	h.lazyInit()
+	transport := h.configuredTransport()
 	// 	if b {
 	// 		h.transport.TLSClientConfig = nil
 	// 	} else {
-	h.transport.TLSClientConfig = &tls.Config{
+	transport.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true,
 	}
 	// 	}
@@ -93,26 +104,22 @@ func (h *HTTPClient) SetHTTPSecure(b bool) {
 
 // SetKeepAlive 设置 Keep-Alive
 func (h *HTTPClient) SetKeepAlive(b bool) {
-	h.lazyInit()
-	h.transport.DisableKeepAlives = !b
+	h.configuredTransport().DisableKeepAlives = !b
 }
 
 // SetGzip 是否启用Gzip
 func (h *HTTPClient) SetGzip(b bool) {
-	h.lazyInit()
-	h.transport.DisableCompression = !b
+	h.configuredTransport().DisableCompression = !b
 }
 
 // SetResponseHeaderTimeout 设置目标服务器响应超时时间
 func (h *HTTPClient) SetResponseHeaderTimeout(t time.Duration) {
-	h.lazyInit()
-	h.transport.ResponseHeaderTimeout = t
+	h.configuredTransport().ResponseHeaderTimeout = t
 }
 
 // SetTLSHandshakeTimeout 设置tls握手超时时间
 func (h *HTTPClient) SetTLSHandshakeTimeout(t time.Duration) {
-	h.lazyInit()
-	h.transport.TLSHandshakeTimeout = t
+	h.configuredTransport().TLSHandshakeTimeout = t
 }
 
 // SetTimeout 设置 http 请求超时时间, 默认30s
