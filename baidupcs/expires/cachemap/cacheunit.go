@@ -20,6 +20,7 @@ type (
 		unit   sync.Map
 		keyMap sync.Map
 	}
+	cacheEntry struct{ value expires.DataExpires }
 )
 
 func (cu *cacheUnit) Delete(key interface{}) {
@@ -33,9 +34,10 @@ func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) 
 	if !ok {
 		return nil, ok
 	}
-	exp := val.(expires.DataExpires)
+	entry := val.(*cacheEntry)
+	exp := entry.value
 	if exp.IsExpires() {
-		cu.unit.Delete(key)
+		cu.unit.CompareAndDelete(key, entry)
 		return nil, false
 	}
 	return exp, ok
@@ -43,30 +45,38 @@ func (cu *cacheUnit) Load(key interface{}) (value expires.DataExpires, ok bool) 
 
 func (cu *cacheUnit) Range(f func(key interface{}, value expires.DataExpires) bool) {
 	cu.unit.Range(func(k, val interface{}) bool {
-		exp := val.(expires.DataExpires)
+		entry := val.(*cacheEntry)
+		exp := entry.value
 		if exp.IsExpires() {
-			cu.unit.Delete(k)
+			cu.unit.CompareAndDelete(k, entry)
 			return true
 		}
-		return f(k, val.(expires.DataExpires))
+		return f(k, exp)
 	})
 }
 
 func (cu *cacheUnit) LoadOrStore(key interface{}, value expires.DataExpires) (actual expires.DataExpires, loaded bool) {
-	ac, loaded := cu.unit.LoadOrStore(key, value)
-	exp := ac.(expires.DataExpires)
-	if exp.IsExpires() {
-		cu.unit.Delete(key)
-		return nil, false
+	if value == nil || value.IsExpires() {
+		return cu.Load(key)
 	}
-	return exp, loaded
+	for {
+		ac, loaded := cu.unit.LoadOrStore(key, &cacheEntry{value: value})
+		entry := ac.(*cacheEntry)
+		if !entry.value.IsExpires() {
+			return entry.value, loaded
+		}
+		cu.unit.CompareAndDelete(key, entry)
+		if value.IsExpires() {
+			return nil, false
+		}
+	}
 }
 
 func (cu *cacheUnit) Store(key interface{}, value expires.DataExpires) {
-	if value.IsExpires() {
+	if value == nil || value.IsExpires() {
 		return
 	}
-	cu.unit.Store(key, value)
+	cu.unit.Store(key, &cacheEntry{value: value})
 }
 
 func (cu *cacheUnit) LockKey(key interface{}) {
