@@ -64,14 +64,14 @@ var (
 		if err != nil {
 			fmt.Printf("重载配置错误: %s\n", err)
 		}
-		return nil
+		return err
 	}
 	saveFunc = func(c *cli.Context) error {
 		err := pcsconfig.Config.Save()
 		if err != nil {
 			fmt.Printf("保存配置错误: %s\n", err)
 		}
-		return nil
+		return err
 	}
 
 	isCli bool
@@ -138,10 +138,9 @@ func main() {
 			Destination: &pcsverbose.IsVerbose,
 		},
 	}
-	app.Action = func(c *cli.Context) {
+	app.Action = func(c *cli.Context) error {
 		if c.NArg() != 0 {
-			fmt.Printf("未找到命令: %s\n运行命令 %s help 获取帮助\n", c.Args().Get(0), app.Name)
-			return
+			return fmt.Errorf("未找到命令: %s\n运行命令 %s help 获取帮助", c.Args().Get(0), app.Name)
 		}
 
 		isCli = true
@@ -314,12 +313,12 @@ func main() {
 			commandLine, err := line.State.Prompt(prompt)
 			switch err {
 			case liner.ErrPromptAborted:
-				return
+				return nil
 			case nil:
 				// continue
 			default:
 				fmt.Println(err)
-				return
+				return nil
 			}
 
 			line.State.AppendHistory(commandLine)
@@ -335,7 +334,9 @@ func main() {
 			// 恢复原始终端状态
 			// 防止运行命令时程序被结束, 终端出现异常
 			line.Pause()
-			c.App.Run(s)
+			if err := c.App.Run(s); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
 			line.Resume()
 		}
 	}
@@ -536,11 +537,11 @@ func main() {
 						return nil
 					}
 
-					if n, err := strconv.Atoi(index); err == nil && n >= 0 && n < numLogins {
+					users := pcsconfig.Config.BaiduUserList
+					if n, err := strconv.Atoi(index); err == nil && n >= 0 && n < len(users) && users[n] != nil {
 						uid = pcsconfig.Config.BaiduUserList[n].UID
 					} else {
-						fmt.Printf("切换用户失败, 请检查 # 值是否正确\n")
-						return nil
+						return fmt.Errorf("切换用户失败, 请检查 # 值是否正确")
 					}
 				} else {
 					cli.ShowCommandHelp(c, c.Command.Name)
@@ -593,7 +594,7 @@ func main() {
 					UID: activeUser.UID,
 				})
 				if err != nil {
-					fmt.Printf("退出用户 %s, 失败, 错误: %s\n", activeUser.Name, err)
+					return fmt.Errorf("退出用户 %s, 失败: %w", activeUser.Name, err)
 				}
 
 				fmt.Printf("退出用户成功, %s\n", deletedUser.Name)
@@ -1811,6 +1812,26 @@ func main() {
 							return nil
 						}
 
+						// Parse every fallible option before changing live configuration.
+						parsed := pcsconfig.NewConfig("")
+						if c.IsSet("pcs_addr") && !parsed.SETPCSAddr(c.String("pcs_addr")) {
+							return fmt.Errorf("设置 pcs_addr 错误: pcs服务器地址不合法")
+						}
+						for _, option := range []struct {
+							name  string
+							parse func(string) error
+						}{
+							{"cache_size", parsed.SetCacheSizeByStr},
+							{"max_download_rate", parsed.SetMaxDownloadRateByStr},
+							{"max_upload_rate", parsed.SetMaxUploadRateByStr},
+						} {
+							if c.IsSet(option.name) {
+								if err := option.parse(c.String(option.name)); err != nil {
+									return fmt.Errorf("设置 %s 错误: %w", option.name, err)
+								}
+							}
+						}
+
 						if c.IsSet("appid") {
 							pcsconfig.Config.SetAppID(c.Int("appid"))
 						}
@@ -1830,11 +1851,7 @@ func main() {
 							pcsconfig.Config.SetPCSUA(c.String("pcs_ua"))
 						}
 						if c.IsSet("pcs_addr") {
-							match := pcsconfig.Config.SETPCSAddr(c.String("pcs_addr"))
-							if !match {
-								fmt.Println("设置 pcs_addr 错误: pcs服务器地址不合法")
-								return nil
-							}
+							pcsconfig.Config.SETPCSAddr(parsed.PCSAddr)
 						}
 						if c.IsSet("fix_pcs_addr") {
 							pcsconfig.Config.SetStaticPCSAddr(c.Bool("fix_pcs_addr"))
@@ -1846,11 +1863,7 @@ func main() {
 							pcsconfig.Config.SetPanUA(c.String("pan_ua"))
 						}
 						if c.IsSet("cache_size") {
-							err := pcsconfig.Config.SetCacheSizeByStr(c.String("cache_size"))
-							if err != nil {
-								fmt.Printf("设置 cache_size 错误: %s\n", err)
-								return nil
-							}
+							pcsconfig.Config.CacheSize = parsed.CacheSize
 						}
 						if c.IsSet("max_parallel") {
 							pcsconfig.Config.MaxParallel = c.Int("max_parallel")
@@ -1865,18 +1878,10 @@ func main() {
 							pcsconfig.Config.MaxUploadLoad = c.Int("max_upload_load")
 						}
 						if c.IsSet("max_download_rate") {
-							err := pcsconfig.Config.SetMaxDownloadRateByStr(c.String("max_download_rate"))
-							if err != nil {
-								fmt.Printf("设置 max_download_rate 错误: %s\n", err)
-								return nil
-							}
+							pcsconfig.Config.MaxDownloadRate = parsed.MaxDownloadRate
 						}
 						if c.IsSet("max_upload_rate") {
-							err := pcsconfig.Config.SetMaxUploadRateByStr(c.String("max_upload_rate"))
-							if err != nil {
-								fmt.Printf("设置 max_upload_rate 错误: %s\n", err)
-								return nil
-							}
+							pcsconfig.Config.MaxUploadRate = parsed.MaxUploadRate
 						}
 						if c.IsSet("savedir") {
 							pcsconfig.Config.SaveDir = c.String("savedir")
@@ -2182,5 +2187,9 @@ func main() {
 	sort.Sort(cli.FlagsByName(app.Flags))
 	sort.Sort(cli.CommandsByName(app.Commands))
 
-	app.Run(os.Args)
+	if err := app.Run(os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		pcsconfig.Config.Close()
+		os.Exit(1)
+	}
 }

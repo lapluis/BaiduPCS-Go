@@ -70,6 +70,7 @@ type PCSConfig struct {
 	fileMu         sync.Mutex
 	activeUser     *Baidu
 	pcs            *baidupcs.BaiduPCS
+	loadErr        error // Prevent saving partial state after a failed load.
 }
 
 // NewConfig 返回 PCSConfig 指针对象
@@ -102,6 +103,9 @@ func (c *PCSConfig) Close() error {
 
 // Save 保存配置信息到配置文件
 func (c *PCSConfig) Save() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
 	// 检测配置项是否合法, 不合法则自动修复
 	c.fix()
 
@@ -138,23 +142,26 @@ func (c *PCSConfig) Save() error {
 	return nil
 }
 
-func (c *PCSConfig) init() error {
+func (c *PCSConfig) init() (err error) {
+	c.loadErr = nil
+	defer func() { c.loadErr = err }()
 	if c.configFilePath == "" {
 		return ErrConfigFileNotExist
 	}
 
 	c.InitDefaultConfig()
-	err := c.loadConfigFromFile()
+	// Reload accounts from scratch: JSON decoding can otherwise reuse slice
+	// elements and retain credentials that are absent from the new file.
+	c.BaiduActiveUID = 0
+	c.BaiduUserList = nil
+	c.activeUser = nil
+	c.pcs = nil
+	err = c.loadConfigFromFile()
 	if err != nil {
 		return err
 	}
 
-	// 载入配置
-	// 如果 activeUser 已初始化, 则跳过
-	if c.activeUser != nil && c.activeUser.UID == c.BaiduActiveUID {
-		return nil
-	}
-
+	// Rebuild the client and apply runtime settings even when the UID is unchanged.
 	c.activeUser, err = c.GetBaiduUser(&BaiduBase{
 		UID: c.BaiduActiveUID,
 	})
@@ -239,7 +246,9 @@ func (c *PCSConfig) InitDefaultConfig() {
 	c.MaxUploadParallel = 4
 	c.MaxUploadLoad = 4
 	c.MaxDownloadLoad = 1
-	c.UserAgent = requester.UserAgent
+	c.MaxDownloadRate = 0
+	c.MaxUploadRate = 0
+	c.UserAgent = requester.DefaultUserAgent
 	c.PCSUA = ""
 	c.PCSAddr = "pcs.baidu.com"
 	c.PanUA = baidupcs.NetdiskUA
@@ -247,6 +256,8 @@ func (c *PCSConfig) InitDefaultConfig() {
 	c.NoCheck = true
 	c.UPolicy = baidupcs.SkipPolicy
 	c.Proxy = ""
+	c.ProxyHostnames = ""
+	c.FixPCSAddr = false
 	c.LocalAddrs = ""
 	c.IgnoreIllegal = true
 	c.ForceLogin = ""

@@ -22,7 +22,7 @@ var (
 	ErrBaiduUserNotFound = errors.New("baidu user not found")
 )
 
-//BaiduBase Baidu基
+// BaiduBase Baidu基
 type BaiduBase struct {
 	UID  uint64 `json:"uid"`  // 百度ID对应的uid
 	Name string `json:"name"` // 真实ID
@@ -48,16 +48,20 @@ type Baidu struct {
 
 // BaiduPCS 初始化*baidupcs.BaiduPCS
 func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
-	pcs := baidupcs.NewPCS(Config.AppID, baidu.BDUSS)
-	pcs.SetStoken(baidu.STOKEN)
+	// Load cookie defaults once, then overlay explicitly configured credentials.
+	pcs := baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
+	if baidu.BDUSS != "" {
+		pcs.SetBDUSS(baidu.BDUSS)
+	}
+	if baidu.STOKEN != "" {
+		pcs.SetStoken(baidu.STOKEN)
+	}
 	if baidu.SBOXTKN != "" {
 		pcs.SetSboxtkn(baidu.SBOXTKN)
 	}
-	if strings.Contains(baidu.COOKIES, "STOKEN=") && baidu.STOKEN == "" {
-		// 未显式指定stoken则从cookies中读取
-		pcs = baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
-	}
 	pcs.SetHTTPS(Config.EnableHTTPS)
+	pcs.SetStaticPCSAddr(Config.FixPCSAddr)
+	pcs.SetPCSAddr(Config.PCSAddr)
 	pcs.SetPCSUserAgent(Config.PCSUA)
 	pcs.SetPanUserAgent(Config.PanUA)
 	pcs.SetUID(baidu.UID)
@@ -131,6 +135,9 @@ func (bl *BaiduUserList) String() string {
 	tb.SetHeader([]string{"#", "uid", "用户名", "性别", "age"})
 
 	for k, baiduInfo := range *bl {
+		if baiduInfo == nil {
+			continue
+		}
 		tb.Append([]string{strconv.Itoa(k), strconv.FormatUint(baiduInfo.UID, 10), baiduInfo.Name, baiduInfo.Sex, fmt.Sprint(baiduInfo.Age)})
 	}
 

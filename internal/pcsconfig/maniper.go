@@ -1,6 +1,8 @@
 package pcsconfig
 
 import (
+	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -66,10 +68,14 @@ func (c *PCSConfig) manipUser(op string, baiduBase *BaiduBase) (*Baidu, error) {
 			// 修改 正在使用的 百度帐号
 			// 如果要删除的帐号为当前登录的帐号, 则设置当前登录帐号为列表中第一个帐号
 			if c.BaiduActiveUID == user.UID {
-				if len(c.BaiduUserList) != 0 {
-					c.setupNewUser(c.BaiduUserList[0])
-				} else {
-					c.BaiduActiveUID = 0
+				c.BaiduActiveUID = 0
+				c.activeUser = nil
+				c.pcs = nil
+				for _, remaining := range c.BaiduUserList {
+					if remaining != nil {
+						c.setupNewUser(remaining)
+						break
+					}
 				}
 			}
 		case opGet:
@@ -117,9 +123,13 @@ func (c *PCSConfig) CheckBaiduUserExist(baidubase *BaiduBase) bool {
 // SetupUserByBDUSS 设置百度 bduss, ptoken, stoken, cookies 并保存
 func (c *PCSConfig) SetupUserByBDUSS(bduss, ptoken, stoken, cookies string) (baidu *Baidu, err error) {
 	if bduss == "" && cookies != "" {
-		re, _ := regexp.Compile(`BDUSS=(.+?);`)
-		sub := re.FindSubmatch([]byte(cookies))
-		bduss = string(sub[1])
+		req := &http.Request{Header: make(http.Header)}
+		req.Header.Set("Cookie", cookies)
+		cookie, cookieErr := req.Cookie("BDUSS")
+		if cookieErr != nil || cookie.Value == "" {
+			return nil, errors.New("login cookie is missing a non-empty BDUSS")
+		}
+		bduss = cookie.Value
 	}
 	b, err := NewUserInfoByInput(bduss, c.ForceLogin)
 	if c.ForceLogin == "" {
@@ -157,6 +167,9 @@ func (c *PCSConfig) SetCacheSizeByStr(sizeStr string) error {
 	size, err := converter.ParseFileSizeStr(sizeStr)
 	if err != nil {
 		return err
+	}
+	if uint64(size) > uint64(^uint(0)>>1) {
+		return errors.New("cache size exceeds native int range")
 	}
 	c.CacheSize = int(size)
 	return nil
@@ -206,7 +219,7 @@ func (c *PCSConfig) SetPanUA(panUA string) {
 
 // SetPCSAddr 设置 PCS 服务器地址
 func (c *PCSConfig) SETPCSAddr(pcsaddr string) bool {
-	match, _ := regexp.MatchString("^([cd]\\d?\\.)?pcs\\.baidu\\.com", pcsaddr)
+	match, _ := regexp.MatchString("^([cd]\\d?\\.)?pcs\\.baidu\\.com$", pcsaddr)
 	if match {
 		c.PCSAddr = pcsaddr
 		if c.pcs != nil {
