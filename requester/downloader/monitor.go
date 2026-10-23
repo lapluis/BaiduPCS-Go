@@ -365,6 +365,11 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 		return
 	}
 	if len(mt.workers) == 0 {
+		if mt.status != nil && mt.status.TotalSize() == 0 {
+			if gen := mt.status.RangeListGen(); gen != nil && gen.IsDone() {
+				return
+			}
+		}
 		mt.err = ErrNoWokers
 		return
 	}

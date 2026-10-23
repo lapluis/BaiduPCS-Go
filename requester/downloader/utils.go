@@ -89,16 +89,11 @@ func GetFileName(uri string, client *requester.HTTPClient) (filename string, err
 
 // ParseContentRange 解析Content-Range
 func ParseContentRange(contentRange string) (contentLength int64) {
-	raw := ContentRangeRE.FindStringSubmatch(contentRange)
-	if len(raw) < 2 {
+	_, _, total, ok := parseContentRangeBounds(contentRange)
+	if !ok {
 		return -1
 	}
-
-	c, err := strconv.ParseInt(raw[1], 10, 64)
-	if err != nil {
-		return -1
-	}
-	return c
+	return total
 }
 
 func fixCacheSize(size *int) {

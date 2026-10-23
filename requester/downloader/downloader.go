@@ -482,6 +482,11 @@ func (der *Downloader) Execute() error {
 
 	// 检查错误
 	err = der.monitor.Err()
+	if err == nil && !der.config.IsTest && der.firstInfo.ContentLength >= 0 {
+		if file, ok := der.writer.(interface{ Truncate(int64) error }); ok {
+			err = file.Truncate(der.firstInfo.ContentLength)
+		}
+	}
 	if err == nil { // 成功
 		pcsutil.Trigger(der.onSuccessEvent)
 		if !single {
