@@ -69,19 +69,24 @@ func NewLocalFileChecksumWithBufSize(localPath string, bufSize, sliceSize int) *
 func (lfc *LocalFileChecksum) OpenPath() error {
 	if lfc.file != nil {
 		lfc.file.Close()
+		lfc.file = nil
 	}
+	// Digests belong to the previous open, even if this path now has the same
+	// size and timestamp. Resume metadata can be restored after validation.
+	lfc.LocalFileMeta = LocalFileMeta{Path: lfc.Path}
 
-	var err error
-	lfc.file, err = os.Open(lfc.Path)
+	file, err := os.Open(lfc.Path)
 	if err != nil {
 		return err
 	}
 
-	info, err := lfc.file.Stat()
+	info, err := file.Stat()
 	if err != nil {
+		file.Close()
 		return err
 	}
 
+	lfc.file = file
 	lfc.Length = info.Size()
 	lfc.ModTime = info.ModTime().Unix()
 	return nil
