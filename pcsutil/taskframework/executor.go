@@ -93,6 +93,12 @@ func (te *TaskExecutor) Execute() {
 			// 获取任务
 			task := e.(*TaskInfoItem)
 			wg.AddDelta()
+			// Acquiring a parallel slot may have blocked while Stop was called.
+			if te.Stopped() {
+				te.deque.Prepend(task)
+				wg.Done()
+				break
+			}
 
 			go func(task *TaskInfoItem) {
 				defer wg.Done()
