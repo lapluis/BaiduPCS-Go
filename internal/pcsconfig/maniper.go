@@ -168,6 +168,9 @@ func (c *PCSConfig) SetCacheSizeByStr(sizeStr string) error {
 	if err != nil {
 		return err
 	}
+	if uint64(size) > uint64(^uint(0)>>1) {
+		return errors.New("cache size exceeds native int range")
+	}
 	c.CacheSize = int(size)
 	return nil
 }

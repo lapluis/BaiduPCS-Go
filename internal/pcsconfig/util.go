@@ -19,11 +19,10 @@ func AverageParallel(parallel, downloadLoad int) int {
 }
 
 func stripPerSecond(sizeStr string) string {
-	i := strings.LastIndex(sizeStr, "/")
-	if i < 0 {
-		return sizeStr
+	if len(sizeStr) >= 2 && strings.EqualFold(sizeStr[len(sizeStr)-2:], "/s") {
+		return sizeStr[:len(sizeStr)-2]
 	}
-	return sizeStr[:i]
+	return sizeStr
 }
 
 func showMaxRate(size int64) string {

@@ -38,6 +38,7 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		{"partial rate update", []string{"config", "set", "-appid", "42", "-user_agent", "fixture-new", "-max_download_rate", "bad"}, true},
 		{"malformed rate", []string{"config", "set", "-appid", "42", "-max_download_rate", "1.2.3MB"}, true},
 		{"overflow rate", []string{"config", "set", "-appid", "42", "-max_upload_rate", "8192PB"}, true},
+		{"invalid rate unit", []string{"config", "set", "-appid", "42", "-max_download_rate", "2MB/hour"}, true},
 		{"partial upload update", []string{"config", "set", "-appid", "42", "-max_upload_rate", "bad"}, true},
 		{"partial cache update", []string{"config", "set", "-appid", "42", "-cache_size", "bad"}, true},
 		{"partial server update", []string{"config", "set", "-appid", "42", "-pcs_addr", "bad"}, true},
