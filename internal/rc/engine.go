@@ -95,6 +95,39 @@ func validatePair(a, b Endpoint) error {
 	if x == y || strings.HasPrefix(x, y+"/") || strings.HasPrefix(y, x+"/") {
 		return errors.New("source and destination overlap")
 	}
+	if _, local := a.FS.(*Local); local {
+		if _, local = b.FS.(*Local); local {
+			return validateLocalOverlap(a.Root, b.Root)
+		}
+	}
+	return nil
+}
+
+// Lexical comparisons miss Windows path aliases and hard links. Compare each
+// existing root with the other path and its ancestors, including when a new
+// destination is nested beneath an alias of the source directory.
+func validateLocalOverlap(a, b string) error {
+	for _, pair := range [][2]string{{a, b}, {b, a}} {
+		root, err := os.Stat(pair[0])
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for p := pair[1]; ; p = filepath.Dir(p) {
+			info, err := os.Stat(p)
+			if err == nil && os.SameFile(root, info) {
+				return errors.New("source and destination overlap (same filesystem object)")
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if filepath.Dir(p) == p {
+				break
+			}
+		}
+	}
 	return nil
 }
 func validLocalName(p string) error {
@@ -534,6 +567,23 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	if err = unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
+	// Recheck immediately before removal: the destination may have become an
+	// alias after planning. Equal hashes alone do not prove a second copy exists.
+	if _, local := src.FS.(*Local); local {
+		if _, local = dst.FS.(*Local); local {
+			sourceInfo, err := os.Stat(src.At(a.Path))
+			if err != nil {
+				return err
+			}
+			destinationInfo, err := os.Stat(dst.At(a.Path))
+			if err != nil {
+				return err
+			}
+			if os.SameFile(sourceInfo, destinationInfo) {
+				return errors.New("source and destination refer to the same file; source retained")
+			}
+		}
+	}
 	return src.FS.Remove(ctx, src.At(a.Path), false)
 }
 func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) error {
@@ -715,6 +765,9 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) e
 	}
 	for _, k := range keys {
 		if k != "" && !m[k].IsDir {
+			continue
+		}
+		if k != "" && o.Filter.excluded(k) {
 			continue
 		}
 		empty := true
