@@ -2,6 +2,7 @@ package requester
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"io"
@@ -38,6 +39,11 @@ func Fetch(method string, urlStr string, post interface{}, header map[string]str
 // post (post 数据), header (header 请求头数据), 进行网站访问。
 // 返回值分别为 *http.Response, 错误信息
 func (h *HTTPClient) Req(method string, urlStr string, post interface{}, header map[string]string) (resp *http.Response, err error) {
+	return h.ReqWithContext(context.Background(), method, urlStr, post, header)
+}
+
+// ReqWithContext is Req with cancellation for both headers and response body.
+func (h *HTTPClient) ReqWithContext(ctx context.Context, method string, urlStr string, post interface{}, header map[string]string) (resp *http.Response, err error) {
 	h.lazyInit()
 	var (
 		req           *http.Request
@@ -90,7 +96,7 @@ func (h *HTTPClient) Req(method string, urlStr string, post interface{}, header 
 			contentType = value.ContentType()
 		}
 	}
-	req, err = http.NewRequest(method, urlStr, obody)
+	req, err = http.NewRequestWithContext(ctx, method, urlStr, obody)
 	if err != nil {
 		return nil, err
 	}

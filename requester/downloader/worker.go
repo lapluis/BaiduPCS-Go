@@ -29,6 +29,8 @@ type (
 		writerAt     io.WriterAt
 		writeMu      *sync.Mutex
 		execMu       sync.Mutex
+		runWG        sync.WaitGroup
+		parentCtx    context.Context
 
 		pauseChan              chan struct{}
 		workerCancelFunc       context.CancelFunc
@@ -160,7 +162,7 @@ func (wer *Worker) Resume() {
 	if wer.status.statusCode != StatusCodePaused {
 		return
 	}
-	go wer.Execute()
+	wer.runAsync()
 }
 
 // Cancel 取消下载
@@ -186,7 +188,7 @@ func (wer *Worker) Reset() {
 		wer.readRespBodyCancelFunc()
 	}
 	wer.ClearStatus()
-	go wer.Execute()
+	wer.runAsync()
 }
 
 // Canceled 是否已经取消
@@ -224,12 +226,19 @@ func (wer *Worker) Err() error {
 	return wer.err
 }
 
+func (wer *Worker) runAsync() {
+	wer.runWG.Add(1)
+	go func() {
+		defer wer.runWG.Done()
+		wer.Execute()
+	}()
+}
+
 // Execute 执行任务
 func (wer *Worker) Execute() {
-	wer.lazyInit()
-
 	wer.execMu.Lock()
 	defer wer.execMu.Unlock()
+	wer.lazyInit()
 
 	wer.status.statusCode = StatusCodeInit
 	single := wer.acceptRanges == ""
@@ -250,10 +259,24 @@ func (wer *Worker) Execute() {
 		}
 	}
 
-	workerCancelCtx, workerCancelFunc := context.WithCancel(context.Background())
+	parentCtx := wer.parentCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	workerCancelCtx, workerCancelFunc := context.WithCancel(parentCtx)
 	wer.workerCancelFunc = workerCancelFunc
-	resetCtx, resetFunc := context.WithCancel(context.Background())
+	defer workerCancelFunc()
+	resetCtx, resetFunc := context.WithCancel(workerCancelCtx)
 	wer.resetFunc = resetFunc
+	defer resetFunc()
+	if err := resetCtx.Err(); err != nil {
+		wer.err = err
+		wer.status.statusCode = StatusCodeCanceled
+		if workerCancelCtx.Err() == nil {
+			wer.status.statusCode = StatusCodeReseted
+		}
+		return
+	}
 
 	header := map[string]string{}
 	requestBegin, requestEnd := wer.wrange.LoadBegin(), wer.wrange.LoadEnd()
@@ -271,9 +294,12 @@ func (wer *Worker) Execute() {
 	if wer.firstResp != nil {
 		resp = wer.firstResp // 使用第一个连接
 	} else {
-		resp, wer.err = wer.client.Req(http.MethodGet, wer.url, nil, header)
+		resp, wer.err = wer.client.ReqWithContext(resetCtx, http.MethodGet, wer.url, nil, header)
 	}
 	if resp != nil {
+		// The reused URL-probe response was opened outside this worker context.
+		stopClose := context.AfterFunc(resetCtx, func() { resp.Body.Close() })
+		defer stopClose()
 		defer func() {
 			resp.Body.Close()
 			wer.firstResp = nil // 去掉第一个连接

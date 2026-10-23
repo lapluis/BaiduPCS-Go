@@ -354,6 +354,7 @@ func (der *Downloader) Execute() error {
 			return err
 		}
 		bii = der.instanceState.Get()
+		defer der.instanceState.Close()
 		if bii != nil && bii.DownloadStatus != nil && bii.DownloadStatus.TotalSize() != der.firstInfo.ContentLength {
 			der.instanceState.Close()
 			return fmt.Errorf("%w: saved=%d, remote=%d", ErrResumeSizeMismatch, bii.DownloadStatus.TotalSize(), der.firstInfo.ContentLength)
@@ -469,6 +470,7 @@ func (der *Downloader) Execute() error {
 
 	moniterCtx, moniterCancelFunc := context.WithCancel(context.Background())
 	der.monitorCancelFunc = moniterCancelFunc
+	defer moniterCancelFunc()
 
 	der.monitor.SetInstanceState(der.instanceState)
 

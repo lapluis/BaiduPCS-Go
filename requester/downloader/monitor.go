@@ -33,9 +33,10 @@ type (
 	RangeWorkerFunc func(key int, worker *Worker) bool
 )
 
-//NewMonitor 初始化Monitor
+// NewMonitor 初始化Monitor
 func NewMonitor() *Monitor {
 	monitor := &Monitor{}
+	monitor.completed = make(chan struct{})
 	return monitor
 }
 
@@ -51,12 +52,12 @@ func (mt *Monitor) lazyInit() {
 	}
 }
 
-//InitMonitorCapacity 初始化workers, 用于Append
+// InitMonitorCapacity 初始化workers, 用于Append
 func (mt *Monitor) InitMonitorCapacity(capacity int) {
 	mt.workers = make(WorkerList, 0, capacity)
 }
 
-//Append 增加Worker
+// Append 增加Worker
 func (mt *Monitor) Append(worker *Worker) {
 	if worker == nil {
 		return
@@ -64,37 +65,37 @@ func (mt *Monitor) Append(worker *Worker) {
 	mt.workers = append(mt.workers, worker)
 }
 
-//SetWorkers 设置workers, 此操作会覆盖原有的workers
+// SetWorkers 设置workers, 此操作会覆盖原有的workers
 func (mt *Monitor) SetWorkers(workers WorkerList) {
 	mt.workers = workers
 }
 
-//SetStatus 设置DownloadStatus
+// SetStatus 设置DownloadStatus
 func (mt *Monitor) SetStatus(status *transfer.DownloadStatus) {
 	mt.status = status
 }
 
-//SetInstanceState 设置状态
+// SetInstanceState 设置状态
 func (mt *Monitor) SetInstanceState(instanceState *InstanceState) {
 	mt.instanceState = instanceState
 }
 
-//Status 返回DownloadStatus
+// Status 返回DownloadStatus
 func (mt *Monitor) Status() *transfer.DownloadStatus {
 	return mt.status
 }
 
-//Err 返回遇到的错误
+// Err 返回遇到的错误
 func (mt *Monitor) Err() error {
 	return mt.err
 }
 
-//CompletedChan 获取completed chan
+// CompletedChan 获取completed chan
 func (mt *Monitor) CompletedChan() <-chan struct{} {
 	return mt.completed
 }
 
-//GetAvailableWorker 获取空闲的worker
+// GetAvailableWorker 获取空闲的worker
 func (mt *Monitor) GetAvailableWorker() *Worker {
 	workerCount := len(mt.workers)
 	for i := mt.lastAvaliableIndex; i < mt.lastAvaliableIndex+workerCount; i++ {
@@ -108,7 +109,7 @@ func (mt *Monitor) GetAvailableWorker() *Worker {
 	return nil
 }
 
-//GetAllWorkersRange 获取所有worker的范围
+// GetAllWorkersRange 获取所有worker的范围
 func (mt *Monitor) GetAllWorkersRange() transfer.RangeList {
 	allWorkerRanges := make(transfer.RangeList, 0, len(mt.workers))
 	for _, worker := range mt.workers {
@@ -117,7 +118,7 @@ func (mt *Monitor) GetAllWorkersRange() transfer.RangeList {
 	return allWorkerRanges
 }
 
-//NumLeftWorkers 剩余的worker数量
+// NumLeftWorkers 剩余的worker数量
 func (mt *Monitor) NumLeftWorkers() (num int) {
 	for _, worker := range mt.workers {
 		if !worker.Completed() {
@@ -127,12 +128,12 @@ func (mt *Monitor) NumLeftWorkers() (num int) {
 	return
 }
 
-//SetReloadWorker 是否重载worker
+// SetReloadWorker 是否重载worker
 func (mt *Monitor) SetReloadWorker(b bool) {
 	mt.isReloadWorker = b
 }
 
-//IsLeftWorkersAllFailed 剩下的线程是否全部失败
+// IsLeftWorkersAllFailed 剩下的线程是否全部失败
 func (mt *Monitor) IsLeftWorkersAllFailed() bool {
 	failedNum := 0
 	for _, worker := range mt.workers {
@@ -148,43 +149,31 @@ func (mt *Monitor) IsLeftWorkersAllFailed() bool {
 	return failedNum != 0
 }
 
-//registerAllCompleted 全部完成则发送消息
-func (mt *Monitor) registerAllCompleted() {
-	mt.completed = make(chan struct{}, 0)
-	var (
-		workerNum   = len(mt.workers)
-		completeNum = 0
-	)
-
-	go func() {
-		for {
-			time.Sleep(1 * time.Second)
-
-			completeNum = 0
-			for _, worker := range mt.workers {
-				switch worker.GetStatus().StatusCode() {
-				case StatusCodeInternalError:
-					// 检测到内部错误
-					// 马上停止执行
-					mt.err = worker.Err()
-					close(mt.completed)
-					return
-				case StatusCodeSucceeded, StatusCodeCanceled:
-					completeNum++
-				}
+func (mt *Monitor) allWorkersCompleted() bool {
+	completeNum := 0
+	for _, worker := range mt.workers {
+		switch worker.GetStatus().StatusCode() {
+		case StatusCodeInternalError:
+			mt.err = worker.Err()
+			if mt.err == nil {
+				mt.err = errors.New("download worker failed")
 			}
-			// status 在 lazyInit 之后, 不可能为空
-			// 完成条件: 所有worker 都已经完成, 且 rangeGen 已生成完毕
-			gen := mt.status.RangeListGen()
-			if completeNum >= workerNum && (gen == nil || gen.IsDone()) { // 已完成
-				close(mt.completed)
-				return
+			return true
+		case StatusCodeCanceled:
+			if worker.acceptRanges == "" || worker.GetRange().Len() > 0 {
+				mt.err = context.Canceled
+				return true
 			}
+			completeNum++
+		case StatusCodeSucceeded:
+			completeNum++
 		}
-	}()
+	}
+	gen := mt.status.RangeListGen()
+	return completeNum == len(mt.workers) && (gen == nil || gen.IsDone())
 }
 
-//ResetFailedAndNetErrorWorkers 重设部分网络错误的worker
+// ResetFailedAndNetErrorWorkers 重设部分网络错误的worker
 func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
 	for k := range mt.workers {
 		if !mt.resetController.CanReset() {
@@ -208,7 +197,7 @@ func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
 	}
 }
 
-//RangeWorker 遍历worker
+// RangeWorker 遍历worker
 func (mt *Monitor) RangeWorker(f RangeWorkerFunc) {
 	for k := range mt.workers {
 		if !f(k, mt.workers[k]) {
@@ -217,14 +206,14 @@ func (mt *Monitor) RangeWorker(f RangeWorkerFunc) {
 	}
 }
 
-//Pause 暂停所有的下载
+// Pause 暂停所有的下载
 func (mt *Monitor) Pause() {
 	for k := range mt.workers {
 		mt.workers[k].Pause()
 	}
 }
 
-//Resume 恢复所有的下载
+// Resume 恢复所有的下载
 func (mt *Monitor) Resume() {
 	for k := range mt.workers {
 		mt.workers[k].Resume()
@@ -262,7 +251,7 @@ func (mt *Monitor) TryAddNewWork() {
 
 	mt.resetController.AddResetNum()
 	pcsverbose.Verbosef("MONITOR: worker[%d] add new range: %s\n", availableWorker.ID(), r.ShowDetails())
-	go availableWorker.Execute()
+	availableWorker.runAsync()
 }
 
 // DynamicSplitWorker 动态分配线程
@@ -303,7 +292,7 @@ func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
 
 	mt.resetController.AddResetNum()
 	pcsverbose.Verbosef("MONITOR: worker duplicated: %d <- %d\n", availableWorker.ID(), worker.ID())
-	go availableWorker.Execute()
+	availableWorker.runAsync()
 }
 
 // ResetWorker 重设长时间无响应, 和下载速度为 0 的 Worker
@@ -325,7 +314,7 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 	}
 
 	switch status.StatusCode() {
-	case StatusCodeInternalError: // fatal errors must reach registerAllCompleted
+	case StatusCodeInternalError: // fatal errors must reach completion checks
 		return
 	case StatusCodePending, StatusCodeReseted:
 		fallthrough
@@ -343,20 +332,48 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 	worker.Reset()
 }
 
-//Execute 执行任务
+// Execute 执行任务
 func (mt *Monitor) Execute(cancelCtx context.Context) {
+	if mt.completed == nil {
+		mt.completed = make(chan struct{})
+	} else {
+		select {
+		case <-mt.completed:
+			mt.completed = make(chan struct{})
+		default:
+		}
+	}
+	defer close(mt.completed)
+	if err := cancelCtx.Err(); err != nil {
+		mt.err = err
+		return
+	}
 	if len(mt.workers) == 0 {
 		mt.err = ErrNoWokers
 		return
 	}
 
 	mt.lazyInit()
+	workerCtx, stopWorkers := context.WithCancel(cancelCtx)
+	defer func() {
+		stopWorkers()
+		mt.status.StopRateLimit()
+		for _, worker := range mt.workers {
+			worker.runWG.Wait()
+		}
+		if err := cancelCtx.Err(); err != nil {
+			mt.err = err
+			if mt.instanceState != nil {
+				mt.instanceState.Put(&transfer.DownloadInstanceInfo{DownloadStatus: mt.status, Ranges: mt.GetAllWorkersRange()})
+			}
+		}
+	}()
 	for _, worker := range mt.workers {
+		worker.parentCtx = workerCtx
 		worker.SetDownloadStatus(mt.status)
-		go worker.Execute()
+		worker.runAsync()
 	}
 
-	mt.registerAllCompleted() // 注册completed
 	ticker := time.NewTicker(990 * time.Millisecond)
 	ticker2 := time.NewTicker(99 * time.Millisecond)
 	defer ticker.Stop()
@@ -364,16 +381,16 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 
 	//开始监控
 	for {
+		if err := cancelCtx.Err(); err != nil {
+			mt.err = err
+			return
+		}
+		if mt.allWorkersCompleted() {
+			return
+		}
 		select {
 		case <-cancelCtx.Done():
-			for _, worker := range mt.workers {
-				err := worker.Cancel()
-				if err != nil {
-					pcsverbose.Verbosef("DEBUG: cancel failed, worker id: %d, err: %s\n", worker.ID(), err)
-				}
-			}
-			return
-		case <-mt.completed:
+			mt.err = cancelCtx.Err()
 			return
 		case <-ticker.C:
 			// 初始化监控工作
@@ -388,7 +405,6 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 					Ranges:         mt.GetAllWorkersRange(),
 				})
 			}
-
 
 			// 不重载worker
 			if !mt.isReloadWorker {
