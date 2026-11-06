@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkedwriter"
 )
 
 const Help = `Rclone-style commands (legacy commands remain available):
@@ -225,9 +226,25 @@ func Handles(args []string) bool {
 	return false
 }
 func Run(args []string, cwd string) int {
+	return runWithIO(args, cwd, os.Stdout, os.Stderr)
+}
+
+var openLogFile = func(path string) (io.WriteCloser, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+}
+
+func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
+	output := checkedwriter.New(stdout)
+	stdout = output
+	defer func() {
+		if err := output.Err(); code == 0 && err != nil {
+			fmt.Fprintln(stderr, "write stdout:", err)
+			code = 1
+		}
+	}()
 	if len(args) > 0 && args[0] == "__rc_transfer" {
 		if err := RunWorker(args[1:]); err != nil {
-			fmt.Fprintln(os.Stderr, "transfer worker failed")
+			fmt.Fprintln(stderr, "transfer worker failed")
 			return 1
 		}
 		return 0
@@ -236,37 +253,71 @@ func Run(args []string, cwd string) int {
 		args = args[1:]
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Print(Help)
+		fmt.Fprint(stdout, Help)
 		return 0
 	}
 	p, err := parse(args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if p.Help {
-		fmt.Print(Help)
+		fmt.Fprint(stdout, Help)
 		return 0
 	}
 	if err = validateFlags(args[0], p); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	logWriter := io.Writer(os.Stderr)
-	var logFile *os.File
+	if p.FilesFrom != "" && !filepath.IsAbs(p.FilesFrom) {
+		p.FilesFrom = filepath.Join(cwd, p.FilesFrom)
+	}
+	logWriter := stderr
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	var logFile io.WriteCloser
 	if p.LogFile != "" {
+		protected := []string{p.FilesFrom, pcsconfig.Config.FilePath(), aliasesPath()}
+		if args[0] != "remote" && args[0] != "listremotes" {
+			protected = append(protected, p.Args...)
+		}
+		if err := ValidateLogPath(ctx, cwd, p.LogFile, protected...); err != nil {
+			fmt.Fprintln(stderr, err)
+			if ctx.Err() != nil {
+				return 130
+			}
+			return 1
+		}
 		logPath := p.LogFile
 		if !filepath.IsAbs(logPath) {
 			logPath = filepath.Join(cwd, logPath)
 		}
-		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		logFile, err = openLogFile(logPath)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		defer logFile.Close()
 		logWriter = logFile
 	}
+	logOutput := checkedwriter.New(logWriter)
+	logWriter = logOutput
+	var commandErr error
+	reportedCommandErr := false
+	defer func() {
+		logErr := logOutput.Err()
+		if logFile != nil {
+			logErr = errors.Join(logErr, logFile.Close())
+		}
+		if logErr != nil {
+			if logFile != nil && commandErr != nil && !reportedCommandErr {
+				fmt.Fprintln(stderr, commandErr)
+			}
+			fmt.Fprintln(stderr, "log output:", logErr)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 	var logMu sync.Mutex
 	p.Emit = func(kind, item string) {
 		if p.LogLevel == "OFF" || (p.LogLevel == "ERROR" && kind != "error") {
@@ -280,27 +331,27 @@ func Run(args []string, cwd string) int {
 			fmt.Fprintf(logWriter, "%s: %s\n", kind, item)
 		}
 	}
-	if p.FilesFrom != "" && !filepath.IsAbs(p.FilesFrom) {
-		p.FilesFrom = filepath.Join(cwd, p.FilesFrom)
-	}
 	p.Filter, err = NewFilter(p.Includes, p.Excludes, p.FilesFrom)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	resolver, err := NewResolver(cwd)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-	err = runCommand(ctx, args[0], p, resolver, os.Stdout)
+	err = runCommand(ctx, args[0], p, resolver, stdout)
+	commandErr = err
 	if err != nil {
 		if p.JSONLog {
 			json.NewEncoder(logWriter).Encode(map[string]string{"event": "error", "message": err.Error()})
 		} else {
 			fmt.Fprintln(logWriter, err)
+		}
+		if logFile != nil && logOutput.Err() != nil {
+			fmt.Fprintln(stderr, err)
+			reportedCommandErr = true
 		}
 		if ctx.Err() != nil {
 			return 130
@@ -329,7 +380,18 @@ func validateFlags(cmd string, p parsed) error {
 	}
 	return nil
 }
-func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.Writer) error {
+func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.Writer) (resultErr error) {
+	output := checkedwriter.New(out)
+	out = output
+	defer func() {
+		if err := output.Err(); err != nil {
+			if resultErr == nil {
+				resultErr = err
+			} else if !errors.Is(resultErr, err) {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}
+	}()
 	if cmd == "listremotes" {
 		if len(p.Args) != 0 {
 			return errors.New("listremotes takes no paths")
@@ -435,7 +497,11 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			logAction(p.Options, "would-mkdir", src.Root)
 			return nil
 		}
-		return src.FS.Mkdir(ctx, src.Root)
+		if err := src.FS.Mkdir(ctx, src.Root); err != nil {
+			return err
+		}
+		logAction(p.Options, "mkdir", src.Root)
+		return nil
 	case "quota":
 		remote, ok := src.FS.(*Remote)
 		if !ok {

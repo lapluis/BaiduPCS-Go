@@ -350,12 +350,12 @@ func (c *commandContext) resolve(arg string) (rc.Endpoint, error) {
 	return endpoint, err
 }
 
-func runTransfer(c *commandContext, mode string) error {
+func runTransfer(c *commandContext, mode string) (resultErr error) {
 	o, sink, err := c.options()
 	if err != nil {
 		return err
 	}
-	defer sink.Close()
+	defer func() { resultErr = sink.finish(resultErr) }()
 
 	src, err := c.resolve(c.args[0])
 	if err != nil {
@@ -558,12 +558,12 @@ func runAbout(c *commandContext) error {
 	return nil
 }
 
-func runMkdir(c *commandContext) error {
+func runMkdir(c *commandContext) (resultErr error) {
 	o, sink, err := c.options()
 	if err != nil {
 		return err
 	}
-	defer sink.Close()
+	defer func() { resultErr = sink.finish(resultErr) }()
 	endpoint, err := c.resolve(c.args[0])
 	if err != nil {
 		return operationError(err)
@@ -579,12 +579,12 @@ func runMkdir(c *commandContext) error {
 	return nil
 }
 
-func runDelete(c *commandContext, mode string) error {
+func runDelete(c *commandContext, mode string) (resultErr error) {
 	o, sink, err := c.options()
 	if err != nil {
 		return err
 	}
-	defer sink.Close()
+	defer func() { resultErr = sink.finish(resultErr) }()
 	endpoint, err := c.resolve(c.args[0])
 	if err != nil {
 		return operationError(err)

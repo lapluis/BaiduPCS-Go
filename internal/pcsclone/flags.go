@@ -1,11 +1,10 @@
 package pcsclone
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mattn/go-colorable"
-	"github.com/mattn/go-isatty"
 	"io"
 	"math"
 	"os"
@@ -15,7 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mattn/go-colorable"
+	"github.com/mattn/go-isatty"
+
+	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkedwriter"
 )
 
 var errHelpRequested = errors.New("help requested")
@@ -207,13 +211,33 @@ func parseRate(s string) (int64, error) {
 
 type logSink struct {
 	w            io.Writer
-	file         *os.File
+	file         io.Closer
+	output       *checkedwriter.Writer
+	closed       bool
+	closeErr     error
 	level        string
 	json         bool
 	mu           sync.Mutex
 	terminal     bool
 	lines        int
 	lastProgress time.Time
+}
+
+type logOutputError struct{ err error }
+
+func (e *logOutputError) Error() string { return "log output: " + e.err.Error() }
+func (e *logOutputError) Unwrap() error { return e.err }
+
+var openLogFile = func(path string) (io.WriteCloser, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+}
+
+// writer is called while holding mu, after terminal detection has completed.
+func (s *logSink) writer() io.Writer {
+	if s.output == nil {
+		s.output = checkedwriter.New(s.w)
+	}
+	return s.output
 }
 
 func newLogSink(c *commandContext) (*logSink, error) {
@@ -228,10 +252,24 @@ func newLogSink(c *commandContext) (*logSink, error) {
 	}
 	sink := &logSink{w: c.app.Stderr, level: level, json: c.flags.Bool("use-json-log")}
 	if path := c.flags.String("log-file"); path != "" {
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		protected := append([]string{}, c.args...)
+		filesFrom := c.flags.String("files-from")
+		if filesFrom != "" && !filepath.IsAbs(filesFrom) {
+			filesFrom = filepath.Join(c.app.CWD, filesFrom)
+		}
+		protected = append(protected, filesFrom, c.app.ConfigFile,
+			filepath.Join(pcsconfig.GetConfigDir(), "rc_remotes.json"))
+		if err := rc.ValidateLogPath(ctx, c.app.CWD, path, protected...); err != nil {
+			return nil, err
+		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(c.app.CWD, path)
 		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		f, err := openLogFile(path)
 		if err != nil {
 			return nil, err
 		}
@@ -249,11 +287,12 @@ func (s *logSink) clearProgress() {
 	if s.lines == 0 {
 		return
 	}
-	fmt.Fprintf(s.w, "\x1b[%dA", s.lines)
+	w := s.writer()
+	fmt.Fprintf(w, "\x1b[%dA", s.lines)
 	for i := 0; i < s.lines; i++ {
-		fmt.Fprint(s.w, "\r\x1b[2K\n")
+		fmt.Fprint(w, "\r\x1b[2K\n")
 	}
-	fmt.Fprintf(s.w, "\x1b[%dA", s.lines)
+	fmt.Fprintf(w, "\x1b[%dA", s.lines)
 	s.lines = 0
 }
 
@@ -267,10 +306,14 @@ func (s *logSink) Progress(p rc.ProgressSnapshot) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.clearProgress()
 	lines := p.Lines()
+	w := s.writer()
 	for _, line := range lines {
-		fmt.Fprintln(s.w, line)
+		fmt.Fprintln(w, line)
 	}
 	s.lines = len(lines)
 }
@@ -281,6 +324,9 @@ func (s *logSink) Emit(kind, item string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	if kind == "progress" && !s.terminal {
 		if time.Since(s.lastProgress) < 5*time.Second {
 			return
@@ -292,26 +338,45 @@ func (s *logSink) Emit(kind, item string) {
 		return
 	}
 	if s.json {
-		_ = json.NewEncoder(s.w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(s.writer()).Encode(map[string]interface{}{
 			"time":  time.Now().UTC().Format(time.RFC3339),
 			"event": kind,
 			"path":  item,
 		})
 		return
 	}
-	fmt.Fprintf(s.w, "%s: %s\n", kind, item)
+	fmt.Fprintf(s.writer(), "%s: %s\n", kind, item)
 }
 
 func (s *logSink) Close() error {
-	if s != nil {
-		s.mu.Lock()
-		s.clearProgress()
-		s.mu.Unlock()
+	if s == nil {
+		return nil
 	}
-	if s != nil && s.file != nil {
-		return s.file.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return s.closeErr
 	}
-	return nil
+	s.clearProgress()
+	s.closed = true
+	var err error
+	if s.file != nil {
+		err = s.file.Close()
+	}
+	if s.output != nil {
+		err = errors.Join(s.output.Err(), err)
+	}
+	if err != nil {
+		s.closeErr = &logOutputError{err: err}
+	}
+	return s.closeErr
+}
+
+func (s *logSink) finish(operationErr error) error {
+	if err := s.Close(); err != nil {
+		return errors.Join(operationErr, err)
+	}
+	return operationErr
 }
 
 // filter reads only the selection flags shared by list-style commands.
@@ -338,8 +403,7 @@ func (c *commandContext) options() (rc.Options, *logSink, error) {
 	}
 	f, err := c.filter()
 	if err != nil {
-		sink.Close()
-		return rc.Options{}, nil, err
+		return rc.Options{}, nil, sink.finish(err)
 	}
 	o := rc.Options{
 		DryRun:          c.flags.Bool("dry-run"),
@@ -363,16 +427,13 @@ func (c *commandContext) options() (rc.Options, *logSink, error) {
 	}
 	o.BWLimit, err = parseRate(c.flags.String("bwlimit"))
 	if err != nil {
-		sink.Close()
-		return rc.Options{}, nil, usageErrorf("%s", err)
+		return rc.Options{}, nil, sink.finish(usageErrorf("%s", err))
 	}
 	if o.Transfers < 1 || o.Transfers > 64 || o.Checkers < 1 || o.Checkers > 64 || o.Retries < 0 || o.MaxDelete < -1 || o.DownloadThreads < 1 || o.DownloadThreads > 32 || o.MaxConnections < 1 || o.MaxConnections > 256 || o.Transfers > o.MaxConnections {
-		sink.Close()
-		return rc.Options{}, nil, usageErrorf("invalid concurrency, retries or deletion limit")
+		return rc.Options{}, nil, sink.finish(usageErrorf("invalid concurrency, retries or deletion limit"))
 	}
 	if o.Checksum && o.SizeOnly {
-		sink.Close()
-		return rc.Options{}, nil, usageErrorf("--checksum and --size-only are mutually exclusive")
+		return rc.Options{}, nil, sink.finish(usageErrorf("--checksum and --size-only are mutually exclusive"))
 	}
 	return o, sink, nil
 }

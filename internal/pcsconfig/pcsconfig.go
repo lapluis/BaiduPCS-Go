@@ -2,17 +2,19 @@
 package pcsconfig
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+
 	"github.com/json-iterator/go"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/jsonhelper"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
-	"sync"
 )
 
 const (
@@ -66,11 +68,12 @@ type PCSConfig struct {
 	UPolicy        string `json:"u_policy"`             // 上传重名文件处理策略
 
 	configFilePath string
-	configFile     *os.File
-	fileMu         sync.Mutex
-	activeUser     *Baidu
-	pcs            *baidupcs.BaiduPCS
-	loadErr        error // Prevent saving partial state after a failed load.
+	// configFile exists only while loadConfigFromFileLocked holds fileMu.
+	configFile *os.File
+	fileMu     sync.Mutex
+	activeUser *Baidu
+	pcs        *baidupcs.BaiduPCS
+	loadErr    error // Prevent saving partial state after a failed load.
 }
 
 // NewConfig 返回 PCSConfig 指针对象
@@ -93,6 +96,12 @@ func (c *PCSConfig) Reload() error {
 
 // Close 关闭配置文件
 func (c *PCSConfig) Close() error {
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
+	return c.closeConfigFileLocked()
+}
+
+func (c *PCSConfig) closeConfigFileLocked() error {
 	if c.configFile != nil {
 		err := c.configFile.Close()
 		c.configFile = nil
@@ -103,46 +112,28 @@ func (c *PCSConfig) Close() error {
 
 // Save 保存配置信息到配置文件
 func (c *PCSConfig) Save() error {
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
+	return c.saveLocked()
+}
+
+func (c *PCSConfig) saveLocked() error {
 	if c.loadErr != nil {
 		return c.loadErr
 	}
 	// 检测配置项是否合法, 不合法则自动修复
 	c.fix()
 
-	err := c.lazyOpenConfigFile()
-	if err != nil {
-		return err
-	}
-
-	c.fileMu.Lock()
-	defer c.fileMu.Unlock()
-
 	data, err := jsoniter.MarshalIndent(c, "", " ")
 	if err != nil {
-		// json数据生成失败
-		panic(err)
-	}
-
-	// 减掉多余的部分
-	err = c.configFile.Truncate(int64(len(data)))
-	if err != nil {
 		return err
 	}
-
-	_, err = c.configFile.Seek(0, os.SEEK_SET)
-	if err != nil {
-		return err
-	}
-
-	_, err = c.configFile.Write(data)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return saveConfigData(c.configFilePath, data)
 }
 
 func (c *PCSConfig) init() (err error) {
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
 	c.loadErr = nil
 	defer func() { c.loadErr = err }()
 	if c.configFilePath == "" {
@@ -156,7 +147,7 @@ func (c *PCSConfig) init() (err error) {
 	c.BaiduUserList = nil
 	c.activeUser = nil
 	c.pcs = nil
-	err = c.loadConfigFromFile()
+	err = c.loadConfigFromFileLocked()
 	if err != nil {
 		return err
 	}
@@ -183,35 +174,25 @@ func (c *PCSConfig) init() (err error) {
 	return nil
 }
 
-// lazyOpenConfigFile 打开配置文件
-func (c *PCSConfig) lazyOpenConfigFile() (err error) {
-	if c.configFile != nil {
-		return nil
+// loadConfigFromFile 载入配置
+func (c *PCSConfig) loadConfigFromFileLocked() (err error) {
+	// Reopen each time: another instance may have atomically replaced the
+	// pathname. Keeping a Windows handle open would also prevent replacement.
+	c.configFile, err = os.OpenFile(c.configFilePath, os.O_RDWR, 0600)
+	if os.IsNotExist(err) {
+		return c.saveLocked()
 	}
-
-	c.fileMu.Lock()
-	os.MkdirAll(filepath.Dir(c.configFilePath), 0700)
-	c.configFile, err = os.OpenFile(c.configFilePath, os.O_CREATE|os.O_RDWR, 0600)
-	c.fileMu.Unlock()
-
 	if err != nil {
 		if os.IsPermission(err) {
 			return ErrConfigFileNoPermission
 		}
-		if os.IsExist(err) {
-			return ErrConfigFileNotExist
+		return err
+	}
+	defer func() {
+		if closeErr := c.closeConfigFileLocked(); closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
-		return err
-	}
-	return nil
-}
-
-// loadConfigFromFile 载入配置
-func (c *PCSConfig) loadConfigFromFile() (err error) {
-	err = c.lazyOpenConfigFile()
-	if err != nil {
-		return err
-	}
+	}()
 
 	// 未初始化
 	info, err := c.configFile.Stat()
@@ -220,16 +201,10 @@ func (c *PCSConfig) loadConfigFromFile() (err error) {
 	}
 
 	if info.Size() == 0 {
-		err = c.Save()
-		return err
-	}
-
-	c.fileMu.Lock()
-	defer c.fileMu.Unlock()
-
-	_, err = c.configFile.Seek(0, os.SEEK_SET)
-	if err != nil {
-		return err
+		if err := c.closeConfigFileLocked(); err != nil {
+			return err
+		}
+		return c.saveLocked()
 	}
 
 	loaded := c

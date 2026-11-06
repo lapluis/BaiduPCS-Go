@@ -683,7 +683,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 			return err
 		}
 		tmp := f.Name()
-		f.Close()
+		if err := f.Close(); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 		var stage *downloadStage
 		if sremote {
 			_ = os.Remove(tmp)
@@ -834,17 +837,32 @@ func perTransferRate(o Options) int64 {
 	}
 	return v
 }
-func copyLocal(ctx context.Context, src, dst string, rate int64) error {
+
+type localCopyOutput interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+var openLocalCopyOutput = func(path string) (localCopyOutput, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
+}
+
+func copyLocal(ctx context.Context, src, dst string, rate int64) (resultErr error) {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_TRUNC, 0600)
+	out, err := openLocalCopyOutput(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if err := out.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close local copy: %w", err))
+		}
+	}()
 	buf := make([]byte, 128*1024)
 	start := time.Now()
 	var total int64

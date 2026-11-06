@@ -19,6 +19,7 @@ import (
 
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkedwriter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 )
 
@@ -83,7 +84,18 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	return app.run(args)
 }
 
-func (a *App) run(raw []string) int {
+func (a *App) run(raw []string) (code int) {
+	originalOutput := a.Stdout
+	output := checkedwriter.New(originalOutput)
+	a.Stdout = output
+	defer func() {
+		a.Stdout = originalOutput
+		// An already reported operation/usage/interruption error keeps its
+		// exit code and diagnostic. Do not report the same write error twice.
+		if err := output.Err(); code == 0 && err != nil {
+			code = a.report(fmt.Errorf("write stdout: %w", err))
+		}
+	}()
 	// Legacy request logs bypass this front-end's log level, JSON formatting
 	// and output destination. Do not inherit BAIDUPCS_GO_VERBOSE, including
 	// in the re-executed transfer worker.
@@ -148,15 +160,24 @@ func (a *App) run(raw []string) int {
 	defer cancel()
 	err = a.runCommand(ctx, cmd, rest, global.config)
 	if ctx.Err() != nil {
-		if errors.Is(err, rc.ErrCheckpointSave) {
-			fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrCheckpointSave)
-		} else if err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintln(a.Stderr, "pcsclone:", err)
-		}
-		fmt.Fprintln(a.Stderr, "pcsclone: canceled")
-		return 130
+		return a.reportCancellation(err)
 	}
 	return a.report(err)
+}
+
+func (a *App) reportCancellation(err error) int {
+	checkpointFailure := errors.Is(err, rc.ErrCheckpointSave)
+	if checkpointFailure {
+		fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrCheckpointSave)
+	}
+	var logErr *logOutputError
+	if err != nil && !errors.Is(err, context.Canceled) && !checkpointFailure {
+		fmt.Fprintln(a.Stderr, "pcsclone:", err)
+	} else if errors.As(err, &logErr) {
+		fmt.Fprintln(a.Stderr, "pcsclone:", logErr)
+	}
+	fmt.Fprintln(a.Stderr, "pcsclone: canceled")
+	return 130
 }
 
 func (a *App) report(err error) int {
@@ -167,7 +188,6 @@ func (a *App) report(err error) int {
 	var ee *exitError
 	if errors.As(err, &ee) {
 		code = ee.code
-		err = ee.err
 	}
 	if err != nil {
 		fmt.Fprintln(a.Stderr, "pcsclone:", err)

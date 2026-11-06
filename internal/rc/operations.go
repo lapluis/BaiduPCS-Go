@@ -133,7 +133,11 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			logAction(o, "would-delete", e.Root)
 			return nil
 		}
-		return e.FS.Remove(ctx, e.Root, false)
+		if err := e.FS.Remove(ctx, e.Root, false); err != nil {
+			return err
+		}
+		logAction(o, "delete", e.Root)
+		return nil
 	}
 	if mode == "rmdir" {
 		children, err := e.FS.List(ctx, e.Root)
@@ -147,7 +151,11 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			logAction(o, "would-rmdir", e.Root)
 			return nil
 		}
-		return e.FS.Remove(ctx, e.Root, true)
+		if err := e.FS.Remove(ctx, e.Root, true); err != nil {
+			return err
+		}
+		logAction(o, "rmdir", e.Root)
+		return nil
 	}
 	if mode == "rmdirs" {
 		return removeEmpty(ctx, e, false, o)
@@ -196,13 +204,18 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			if k != "" && !m[k].IsDir {
 				continue
 			}
+			item := k
+			if item == "" {
+				item = e.Root
+			}
 			if o.DryRun {
-				logAction(o, "would-rmdir", k)
+				logAction(o, "would-rmdir", item)
 				continue
 			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
 			}
+			logAction(o, "rmdir", item)
 		}
 	}
 	return nil
