@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"crypto/md5"
 	"errors"
 	"fmt"
@@ -35,11 +36,21 @@ func (pcs *BaiduPCS) policyTortype(policy string) string {
 
 // Isdir 检查路径在网盘中是否为目录
 func (pcs *BaiduPCS) Isdir(pcspath string) (fileSize int64, isdir bool, pcsError pcserror.Error) {
+	return pcs.IsdirWithContext(context.Background(), pcspath)
+}
+
+// IsdirWithContext checks the target without detaching cancellation.
+func (pcs *BaiduPCS) IsdirWithContext(ctx context.Context, pcspath string) (fileSize int64, isdir bool, pcsError pcserror.Error) {
+	if err := ctx.Err(); err != nil {
+		info := pcserror.NewPCSErrorInfo(OperationFilesDirectoriesMeta)
+		info.SetNetError(err)
+		return 0, false, info
+	}
 	if path.Clean(pcspath) == PathSeparator {
 		return 0, true, nil
 	}
 
-	f, pcsError := pcs.FilesDirectoriesMeta(pcspath)
+	f, pcsError := pcs.FilesDirectoriesMetaWithContext(ctx, pcspath)
 	if pcsError != nil {
 		return 0, false, pcsError
 	}
@@ -48,9 +59,14 @@ func (pcs *BaiduPCS) Isdir(pcspath string) (fileSize int64, isdir bool, pcsError
 }
 
 func (pcs *BaiduPCS) CheckIsdir(op string, targetPath string, policy string, fileSize int64) pcserror.Error {
+	return pcs.CheckIsdirWithContext(context.Background(), op, targetPath, policy, fileSize)
+}
+
+// CheckIsdirWithContext preserves the target safety checks while canceling I/O.
+func (pcs *BaiduPCS) CheckIsdirWithContext(ctx context.Context, op string, targetPath string, policy string, fileSize int64) pcserror.Error {
 	// 检测文件是否存在于网盘路径
 	// 很重要, 如果文件存在会直接覆盖!!! 即使是根目录!
-	targetFileSize, isdir, pcsError := pcs.Isdir(targetPath)
+	targetFileSize, isdir, pcsError := pcs.IsdirWithContext(ctx, targetPath)
 	if pcsError != nil {
 		// 忽略远程服务端返回的错误
 		if pcsError.GetErrType() != pcserror.ErrTypeRemoteError {

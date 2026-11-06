@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
 
@@ -12,7 +13,12 @@ type quotaInfo struct {
 
 // QuotaInfo 获取当前用户空间配额信息
 func (pcs *BaiduPCS) QuotaInfo() (quota, used int64, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareQuotaInfo()
+	return pcs.QuotaInfoWithContext(context.Background())
+}
+
+// QuotaInfoWithContext cancels the request and response decoding.
+func (pcs *BaiduPCS) QuotaInfoWithContext(ctx context.Context) (quota, used int64, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareQuotaInfoWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -24,6 +30,10 @@ func (pcs *BaiduPCS) QuotaInfo() (quota, used int64, pcsError pcserror.Error) {
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationQuotaInfo, dataReadCloser, quotaInfo)
+	if err := ctx.Err(); err != nil {
+		quotaInfo.PCSErrInfo.SetNetError(err)
+		return 0, 0, quotaInfo.PCSErrInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -33,21 +43,11 @@ func (pcs *BaiduPCS) QuotaInfo() (quota, used int64, pcsError pcserror.Error) {
 
 // SpaceLeftInfo 获取当前用户剩余空间
 func (pcs *BaiduPCS) SpaceLeftInfo() (free int64, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareQuotaInfo()
-	if pcsError != nil {
-		return
-	}
+	return pcs.SpaceLeftInfoWithContext(context.Background())
+}
 
-	defer dataReadCloser.Close()
-
-	quotaInfo := &quotaInfo{
-		PCSErrInfo: pcserror.NewPCSErrorInfo(OperationQuotaInfo),
-	}
-
-	pcsError = pcserror.HandleJSONParse(OperationQuotaInfo, dataReadCloser, quotaInfo)
-	if pcsError != nil {
-		return
-	}
-
-	return quotaInfo.Quota - quotaInfo.Used, nil
+// SpaceLeftInfoWithContext computes remaining capacity within ctx.
+func (pcs *BaiduPCS) SpaceLeftInfoWithContext(ctx context.Context) (free int64, pcsError pcserror.Error) {
+	quota, used, pcsError := pcs.QuotaInfoWithContext(ctx)
+	return quota - used, pcsError
 }

@@ -1,6 +1,8 @@
 package baidupcs
 
 import (
+	"context"
+	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	pathpkg "path"
@@ -49,36 +51,56 @@ func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 
 // CacheFilesDirectoriesList 缓存获取
 func (pcs *BaiduPCS) CacheFilesDirectoriesList(path string, options *OrderOptions) (fdl FileDirectoryList, pcsError pcserror.Error) {
+	return pcs.CacheFilesDirectoriesListWithContext(context.Background(), path, options)
+}
+
+// CacheFilesDirectoriesListWithContext cancels cache waits and directory I/O.
+func (pcs *BaiduPCS) CacheFilesDirectoriesListWithContext(ctx context.Context, path string, options *OrderOptions) (fdl FileDirectoryList, pcsError pcserror.Error) {
 	pcs.lazyInit()
 	path = directoryCachePath(path)
 	if options == nil {
 		options = DefaultOrderOptions
 	}
-	data := pcs.cacheOpMap.CacheOperation(OperationFilesDirectoriesList, directoryCacheKey{path, options.By, options.Order}, func() expires.DataExpires {
-		fdl, pcsError = pcs.FilesDirectoriesList(path, options)
+	data, err := pcs.cacheOpMap.CacheOperationWithContext(ctx, OperationFilesDirectoriesList, directoryCacheKey{path, options.By, options.Order}, func() (expires.DataExpires, error) {
+		fdl, pcsError = pcs.FilesDirectoriesListWithContext(ctx, path, options)
 		if pcsError != nil {
-			return nil
+			return nil, pcsError
 		}
-		return expires.NewDataExpires(fdl, 1*time.Minute)
+		return expires.NewDataExpires(fdl, 1*time.Minute), nil
 	})
-	if pcsError != nil {
-		return
+	if err != nil {
+		return nil, cacheOperationError(OperationFilesDirectoriesList, err)
 	}
 	return data.Data().(FileDirectoryList), nil
 }
 
 // CacheUK 缓存获取
 func (pcs *BaiduPCS) CacheUK() (uk int64, pcsError pcserror.Error) {
+	return pcs.CacheUKWithContext(context.Background())
+}
+
+// CacheUKWithContext cancels cache waits and the account lookup.
+func (pcs *BaiduPCS) CacheUKWithContext(ctx context.Context) (uk int64, pcsError pcserror.Error) {
 	pcs.lazyInit()
-	data := pcs.cacheOpMap.CacheOperation(OperationGetUK, pcs.GetBDUSS(), func() expires.DataExpires {
-		uk, pcsError = pcs.UK()
+	data, err := pcs.cacheOpMap.CacheOperationWithContext(ctx, OperationGetUK, pcs.GetBDUSS(), func() (expires.DataExpires, error) {
+		uk, pcsError = pcs.UKWithContext(ctx)
 		if pcsError != nil {
-			return nil
+			return nil, pcsError
 		}
-		return expires.NewDataExpires(uk, 24*time.Hour)
+		return expires.NewDataExpires(uk, 24*time.Hour), nil
 	})
-	if pcsError != nil {
-		return
+	if err != nil {
+		return 0, cacheOperationError(OperationGetUK, err)
 	}
 	return data.Data().(int64), nil
+}
+
+func cacheOperationError(op string, err error) pcserror.Error {
+	var pcsErr pcserror.Error
+	if errors.As(err, &pcsErr) {
+		return pcsErr
+	}
+	info := pcserror.NewPCSErrorInfo(op)
+	info.SetNetError(err)
+	return info
 }

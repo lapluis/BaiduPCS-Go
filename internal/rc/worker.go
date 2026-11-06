@@ -32,7 +32,7 @@ import (
 )
 
 // ErrCheckpointSave remains distinguishable across the isolated worker protocol.
-var ErrCheckpointSave = downloader.ErrCheckpointSave
+var ErrCheckpointSave = errors.New("transfer resume checkpoint could not be saved")
 
 // Worker processes isolate legacy global account clients and stdout, and can be
 // cancelled without allowing a partially completed transfer to trigger deletion.
@@ -170,7 +170,11 @@ func RunWorker(args []string) error {
 		defer db.Close()
 		statistic := &pcsupload.UploadStatistic{}
 		statistic.StartTimer()
-		executor.Append(&pcsupload.UploadTaskUnit{Context: ctx, Progress: onProgress, IgnoreCachedMatch: true, LocalFileChecksum: checksum.NewLocalFileChecksum(args[2], int(baidupcs.SliceMD5Size)), SavePath: args[3], PCS: pcs, UploadingDatabase: db, Parallel: 1, PrintFormat: pcsupload.DefaultPrintFormat, UploadStatistic: statistic, Policy: baidupcs.OverWritePolicy}, 0)
+		executor.Append(&pcsupload.UploadTaskUnit{Context: ctx, Progress: onProgress, OnTransferError: func(err error) {
+			if errors.Is(err, pcsupload.ErrCheckpointSave) {
+				report(transferProgress{CheckpointFailed: true})
+			}
+		}, IgnoreCachedMatch: true, LocalFileChecksum: checksum.NewLocalFileChecksum(args[2], int(baidupcs.SliceMD5Size)), SavePath: args[3], PCS: pcs, UploadingDatabase: db, Parallel: 1, PrintFormat: pcsupload.DefaultPrintFormat, UploadStatistic: statistic, Policy: baidupcs.OverWritePolicy}, 0)
 	} else if kind == "download" || kind == "probe" {
 		info, e := pcs.FilesDirectoriesMeta(args[2])
 		if e != nil {

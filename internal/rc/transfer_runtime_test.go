@@ -401,8 +401,12 @@ func TestDownloadStageRejectsChangedIdentityAndLocalData(t *testing.T) {
 }
 
 func TestWorkerProgressAndGracefulCancelIPC(t *testing.T) {
-	for _, failCheckpoint := range []bool{false, true} {
-		t.Run(fmt.Sprint(failCheckpoint), func(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		fail bool
+	}{{"download", false}, {"download", true}, {"upload", false}, {"upload", true}} {
+		kind, failCheckpoint := tc.kind, tc.fail
+		t.Run(fmt.Sprintf("%s/%v", kind, failCheckpoint), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			checkpoint := filepath.Join(t.TempDir(), "checkpoint")
@@ -421,7 +425,7 @@ func TestWorkerProgressAndGracefulCancelIPC(t *testing.T) {
 				}
 			})
 			done := make(chan error, 1)
-			go func() { done <- executeWorkerCommand(ctx, cmd, "download", 7) }()
+			go func() { done <- executeWorkerCommand(ctx, cmd, kind, 7) }()
 			select {
 			case <-seen:
 			case <-time.After(3 * time.Second):

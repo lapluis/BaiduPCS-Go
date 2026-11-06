@@ -2,6 +2,7 @@
 package checksum
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -145,6 +146,13 @@ func (lfc *LocalFileChecksum) GetSliceDataContent(offset, length int64) (dataCon
 }
 
 func (lfc *LocalFileChecksum) repeatRead(wus ...*ChecksumWriteUnit) (err error) {
+	return lfc.repeatReadWithContext(context.Background(), wus...)
+}
+
+func (lfc *LocalFileChecksum) repeatReadWithContext(ctx context.Context, wus ...*ChecksumWriteUnit) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if lfc.file == nil {
 		return ErrFileIsNil
 	}
@@ -161,11 +169,20 @@ func (lfc *LocalFileChecksum) repeatRead(wus ...*ChecksumWriteUnit) (err error) 
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n, readErr := lfc.file.Read(lfc.buf)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if readErr != nil && readErr != io.EOF {
 			return readErr
 		}
 		writeErr := lfc.writeChecksum(lfc.buf[:n], wus...)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if writeErr == ErrChecksumWriteAllStop {
 			return nil
 		}
@@ -211,6 +228,14 @@ func (lfc *LocalFileChecksum) createChecksumWriteUnit(cw ChecksumWriter, isAll, 
 
 // Sum 计算文件摘要值
 func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
+	return lfc.SumWithContext(context.Background(), checkSumFlag)
+}
+
+// SumWithContext stops between read batches and only publishes complete digests.
+func (lfc *LocalFileChecksum) SumWithContext(ctx context.Context, checkSumFlag int) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lfc.fix()
 	if err = lfc.checkSnapshot(); err != nil {
 		return err
@@ -252,15 +277,27 @@ func (lfc *LocalFileChecksum) Sum(checkSumFlag int) (err error) {
 		defer func() { d(err) }()
 	}
 
-	err = lfc.repeatRead(wus...)
+	err = lfc.repeatReadWithContext(ctx, wus...)
 	if err == nil {
 		err = lfc.checkSnapshot()
+	}
+	if err == nil {
+		err = ctx.Err()
 	}
 	return
 }
 
 // CalculateChunkedSum 按指定大小分块并行计算MD5
 func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
+	return lfc.CalculateChunkedSumWithContext(context.Background(), chunkSize)
+}
+
+// CalculateChunkedSumWithContext joins all workers before returning and keeps
+// the previous block snapshot when computation fails or is canceled.
+func (lfc *LocalFileChecksum) CalculateChunkedSumWithContext(ctx context.Context, chunkSize int64) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// 确保分块大小有效
 	if chunkSize <= 0 {
@@ -271,6 +308,9 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	}
 	fileSize := lfc.Length
 	if fileSize == 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		lfc.BlocksList = nil
 		return nil // 空文件
 	}
@@ -309,6 +349,8 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 
 			for i := workerId; i < chunkCount; i += workers {
 				select {
+				case <-ctx.Done():
+					return
 				case <-stopped:
 					return
 				default:
@@ -323,6 +365,8 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 				// 读取当前分块的所有数据
 				for bytesRead < currentChunkSize {
 					select {
+					case <-ctx.Done():
+						return
 					case <-stopped:
 						return
 					default:
@@ -357,9 +401,15 @@ func (lfc *LocalFileChecksum) CalculateChunkedSum(chunkSize int64) (err error) {
 	wg.Wait()
 
 	if firstErr != nil {
-		return firstErr
+		return errors.Join(firstErr, ctx.Err())
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := lfc.checkSnapshot(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	lfc.BlocksList = blocks

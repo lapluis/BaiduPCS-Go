@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/olekukonko/tablewriter"
@@ -108,11 +109,16 @@ var (
 
 // FilesDirectoriesMeta 获取单个文件/目录的元信息
 func (pcs *BaiduPCS) FilesDirectoriesMeta(path string) (data *FileDirectory, pcsError pcserror.Error) {
+	return pcs.FilesDirectoriesMetaWithContext(context.Background(), path)
+}
+
+// FilesDirectoriesMetaWithContext queries metadata under the caller's context.
+func (pcs *BaiduPCS) FilesDirectoriesMetaWithContext(ctx context.Context, path string) (data *FileDirectory, pcsError pcserror.Error) {
 	if path == "" {
 		path = PathSeparator
 	}
 
-	fds, err := pcs.FilesDirectoriesBatchMeta(path)
+	fds, err := pcs.FilesDirectoriesBatchMetaWithContext(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +136,12 @@ func (pcs *BaiduPCS) FilesDirectoriesMeta(path string) (data *FileDirectory, pcs
 
 // FilesDirectoriesBatchMeta 获取多个文件/目录的元信息
 func (pcs *BaiduPCS) FilesDirectoriesBatchMeta(paths ...string) (data FileDirectoryList, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareFilesDirectoriesBatchMeta(paths...)
+	return pcs.FilesDirectoriesBatchMetaWithContext(context.Background(), paths...)
+}
+
+// FilesDirectoriesBatchMetaWithContext also cancels response body decoding.
+func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, paths ...string) (data FileDirectoryList, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareFilesDirectoriesBatchMetaWithContext(ctx, paths...)
 	if pcsError != nil {
 		return nil, pcsError
 	}
@@ -144,6 +155,10 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMeta(paths ...string) (data FileDirect
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationFilesDirectoriesMeta, dataReadCloser, (*fdDataJSONExport)(unsafe.Pointer(&jsonData)))
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -209,11 +224,20 @@ func (pcs *BaiduPCS) FilesDirectoriesList(path string, options *OrderOptions) (d
 	return pcs.filesDirectoriesList(path, options, 2000)
 }
 
+// FilesDirectoriesListWithContext applies cancellation across all pages.
+func (pcs *BaiduPCS) FilesDirectoriesListWithContext(ctx context.Context, path string, options *OrderOptions) (data FileDirectoryList, pcsError pcserror.Error) {
+	return pcs.filesDirectoriesListWithContext(ctx, path, options, 2000)
+}
+
 func (pcs *BaiduPCS) filesDirectoriesList(path string, options *OrderOptions, maxPage int) (data FileDirectoryList, pcsError pcserror.Error) {
+	return pcs.filesDirectoriesListWithContext(context.Background(), path, options, maxPage)
+}
+
+func (pcs *BaiduPCS) filesDirectoriesListWithContext(ctx context.Context, path string, options *OrderOptions, maxPage int) (data FileDirectoryList, pcsError pcserror.Error) {
 	seen := make(map[int64]struct{}, maxListNum)
 
 	for page := 1; page <= maxPage; page++ {
-		dataReadCloser, err := pcs.PrepareFilesDirectoriesList(path, options, maxListNum, page)
+		dataReadCloser, err := pcs.PrepareFilesDirectoriesListWithContext(ctx, path, options, maxListNum, page)
 		if err != nil {
 			pcsError = err
 			return
@@ -225,6 +249,10 @@ func (pcs *BaiduPCS) filesDirectoriesList(path string, options *OrderOptions, ma
 
 		err = pcserror.HandleJSONParse(OperationFilesDirectoriesList, dataReadCloser, &jsonData)
 		dataReadCloser.Close()
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			jsonData.PanErrorInfo.SetNetError(cancelErr)
+			return nil, jsonData.PanErrorInfo
+		}
 		if err != nil {
 			pcsError = err
 			return

@@ -163,7 +163,7 @@ func (muer *MultiUploader) Execute() {
 
 	// 开始上传
 	muer.executeTime = time.Now()
-	pcsutil.Trigger(muer.onExecuteEvent)
+	pcsutil.TriggerOnSync(muer.onExecuteEvent)
 
 	muer.uploadStatusEvent()
 
@@ -262,6 +262,8 @@ func (muer *MultiUploader) isStopped() bool {
 }
 
 // OnExecute 设置开始上传事件
+// The callback runs before precreation or part requests. It may configure or
+// stop the upload, but must not wait for upload completion.
 func (muer *MultiUploader) OnExecute(onExecuteEvent requester.Event) {
 	muer.onExecuteEvent = onExecuteEvent
 }

@@ -2,6 +2,7 @@
 package baidupcs
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/cookiejar"
@@ -493,7 +494,12 @@ func (pcs *BaiduPCS) generatePanURL(subPath string, param map[string]string) *ur
 
 // UK 获取用户 UK
 func (pcs *BaiduPCS) UK() (uk int64, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareUK()
+	return pcs.UKWithContext(context.Background())
+}
+
+// UKWithContext cancels both the request and its response decoder.
+func (pcs *BaiduPCS) UKWithContext(ctx context.Context) (uk int64, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareUKWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -506,6 +512,10 @@ func (pcs *BaiduPCS) UK() (uk int64, pcsError pcserror.Error) {
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationGetUK, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return 0, errInfo
+	}
 	if pcsError != nil {
 		return
 	}

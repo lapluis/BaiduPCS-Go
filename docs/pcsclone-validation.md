@@ -112,6 +112,30 @@ EOF 完整性回归：模拟 8192 字节探测前缀恰好填满缓冲区后才�
 
 启动回调暂停恢复的新增回归：`TestStartupPauseResumeKeepsWorkersUnderTaskContext` 验证启动回调中的暂停/恢复不会提前发出请求，正式启动后的请求仍受任务取消控制；`TestStartupPauseResumeDownloadsExactlyOnce` 验证重复切换后只请求一次、内容完整且下载计数准确。监控器接管前的恢复只清除暂停状态，不启动 worker。
 
+上传启动回调回归：`TestUploadStartupCallbackFinishesBeforeNetworkAndFinalEvents` 分别验证正常继续、取消和优雅停止。多分片上传会先等待开始回调返回，再预创建或发送分片；回调内取消/停止不会发送任何网络请求，最终事件也不会早于开始回调结束。正常继续仍完成分片与合并。
+
+上传分片摘要回归：`TestUploadTmpFileRejectsMalformedDigest` 验证分片成功响应的 MD5 必须为 32 位十六进制字符串，拒绝短值、长值、非十六进制和空白值，避免将异常响应作为完成摘要交给断点记录。大小写十六进制均接受，缺失摘要保留原有错误类型，所有响应体都会关闭。
+
+旧上传断点摘要修复回归：`TestLegacyInvalidUploadDigestIsReuploaded` 从磁盘读取包含异常摘要的旧数据库，经真实分片调度和模拟合并验证只重新上传异常分片，保留上传会话与合法分片；覆盖短值、长值、非十六进制、空白、待上传、合法大小写摘要。读取数据库仅修复内存中的待上传标记，不主动改写原文件。
+
+上传断点安全写入回归：`TestUploadDatabaseReplacementFailurePreservesPreviousRecord` 在 Windows 阻止文件替换时验证保存报错、旧记录字节不变、临时文件清理，解除占用后重试可以保存并重新读取新进度；`TestUploadDatabaseReadOnlySavePreservesPreviousRecord` 验证只读句柄不会被临时文件替换绕过。保存过程先完整写入并同步临时文件，再替换正式记录，不再先截断旧记录。
+
+上传断点保存错误上报回归：`TestCanceledUploadReportsCheckpointFailure` 验证取消时保存失败保留原始 I/O 错误并上报可识别标记；`TestPeriodicUploadCheckpointFailureStopsBeforeMerge` 验证周期保存失败会取消在途分片、阻止合并且保留旧记录；`TestCompletedUploadReportsCheckpointCleanupFailure` 验证远端合并后清理断点失败不再报告整个任务成功或自动重传。worker IPC 回归同时覆盖上传和下载的取消与断点失败分类。
+
+首次上传会话落盘回归：`TestNoRapidUploadPersistsInitialSessionBeforePartsStart` 使用模拟元信息查询和预创建响应，验证 `--norapid` 在分片启动前将新会话加入数据库并保存；关闭、重新打开数据库后仍可恢复会话，重启任务不再发起预创建握手。
+
+`--norapid` 准备阶段取消回归：`TestNoRapidPreparationCancellationReachesHeadersAndBody` 分别阻塞目标元信息查询和预创建握手的响应头/响应体，验证任务取消会停止请求、关闭响应体并直接结束准备阶段，不再回退到秒传；`TestCanceledNoRapidHandshakeDoesNotSendRequests` 验证已取消的上下文不会发出请求。原有无上下文接口保留，新增接口将上下文贯穿目标检查、元信息请求和预创建响应解析。
+
+普通上传准备取消回归：`TestRapidPreparationCancellationCoversEveryRequest` 覆盖目录列表、用户 UK、目标元信息和秒传握手的响应头/响应体阻塞；准备阶段取消不会继续上传或自动重试。`TestNoRapidPreparationCancellationReachesHeadersAndBody` 追加大文件容量查询的两种阻塞场景。`TestPreparationCacheWaitCanBeCanceled` 验证缓存等待可取消、不会中断缓存拥有者，且热缓存不会绕过取消。`TestRapidUploadContextPreservesTargetChecksAndHandshake` 验证新增上下文接口保留目标目录保护和握手参数。
+
+本地摘要取消回归：`TestCanceledChecksumPreservesPreviousSnapshot` 验证空文件和非空文件的提前取消不改写已有 MD5、切片摘要、CRC32 或分块结果；`TestSumCancellationDuringReadPreservesDigestsAndResetsPosition` 在读取大文件期间取消并验证摘要未发布、读取位置复位；`TestChunkedSumCancellationPreservesPreviousBlocks` 验证分块计算取消后保留旧结果且文件句柄仍可使用。`TestUploadPreparationCancelsLocalChecksumBeforePublishing` 验证上传准备已接入可取消摘要接口，取消后不再发起后续请求。
+
+预创建响应校验回归：`TestUploadPrecreateRequiresSupportedModeAndUsableSession` 覆盖十种成功/异常响应，拒绝未知模式或无法取得有效会话的分片上传响应；保留普通秒传命中及恢复已有会话时省略 ID 的兼容行为，`--norapid` 只接受可继续分片上传的会话。`TestRapidPreparationRetainsPrecreateFailure` 验证异常会话、远端容量错误和 JSON 解析错误都保留在任务结果中，不再返回空错误或继续分片阶段。
+
+恢复上传会话更新回归：`TestRenewedUploadSessionReachesCheckpointPartsAndMerge` 经模拟目录查询、握手、真实上传适配器和合并路径，验证服务端返回新会话 ID 后，内存状态、落盘断点、分片请求和合并请求均使用新 ID；同时覆盖返回相同 ID 和省略返回 ID 的兼容情况。
+
+该轮全仓复查未全绿：构建、`go vet` 和上传会话回归通过；随机全仓测试遇到本机 TCP `connectex` 端口占用错误。等待连接回收后按包串行复跑，其余包通过，下载包单独按同一 shuffle 种子 `1793986091576393300` 复跑仍遇到相同端口错误。未修改测试断言或系统端口设置；本轮不能据此声称全仓测试通过。
+
 ## 2. 未执行（发布前仍需验证）
 
 以下项目需要真实百度账号和网盘环境，本轮环境没有可用测试凭据，因此**未执行**：

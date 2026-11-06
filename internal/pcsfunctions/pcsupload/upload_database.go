@@ -2,13 +2,14 @@ package pcsupload
 
 import (
 	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/jsonhelper"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/uploader"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,9 @@ type (
 		dataFile *os.File
 	}
 )
+
+// ErrCheckpointSave identifies upload progress persistence failures.
+var ErrCheckpointSave = errors.New("upload resume checkpoint could not be saved")
 
 // NewUploadingDatabase 初始化未完成上传的数据库, 从库中读取内容
 func NewUploadingDatabase() (ud *UploadingDatabase, err error) {
@@ -83,6 +87,18 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 				file.Close()
 				return nil, errors.New("invalid upload resume database: null block")
 			}
+			if block.CheckSum != "" {
+				valid := false
+				if len(block.CheckSum) == 2*md5.Size {
+					_, err := hex.DecodeString(block.CheckSum)
+					valid = err == nil
+				}
+				if !valid {
+					// Older versions cached any nonempty response digest. Only
+					// reupload that block; keep the session and valid parts.
+					block.CheckSum = ""
+				}
+			}
 		}
 	}
 
@@ -90,7 +106,12 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 }
 
 // Save 保存内容
-func (ud *UploadingDatabase) Save() error {
+func (ud *UploadingDatabase) Save() (saveErr error) {
+	defer func() {
+		if saveErr != nil {
+			saveErr = fmt.Errorf("%w: %w", ErrCheckpointSave, saveErr)
+		}
+	}()
 	ud.lock.Lock()
 	defer ud.lock.Unlock()
 	if ud.dataFile == nil {
@@ -104,21 +125,49 @@ func (ud *UploadingDatabase) Save() error {
 		err     = jsonhelper.MarshalData(builder, ud)
 	)
 	if err != nil {
-		panic(err)
-	}
-
-	err = ud.dataFile.Truncate(int64(builder.Len()))
-	if err != nil {
 		return err
 	}
 
-	str := builder.String()
-	_, err = ud.dataFile.WriteAt(converter.ToBytes(str), 0)
+	// Check the original handle is writable without changing its contents.
+	// Stage and flush the full record before replacing the previous checkpoint.
+	info, err := ud.dataFile.Stat()
 	if err != nil {
 		return err
 	}
-
-	return nil
+	err = ud.dataFile.Truncate(info.Size())
+	if err != nil {
+		return err
+	}
+	name := ud.dataFile.Name()
+	temp, err := os.CreateTemp(filepath.Dir(name), ".pcs-upload-state-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	n, err := temp.WriteString(builder.String())
+	if err == nil && n != builder.Len() {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = temp.Sync()
+	}
+	err = errors.Join(err, temp.Close())
+	if err != nil {
+		return err
+	}
+	// Windows filesystems may disallow replacing an open destination.
+	if err = ud.dataFile.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temp.Name(), name); err != nil {
+		reopened, openErr := os.OpenFile(name, os.O_RDWR, 0600)
+		if openErr == nil {
+			ud.dataFile = reopened
+		}
+		return errors.Join(err, openErr)
+	}
+	ud.dataFile, err = os.OpenFile(name, os.O_RDWR, 0600)
+	return err
 }
 
 // UpdateUploading 更新正在上传

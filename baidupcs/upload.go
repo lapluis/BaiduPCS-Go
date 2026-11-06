@@ -2,6 +2,7 @@ package baidupcs
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -38,6 +39,10 @@ const (
 var (
 	// ErrUploadMD5NotFound 未找到md5
 	ErrUploadMD5NotFound = errors.New("unknown response data, md5 not found")
+	// ErrUploadMD5Invalid indicates a malformed digest in a part response.
+	ErrUploadMD5Invalid = errors.New("invalid upload response md5")
+	// ErrUploadPrecreateInvalid means the response cannot start or finish an upload.
+	ErrUploadPrecreateInvalid = errors.New("invalid upload precreate response")
 	// ErrUploadSavePathFound 未找到保存路径
 	ErrUploadSavePathFound = errors.New("unknown response data, file saved path not found")
 	// ErrUploadSeqNotMatch 服务器返回的上传队列不匹配
@@ -104,18 +109,28 @@ type (
 
 // RapidUpload 秒传文件
 func (pcs *BaiduPCS) RapidUpload(targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32 string, offset, length, totalSize, dataTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
+	return pcs.RapidUploadWithContext(context.Background(), targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
+}
+
+// RapidUploadWithContext keeps rapid-upload requests and decoding cancellable.
+func (pcs *BaiduPCS) RapidUploadWithContext(ctx context.Context, targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32 string, offset, length, totalSize, dataTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
 	defer func() {
 		if pcsError == nil {
 			// 更新缓存
 			pcs.deleteCache([]string{path.Dir(targetPath)})
 		}
 	}()
-	pcsError, jsonData = pcs.rapidUploadV2(targetPath, policy, uploadid, strings.ToLower(contentMD5), strings.ToLower(sliceMD5), dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
+	pcsError, jsonData = pcs.rapidUploadV2(ctx, targetPath, policy, uploadid, strings.ToLower(contentMD5), strings.ToLower(sliceMD5), dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
 	return
 }
 
 // FakeRapidUpload 只precreate不进行秒传
 func (pcs *BaiduPCS) FakeRapidUpload(targetPath, policy string, length int64) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
+	return pcs.FakeRapidUploadWithContext(context.Background(), targetPath, policy, length)
+}
+
+// FakeRapidUploadWithContext keeps the full no-rapid handshake cancellable.
+func (pcs *BaiduPCS) FakeRapidUploadWithContext(ctx context.Context, targetPath, policy string, length int64) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
 	defer func() {
 		if pcsError == nil {
 			// 更新缓存
@@ -123,15 +138,15 @@ func (pcs *BaiduPCS) FakeRapidUpload(targetPath, policy string, length int64) (p
 		}
 	}()
 	if length <= MinUploadBlockSize {
-		pcsError, jsonData = pcs.fakeRapidUploadV2(targetPath, policy, length, time.Now().Unix(), fakeBlockListMD5[0:1])
+		pcsError, jsonData = pcs.fakeRapidUploadV2(ctx, targetPath, policy, length, time.Now().Unix(), fakeBlockListMD5[0:1])
 		return
 	}
-	pcsError, jsonData = pcs.fakeRapidUploadV2(targetPath, policy, length, time.Now().Unix(), fakeBlockListMD5)
+	pcsError, jsonData = pcs.fakeRapidUploadV2(ctx, targetPath, policy, length, time.Now().Unix(), fakeBlockListMD5)
 	return
 }
 
-func (pcs *BaiduPCS) rapidUploadV2(targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32 string, offset, length, totalSize, dataTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
-	dataReadCloser, pcsError := pcs.PrepareRapidUploadV2(targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
+func (pcs *BaiduPCS) rapidUploadV2(ctx context.Context, targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32 string, offset, length, totalSize, dataTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
+	dataReadCloser, pcsError := pcs.PrepareRapidUploadV2WithContext(ctx, targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
 	if pcsError != nil {
 		return
 	}
@@ -140,11 +155,17 @@ func (pcs *BaiduPCS) rapidUploadV2(targetPath, policy, uploadid, contentMD5, sli
 		PanErrorInfo: pcserror.NewPanErrorInfo(OperationRapidUpload),
 	}
 	pcsError = pcserror.HandleJSONParse(OperationUpload, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		jsonData.PanErrorInfo.SetNetError(err)
+		pcsError = jsonData.PanErrorInfo
+	} else if pcsError == nil {
+		pcsError = jsonData.validate(uploadid, true)
+	}
 	return pcsError, jsonData
 }
 
-func (pcs *BaiduPCS) fakeRapidUploadV2(targetPath, policy string, length, dateTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
-	dataReadCloser, pcsError := pcs.PrepareFakeRapidUploadV2(targetPath, policy, length, dateTime, blockListMD5)
+func (pcs *BaiduPCS) fakeRapidUploadV2(ctx context.Context, targetPath, policy string, length, dateTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
+	dataReadCloser, pcsError := pcs.PrepareFakeRapidUploadV2WithContext(ctx, targetPath, policy, length, dateTime, blockListMD5)
 	if pcsError != nil {
 		return
 	}
@@ -153,7 +174,32 @@ func (pcs *BaiduPCS) fakeRapidUploadV2(targetPath, policy string, length, dateTi
 		PanErrorInfo: pcserror.NewPanErrorInfo(OperationRapidUpload),
 	}
 	pcsError = pcserror.HandleJSONParse(OperationUpload, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		jsonData.PanErrorInfo.SetNetError(err)
+		pcsError = jsonData.PanErrorInfo
+	} else if pcsError == nil {
+		pcsError = jsonData.validate("", false)
+	}
 	return pcsError, jsonData
+}
+
+func (info *uploadPrecreateJSON) validate(existingSession string, allowRapid bool) pcserror.Error {
+	if info.ReturnType == 2 && allowRapid {
+		return nil
+	}
+	if info.ReturnType == 1 {
+		session := info.UploadID
+		if session == "" {
+			session = existingSession
+		}
+		if strings.TrimSpace(session) != "" {
+			info.UploadID = session
+			return nil
+		}
+	}
+	info.PanErrorInfo.ErrType = pcserror.ErrTypeInternalError
+	info.PanErrorInfo.Err = ErrUploadPrecreateInvalid
+	return info.PanErrorInfo
 }
 
 // RapidUploadNoCheckDir 秒传文件, 不进行目录检查, 会覆盖掉同名的目录!
@@ -196,6 +242,16 @@ func (pcs *BaiduPCS) UploadTmpFile(uploadid, targetPath string, partseq int, par
 	if jsonData.MD5 == "" {
 		jsonData.PCSErrInfo.ErrType = pcserror.ErrTypeInternalError
 		jsonData.PCSErrInfo.Err = ErrUploadMD5NotFound
+		return "", jsonData.PCSErrInfo
+	}
+	validMD5 := false
+	if len(jsonData.MD5) == 32 {
+		_, err := hex.DecodeString(jsonData.MD5)
+		validMD5 = err == nil
+	}
+	if !validMD5 {
+		jsonData.PCSErrInfo.ErrType = pcserror.ErrTypeInternalError
+		jsonData.PCSErrInfo.Err = ErrUploadMD5Invalid
 		return "", jsonData.PCSErrInfo
 	}
 
