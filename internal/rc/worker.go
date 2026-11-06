@@ -8,10 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
-	"github.com/qjfoidnh/BaiduPCS-Go/requester/multipartreader"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -142,19 +139,7 @@ func RunWorker(args []string) error {
 			return err
 		}
 		if info.Size() == 0 {
-			body, e := pcs.PrepareUpload(baidupcs.OverWritePolicy, args[3], func(url string, jar http.CookieJar) (*http.Response, error) {
-				mr := multipartreader.NewMultipartReader()
-				mr.AddFormFile("file", "empty", pcsupload.EmptyReaderLen64{})
-				mr.CloseMultipart()
-				client := pcsconfig.Config.PCSHTTPClient()
-				client.SetCookiejar(jar)
-				return client.Req(http.MethodPost, url, mr, nil)
-			})
-			if e != nil {
-				return e
-			}
-			defer body.Close()
-			return pcserror.DecodePCSJSONError(baidupcs.OperationUpload, body)
+			return uploadEmptyFile(ctx, pcs, args[3], pcsconfig.Config.PCSHTTPClient())
 		}
 		// Each target has a separate resume database, preventing workers from
 		// overwriting each other's state or resuming against another account/path.

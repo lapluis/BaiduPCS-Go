@@ -1,5 +1,10 @@
 package uploader
 
+import "errors"
+
+// ErrSourceRead identifies failures reading upload data, rather than sending it.
+var ErrSourceRead = errors.New("upload source read failed")
+
 type (
 	// MultiError 多线程上传的错误
 	MultiError struct {
@@ -12,3 +17,6 @@ type (
 func (me *MultiError) Error() string {
 	return me.Err.Error()
 }
+
+// Unwrap preserves terminal causes such as cancellation and source changes.
+func (me *MultiError) Unwrap() error { return me.Err }

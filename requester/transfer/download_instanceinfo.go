@@ -59,6 +59,10 @@ func (m *DownloadInstanceInfoExport) SetInstanceInfo(eii *DownloadInstanceInfo) 
 			m.BlockSize = eii.DownloadStatus.gen.LoadBlockSize()
 			m.RangeGenMode = eii.DownloadStatus.gen.RangeGenMode()
 		} else {
+			// This exporter may be reused after loading another checkpoint.
+			// A default snapshot must not retain that generator's progress.
+			m.GenBegin = 0
+			m.BlockSize = 0
 			m.RangeGenMode = RangeGenMode_Default
 		}
 	}

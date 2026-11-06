@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 type (
@@ -21,7 +22,7 @@ type (
 
 	fileBlock struct {
 		readRange     transfer.Range
-		readed        int64
+		readed        atomic.Int64
 		readerAt      io.ReaderAt
 		speedsStatRef *speeds.Speeds
 		rateLimit     *speeds.RateLimit
@@ -93,13 +94,19 @@ func (fb *fileBlock) Read(b []byte) (n int, err error) {
 	}
 
 	if int64(len(b)) > left {
-		n, err = fb.readerAt.ReadAt(b[:left], fb.readed+fb.readRange.Begin)
-	} else {
-		n, err = fb.readerAt.ReadAt(b, fb.readed+fb.readRange.Begin)
+		b = b[:left]
 	}
+	offset := fb.readed.Load() + fb.readRange.Begin
+	n, err = fb.readerAt.ReadAt(b, offset)
 
 	n64 := int64(n)
-	fb.readed += n64
+	if err == nil && n < len(b) {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil && !(err == io.EOF && n64 == left) {
+		err = fmt.Errorf("%w at offset %d: %w", ErrSourceRead, offset, err)
+	}
+	fb.readed.Add(n64)
 	if fb.rateLimit != nil {
 		fb.rateLimit.Add(n64) // 限速阻塞
 	}
@@ -118,7 +125,7 @@ func (fb *fileBlock) Seek(offset int64, whence int) (int64, error) {
 	case os.SEEK_SET:
 		base = 0
 	case os.SEEK_CUR:
-		base = fb.readed
+		base = fb.readed.Load()
 	case os.SEEK_END:
 		base = fb.readRange.End - fb.readRange.Begin
 	default:
@@ -127,8 +134,9 @@ func (fb *fileBlock) Seek(offset int64, whence int) (int64, error) {
 	if base < 0 || offset < -base || offset > (1<<63-1)-base {
 		return 0, fmt.Errorf("invalid seek position")
 	}
-	fb.readed = base + offset
-	return fb.readed, nil
+	position := base + offset
+	fb.readed.Store(position)
+	return position, nil
 }
 
 func (fb *fileBlock) Len() int64 {
@@ -136,7 +144,7 @@ func (fb *fileBlock) Len() int64 {
 }
 
 func (fb *fileBlock) Left() int64 {
-	return fb.readRange.End - fb.readRange.Begin - fb.readed
+	return fb.readRange.End - fb.readRange.Begin - fb.readed.Load()
 }
 
 func (fb *fileBlock) Range() transfer.Range {
@@ -144,5 +152,5 @@ func (fb *fileBlock) Range() transfer.Range {
 }
 
 func (fb *fileBlock) Readed() int64 {
-	return fb.readed
+	return fb.readed.Load()
 }

@@ -44,36 +44,46 @@ func (us *UploadStatus) TimeElapsed() time.Duration {
 	return us.timeElapsed
 }
 
-// GetStatusChan 获取上传状态，未使用
+// GetStatusChan 获取上传状态；上传结束时关闭，即使调用方已停止读取。
 func (u *Uploader) GetStatusChan() <-chan Status {
+	u.initSignals()
 	c := make(chan Status)
-
 	go func() {
-		for {
-			select {
-			case <-u.finished:
-				close(c)
-				return
-			default:
-				if !u.executed {
-					time.Sleep(1 * time.Second)
-					continue
-				}
-
-				old := u.readed64.Readed()
-				time.Sleep(1 * time.Second) // 每秒统计
-
-				readed := u.readed64.Readed()
-				c <- &UploadStatus{
-					totalSize:       u.readed64.Len(),
-					uploaded:        readed,
-					speedsPerSecond: readed - old,
-					timeElapsed:     time.Since(u.executeTime) / 1e7 * 1e7,
-				}
-			}
-		}
+		defer close(c)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		u.streamStatus(c, ticker.C)
 	}()
 	return c
+}
+
+func (u *Uploader) streamStatus(c chan<- Status, ticks <-chan time.Time) {
+	select {
+	case <-u.finished:
+		return
+	case <-u.started:
+	}
+	// Closing started publishes executeTime and totalSize before they are read.
+	old := u.readed64.Readed()
+	for {
+		select {
+		case <-u.finished:
+			return
+		case <-ticks:
+			readed := u.readed64.Readed()
+			status := &UploadStatus{
+				totalSize: u.totalSize, uploaded: readed,
+				speedsPerSecond: readed - old,
+				timeElapsed:     time.Since(u.executeTime) / 1e7 * 1e7,
+			}
+			select {
+			case <-u.finished:
+				return
+			case c <- status:
+			}
+			old = readed
+		}
+	}
 }
 
 // 使用中的速度状态

@@ -19,6 +19,7 @@ type (
 	//Worker 工作单元
 	Worker struct {
 		totalSize          int64 // 整个文件的大小, worker请求range时会获取尝试获取该值, 如果不匹配, 则返回错误
+		cacheSize          int
 		wrange             *transfer.Range
 		speedsStat         *speeds.Speeds
 		id                 int    //id
@@ -60,10 +61,11 @@ func (wl WorkerList) Duplicate() WorkerList {
 // NewWorker 初始化Worker
 func NewWorker(id int, durl string, writerAt io.WriterAt) *Worker {
 	return &Worker{
-		id:       id,
-		url:      durl,
-		writerAt: writerAt,
-		writeMu:  &sync.Mutex{},
+		totalSize: -1,
+		id:        id,
+		url:       durl,
+		writerAt:  writerAt,
+		writeMu:   &sync.Mutex{},
 	}
 }
 
@@ -443,11 +445,11 @@ func (wer *Worker) Execute() {
 	}
 
 	var (
-		buf       = cachepool.SyncPool.Get().([]byte)
+		buf       = cachepool.GetBuffer(wer.cacheSize)
 		n, nn     int
 		n64, nn64 int64
 	)
-	defer cachepool.SyncPool.Put(buf)
+	defer cachepool.PutBuffer(buf)
 
 	for {
 		select {
@@ -529,7 +531,7 @@ func (wer *Worker) Execute() {
 			wer.wrange.AddBegin(n64)
 			if wer.downloadStatus != nil {
 				wer.downloadStatus.AddDownloaded(n64)
-				if single {
+				if single && wer.totalSize < 0 {
 					wer.downloadStatus.AddTotalSize(n64)
 				}
 			}

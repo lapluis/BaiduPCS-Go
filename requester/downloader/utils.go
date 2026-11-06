@@ -3,26 +3,19 @@ package downloader
 import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
-	mathrand "math/rand"
+	mathrand "math/rand/v2"
 	"mime"
 	"net/url"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 var (
 	// ContentRangeRE Content-Range 正则
 	ContentRangeRE       = regexp.MustCompile(`^.*? \d*?-\d*?/(\d*?)$`)
 	contentRangeBoundsRE = regexp.MustCompile(`(?i)^bytes ([0-9]+)-([0-9]+)/([0-9]+|\*)$`)
-
-	// ranSource 随机数种子
-	ranSource = mathrand.NewSource(time.Now().UnixNano())
-
-	// ran 一个随机数实例
-	ran = mathrand.New(ranSource)
 )
 
 func parseContentRangeBounds(value string) (begin, end, total int64, ok bool) {
@@ -47,12 +40,18 @@ func parseContentRangeBounds(value string) (begin, end, total int64, ok bool) {
 	return
 }
 
-// RandomNumber 生成指定区间随机数
+// RandomNumber returns a number in [min,max), swapping reversed bounds.
+// Equal bounds return that value. It is safe for concurrent callers.
 func RandomNumber(min, max int) int {
 	if min > max {
 		min, max = max, min
 	}
-	return ran.Intn(max-min) + min
+	if min == max {
+		return min
+	}
+	// Unsigned arithmetic supports intervals wider than the largest signed int.
+	width := uint(max) - uint(min)
+	return int(uint(min) + uint(mathrand.Uint64N(uint64(width))))
 }
 
 // GetFileName 获取文件名
@@ -69,22 +68,24 @@ func GetFileName(uri string, client *requester.HTTPClient) (filename string, err
 		return "", err
 	}
 
-	_, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
-	if err != nil {
-		pcsverbose.Verbosef("DEBUG: GetFileName ParseMediaType error: %s\n", err)
-		return path.Base(uri), nil
+	_, params, parseErr := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
+	if parseErr == nil && params["filename"] != "" {
+		// ParseMediaType already decodes extended filename parameters. Normal
+		// filename values contain literal percent signs and plus characters.
+		return params["filename"], nil
 	}
-
-	filename, err = url.QueryUnescape(params["filename"])
-	if err != nil {
-		return
+	if parseErr != nil {
+		pcsverbose.Verbosef("DEBUG: GetFileName ParseMediaType error: %s\n", parseErr)
 	}
-
-	if filename == "" {
-		filename = path.Base(uri)
+	parsed, parseErr := url.Parse(uri)
+	if parseErr != nil {
+		return "", parseErr
 	}
-
-	return
+	if resp.Request != nil && resp.Request.URL != nil {
+		parsed = resp.Request.URL
+	}
+	// URL.Path is decoded once and excludes query parameters and fragments.
+	return path.Base(parsed.Path), nil
 }
 
 // ParseContentRange 解析Content-Range

@@ -64,6 +64,18 @@ func TestCheckpointReplacementFailureRetainsPreviousRecord(t *testing.T) {
 	}
 }
 
+type checkpointCleanupLockWriter struct {
+	*os.File
+	lockCleanup func() error
+}
+
+func (w *checkpointCleanupLockWriter) Truncate(size int64) error {
+	if err := w.File.Truncate(size); err != nil {
+		return err
+	}
+	return w.lockCleanup()
+}
+
 func TestDownloadCannotSucceedWhenCheckpointCleanupFails(t *testing.T) {
 	content := []byte("complete")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,31 +91,39 @@ func TestDownloadCannotSucceedWhenCheckpointCleanupFails(t *testing.T) {
 	if err := os.WriteFile(statePath, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	d := NewDownloader(server.URL, f, &Config{MaxParallel: 1, CacheSize: 1024, InstanceStatePath: statePath})
-	d.SetFileContentLength(8)
 	var blocker *os.File
 	defer func() {
 		if blocker != nil {
 			blocker.Close()
 		}
 	}()
-	{
+	// Truncate runs after workers and checkpoint saves have stopped. Lock only
+	// here so this test cannot fail early on checkpoint replacement instead.
+	writer := &checkpointCleanupLockWriter{File: f, lockCleanup: func() error {
 		path, err := windows.UTF16PtrFromString(statePath)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
 		h, err := windows.CreateFile(path, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
 		blocker = os.NewFile(uintptr(h), statePath)
-	}
+		return nil
+	}}
+	d := NewDownloader(server.URL, writer, &Config{MaxParallel: 1, CacheSize: 1024, InstanceStatePath: statePath})
+	d.SetFileContentLength(8)
+	var checkpointErr error
+	d.OnExecute(func() { checkpointErr = d.monitor.saveCheckpoint() })
 	var success, finish atomic.Bool
 	d.OnSuccess(func() { success.Store(true) })
 	d.OnFinish(func() { finish.Store(true) })
 	err = d.Execute()
+	if checkpointErr != nil {
+		t.Fatal("ordinary checkpoint save failed before cleanup:", checkpointErr)
+	}
 	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || success.Load() || !finish.Load() {
+	if !errors.As(err, &pathErr) || pathErr.Op != "remove" || success.Load() || !finish.Load() {
 		t.Fatalf("cleanup error hidden by success: err=%v success=%v finish=%v", err, success.Load(), finish.Load())
 	}
 	if _, err := os.Stat(statePath); err != nil {

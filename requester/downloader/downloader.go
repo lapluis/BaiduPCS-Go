@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
@@ -450,7 +449,7 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 		status = transfer.NewDownloadStatus()
 		status.SetTotalSize(der.firstInfo.ContentLength)
 	}
-	if single {
+	if single && der.firstInfo.ContentLength < 0 {
 		status.SetTotalSize(0)
 	}
 
@@ -469,7 +468,6 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	}
 
 	cacheSize := der.SelectCacheSize(der.config.CacheSize, blockSize) // 实际下载缓存
-	cachepool.SetSyncPoolSize(cacheSize)                              // 调整pool大小
 
 	pcsverbose.Verbosef("DEBUG: download task CREATED: parallel: %d, cache size: %d\n", parallel, cacheSize)
 
@@ -524,6 +522,7 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 		}
 
 		worker := NewWorker(k, loadBalancer.URL, writer)
+		worker.cacheSize = cacheSize
 		worker.SetClient(der.client)
 		worker.SetWriteMutex(writeMu)
 		worker.SetReferer(loadBalancer.Referer)

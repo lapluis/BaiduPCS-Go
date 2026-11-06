@@ -66,15 +66,16 @@ func (muer *MultiUploader) getWorkerListByInstanceState(is *InstanceState) worke
 			})
 		} else {
 			// 已经完成的, 也要加入 (可继续优化)
+			completed := &fileBlock{
+				readRange: blockState.Range,
+				readerAt:  muer.file,
+			}
+			completed.readed.Store(blockState.Range.End - blockState.Range.Begin)
 			workers = append(workers, &worker{
 				id:         blockState.ID,
 				partOffset: blockState.Range.Begin,
-				splitUnit: &fileBlock{
-					readRange: blockState.Range,
-					readed:    blockState.Range.End - blockState.Range.Begin,
-					readerAt:  muer.file,
-				},
-				checksum: blockState.CheckSum,
+				splitUnit:  completed,
+				checksum:   blockState.CheckSum,
 			})
 		}
 	}

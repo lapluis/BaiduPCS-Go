@@ -499,7 +499,9 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 				mu.Lock()
 				active--
 				progress.finish(a, err == nil)
-				if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && !errors.Is(err, ErrCheckpointSave) {
+				// A request's own timeout is a failure while the parent task is live.
+				canceled := errors.Is(err, context.Canceled) || ctx.Err() != nil && errors.Is(err, context.DeadlineExceeded)
+				if canceled && !errors.Is(err, ErrCheckpointSave) {
 					result.Canceled++
 					errs = errors.Join(errs, err)
 				} else if err != nil {

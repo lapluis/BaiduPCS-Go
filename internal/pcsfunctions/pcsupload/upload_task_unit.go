@@ -444,6 +444,14 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 			result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, checkpointErr)
 			return
 		}
+		if errors.Is(err, uploader.ErrSourceRead) {
+			if saveErr := saveProgress(); saveErr != nil {
+				result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, saveErr)
+				return
+			}
+			result.ResultMessage, result.Err = "读取上传源文件失败", err
+			return
+		}
 		pcsError, ok := err.(pcserror.Error)
 		if !ok {
 			// 未知错误类型 (非预期的)

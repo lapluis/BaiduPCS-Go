@@ -44,6 +44,15 @@ func (h *HTTPClient) Req(method string, urlStr string, post interface{}, header 
 
 // ReqWithContext is Req with cancellation for both headers and response body.
 func (h *HTTPClient) ReqWithContext(ctx context.Context, method string, urlStr string, post interface{}, header map[string]string) (resp *http.Response, err error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("requester.ReqWithContext: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		if body, ok := post.(io.ReadCloser); ok {
+			body.Close()
+		}
+		return nil, err
+	}
 	h.lazyInit()
 	var (
 		req           *http.Request
@@ -124,6 +133,12 @@ func (h *HTTPClient) ReqWithContext(ctx context.Context, method string, urlStr s
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		if req.Body != nil {
+			req.Body.Close()
+		}
+		return nil, err
+	}
 	return h.Client.Do(req)
 }
 

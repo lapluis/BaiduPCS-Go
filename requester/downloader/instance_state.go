@@ -93,13 +93,16 @@ func NewInstanceState(saveFile *os.File, format InstanceStateStorageFormat) *Ins
 }
 
 func (is *InstanceState) checkSaveFile() bool {
+	is.mu.Lock()
+	defer is.mu.Unlock()
 	return is.saveFile != nil
 }
 
 const maxCheckpointSize int64 = 16 << 20
 
+// getSaveFileContents requires is.mu to remain held across file operations.
 func (is *InstanceState) getSaveFileContents() ([]byte, error) {
-	if !is.checkSaveFile() {
+	if is.saveFile == nil {
 		return nil, nil
 	}
 
@@ -134,10 +137,6 @@ func (is *InstanceState) Get() *transfer.DownloadInstanceInfo {
 
 // Load reads and validates a checkpoint before constructing its range generator.
 func (is *InstanceState) Load() (*transfer.DownloadInstanceInfo, error) {
-	if !is.checkSaveFile() {
-		return nil, nil
-	}
-
 	is.mu.Lock()
 	defer is.mu.Unlock()
 
@@ -205,9 +204,6 @@ func validateCheckpoint(info *transfer.DownloadInstanceInfoExport) error {
 
 // Put 提交断点续传信息
 func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error) {
-	if !is.checkSaveFile() {
-		return nil
-	}
 	defer func() {
 		if saveErr != nil {
 			saveErr = fmt.Errorf("%w: %w", ErrCheckpointSave, saveErr)
@@ -216,6 +212,9 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 
 	is.mu.Lock()
 	defer is.mu.Unlock()
+	if is.saveFile == nil {
+		return nil
+	}
 
 	if is.ii == nil {
 		is.ii = &transfer.DownloadInstanceInfoExport{}
@@ -279,7 +278,9 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 
 // Close 关闭
 func (is *InstanceState) Close() error {
-	if !is.checkSaveFile() {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	if is.saveFile == nil {
 		return nil
 	}
 

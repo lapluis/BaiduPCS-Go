@@ -132,7 +132,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 					return
 				}
 				if terr != nil {
-					if errors.Is(terr, rio.ErrSourceChanged) {
+					if errors.Is(terr, rio.ErrSourceChanged) || errors.Is(terr, ErrSourceRead) {
 						terminate(terr)
 						return
 					}

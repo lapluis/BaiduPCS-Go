@@ -8,6 +8,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -29,7 +30,9 @@ type (
 		client *requester.HTTPClient
 
 		executeTime time.Time
-		executed    bool
+		totalSize   int64
+		signalsOnce sync.Once
+		started     chan struct{}
 		finished    chan struct{}
 
 		checkFunc CheckFunc
@@ -53,9 +56,7 @@ func NewUploader(url string, readerlen64 rio.ReaderLen64) (uploader *Uploader) {
 }
 
 func (u *Uploader) lazyInit() {
-	if u.finished == nil {
-		u.finished = make(chan struct{})
-	}
+	u.initSignals()
 	if u.client == nil {
 		u.client = requester.NewHTTPClient()
 	}
@@ -63,28 +64,34 @@ func (u *Uploader) lazyInit() {
 	u.client.SetResponseHeaderTimeout(10 * time.Second)
 }
 
+func (u *Uploader) initSignals() {
+	u.signalsOnce.Do(func() {
+		u.started = make(chan struct{})
+		u.finished = make(chan struct{})
+	})
+}
+
 // SetClient 设置http客户端
 func (u *Uploader) SetClient(c *requester.HTTPClient) {
 	u.client = c
 }
 
-//SetContentType 设置Content-Type
+// SetContentType 设置Content-Type
 func (u *Uploader) SetContentType(contentType string) {
 	u.contentType = contentType
 }
 
-//SetCheckFunc 设置上传完成的检测函数
+// SetCheckFunc 设置上传完成的检测函数
 func (u *Uploader) SetCheckFunc(checkFunc CheckFunc) {
 	u.checkFunc = checkFunc
 }
 
 // Execute 执行上传, 收到返回值信号则为上传结束
 func (u *Uploader) Execute() {
+	u.initSignals()
 	pcsutil.Trigger(u.onExecute)
 
-	// 开始上传
-	u.executeTime = time.Now()
-	u.executed = true
+	u.begin()
 	resp, _, err := u.execute()
 
 	// 上传结束
@@ -95,6 +102,14 @@ func (u *Uploader) Execute() {
 	}
 
 	pcsutil.Trigger(u.onFinish) // 触发上传结束的事件
+}
+
+func (u *Uploader) begin() {
+	u.initSignals()
+	// Reader lengths may decrease as the HTTP body is consumed.
+	u.totalSize = u.readed64.Len()
+	u.executeTime = time.Now()
+	close(u.started)
 }
 
 func (u *Uploader) execute() (resp *http.Response, code int, err error) {

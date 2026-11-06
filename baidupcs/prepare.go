@@ -3,6 +3,7 @@ package baidupcs
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -28,25 +29,35 @@ const (
 )
 
 func handleRespClose(resp *http.Response) error {
-	if resp != nil {
+	if resp != nil && resp.Body != nil {
 		return resp.Body.Close()
 	}
 	return nil
 }
 
 func handleRespStatusError(operation string, resp *http.Response) pcserror.Error {
-	//errInfo := pcserror.NewPCSErrorInfo(operation)
-	// http 响应错误处理
-	switch resp.StatusCode / 100 {
-	case 4, 5:
-		errInfo := pcserror.DecodePCSJSONError(operation, resp.Body)
-		resp.Body.Close()
-		errInfo.SetRemoteError()
-		//errInfo.SetNetError(fmt.Errorf("http 响应错误, %s", resp.Status))
+	if resp == nil || resp.Body == nil {
+		errInfo := pcserror.NewPCSErrorInfo(operation)
+		errInfo.SetNetError(fmt.Errorf("upload returned incomplete HTTP response"))
 		return errInfo
 	}
-
-	return nil
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	defer resp.Body.Close()
+	decoded := pcserror.DecodePCSJSONError(operation, resp.Body)
+	if decoded != nil && decoded.GetErrType() == pcserror.ErrTypeRemoteError {
+		return decoded
+	}
+	// A success-shaped or non-JSON body cannot turn an HTTP failure into
+	// success. Retain parse errors as causes without discarding the status.
+	cause := fmt.Errorf("HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	if decoded != nil {
+		cause = fmt.Errorf("%v: %w", cause, decoded)
+	}
+	errInfo := pcserror.NewPCSErrorInfo(operation)
+	errInfo.SetNetError(cause)
+	return errInfo
 }
 
 func (pcs *BaiduPCS) sendReqReturnResp(rt reqType, op, method, urlStr string, post interface{}, header map[string]string) (resp *http.Response, pcsError pcserror.Error) {
@@ -702,7 +713,7 @@ func (pcs *BaiduPCS) PrepareUploadSuperfile2(uploadid, targetPath string, partse
 		}
 	}
 
-	pcsError = handleRespStatusError(OperationUpload, resp)
+	pcsError = handleRespStatusError(OperationUploadSuperfile2, resp)
 	if pcsError != nil {
 		return
 	}
