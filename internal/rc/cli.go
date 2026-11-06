@@ -52,6 +52,8 @@ Options:
   --ignore-existing          Skip destination files that already exist
   --update                   Skip files with a newer destination timestamp
   --transfers N              Concurrent transfers (default 4)
+  --download-threads N       Range workers per downloaded file (default 4, max 32)
+  --max-connections N        Transfer connection budget (default 16, max 256)
   --checkers N               Concurrent comparisons (default 4)
   --retries N                Extra transfer attempts (default 2)
   --bwlimit RATE             Aggregate transfer budget, e.g. 1M, 512K, 1048576
@@ -82,7 +84,7 @@ type parsed struct {
 }
 
 func parse(args []string) (parsed, error) {
-	p := parsed{Options: Options{Transfers: 4, Checkers: 4, Retries: 2, MaxDelete: -1}, Depth: -1, LogLevel: "INFO", Seen: map[string]bool{}}
+	p := parsed{Options: Options{Transfers: 4, DownloadThreads: 4, MaxConnections: 16, Checkers: 4, Retries: 2, MaxDelete: -1}, Depth: -1, LogLevel: "INFO", Seen: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -144,7 +146,7 @@ func parse(args []string) (parsed, error) {
 			if err != nil {
 				return p, err
 			}
-		case "transfers", "checkers", "retries", "max-delete", "depth":
+		case "transfers", "download-threads", "max-connections", "checkers", "retries", "max-delete", "depth":
 			n, err := strconv.Atoi(val)
 			if err != nil {
 				return p, err
@@ -152,6 +154,10 @@ func parse(args []string) (parsed, error) {
 			switch name {
 			case "transfers":
 				p.Transfers = n
+			case "download-threads":
+				p.DownloadThreads = n
+			case "max-connections":
+				p.MaxConnections = n
 			case "checkers":
 				p.Checkers = n
 			case "retries":
@@ -165,7 +171,7 @@ func parse(args []string) (parsed, error) {
 			return p, fmt.Errorf("unknown option --%s", name)
 		}
 	}
-	if p.Transfers < 1 || p.Checkers < 1 || p.Transfers > 64 || p.Checkers > 64 || p.Retries < 0 || p.MaxDelete < -1 || p.Depth < -1 {
+	if p.Transfers < 1 || p.Checkers < 1 || p.Transfers > 64 || p.Checkers > 64 || p.Retries < 0 || p.MaxDelete < -1 || p.Depth < -1 || p.DownloadThreads < 1 || p.DownloadThreads > 32 || p.MaxConnections < 1 || p.MaxConnections > 256 || p.Transfers > p.MaxConnections {
 		return p, errors.New("invalid concurrency, retries, depth or deletion limit")
 	}
 	if p.Checksum && p.SizeOnly {
@@ -312,6 +318,7 @@ func validateFlags(cmd string, p parsed) error {
 		"checksum":   "copy copyto sync move moveto check", "size-only": "copy copyto sync move moveto check",
 		"ignore-existing": "copy copyto sync move moveto", "update": "copy copyto sync move moveto",
 		"transfers": "copy copyto sync move moveto", "checkers": "copy sync move", "retries": "copy copyto sync move moveto", "bwlimit": "copy copyto sync move moveto",
+		"download-threads": "copy copyto sync move moveto", "max-connections": "copy copyto sync move moveto",
 		"max-delete": "sync delete deletefile purge", "delete-excluded": "sync", "create-empty-src-dirs": "copy sync move", "delete-empty-src-dirs": "move",
 		"recursive": "lsf lsjson lsd", "depth": "tree", "files-only": "lsf lsjson", "dirs-only": "lsf lsjson", "uid": "remote",
 	}
@@ -418,7 +425,7 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 		}
 		res, err := Execute(ctx, plan, p.Options)
 		if p.Progress {
-			logAction(p.Options, "summary", fmt.Sprintf("copied=%d skipped=%d deleted=%d failed=%d bytes=%d", res.Copied, res.Skipped, res.Deleted, res.Failed, res.Bytes))
+			logAction(p.Options, "summary", res.String())
 		}
 		return err
 	}

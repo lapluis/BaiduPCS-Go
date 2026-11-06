@@ -15,6 +15,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,7 @@ var BlockSizeList = [4]int64{256 * converter.KB, 512 * converter.KB, 1 * convert
 
 // ErrResumeSizeMismatch means saved progress belongs to a different file size.
 var ErrResumeSizeMismatch = errors.New("download resume size does not match remote file")
+var ErrRemoteChanged = errors.New("remote download entity changed")
 
 type (
 	// Downloader 下载
@@ -40,11 +42,13 @@ type (
 		onCancelEvent         requester.Event    //取消下载事件
 		onDownloadStatusEvent DownloadStatusFunc //状态处理事件
 
-		monitorCancelFunc context.CancelFunc
+		executeCancelFunc context.CancelFunc
+		cancelMu          sync.Mutex
 
 		firstInfo               *DownloadFirstInfo      // 初始信息
 		loadBalancerCompareFunc LoadBalancerCompareFunc // 负载均衡检测函数
 		durlCheckFunc           DURLCheckFunc           // 下载url检测函数
+		durlCheckContextFunc    DURLCheckContextFunc
 		statusCodeBodyCheckFunc StatusCodeBodyCheckFunc
 		executeTime             time.Time
 		durl                    string
@@ -58,6 +62,8 @@ type (
 
 	// DURLCheckFunc 下载URL检测函数
 	DURLCheckFunc func(client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error)
+	// DURLCheckContextFunc receives the execution context, including Cancel().
+	DURLCheckContextFunc func(context.Context, *requester.HTTPClient, string) (int64, *http.Response, error)
 	// StatusCodeBodyCheckFunc 响应状态码出错的检查函数
 	StatusCodeBodyCheckFunc func(respBody io.Reader) error
 )
@@ -85,8 +91,16 @@ func (der *Downloader) SetClient(client *requester.HTTPClient) {
 }
 
 // SetDURLCheckFunc 设置下载URL检测函数
+// New probes should use SetDURLCheckFuncWithContext to support Cancel during I/O.
 func (der *Downloader) SetDURLCheckFunc(f DURLCheckFunc) {
 	der.durlCheckFunc = f
+	der.durlCheckContextFunc = nil
+}
+
+// SetDURLCheckFuncWithContext installs a probe that honors execution cancellation.
+func (der *Downloader) SetDURLCheckFuncWithContext(f DURLCheckContextFunc) {
+	der.durlCheckContextFunc = f
+	der.durlCheckFunc = nil
 }
 
 func (der *Downloader) SetFileContentLength(length int64) {
@@ -122,9 +136,6 @@ func (der *Downloader) lazyInit() {
 	if der.monitor == nil {
 		der.monitor = NewMonitor()
 	}
-	if der.durlCheckFunc == nil {
-		der.durlCheckFunc = DefaultDURLCheckFunc
-	}
 	if der.loadBalancerCompareFunc == nil {
 		der.loadBalancerCompareFunc = DefaultLoadBalancerCompareFunc
 	}
@@ -136,9 +147,9 @@ func (der *Downloader) SelectParallel(single bool, maxParallel int, totalSize in
 	if single { //不支持多线程
 		parallel = 1
 	} else if isRange {
-		parallel = len(instanceRangeList)
+		parallel = min(len(instanceRangeList), maxParallel)
 	} else {
-		parallel = der.config.MaxParallel
+		parallel = maxParallel
 		if int64(parallel) > totalSize/MinParallelSize {
 			parallel = int(totalSize/MinParallelSize) + 1
 		}
@@ -199,7 +210,11 @@ func (der *Downloader) SelectCacheSize(confCacheSize int, blockSize int64) (cach
 
 // DefaultDURLCheckFunc 默认的 DURLCheckFunc
 func DefaultDURLCheckFunc(client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error) {
-	resp, err = client.Req(http.MethodGet, durl, nil, nil)
+	return defaultDURLCheckWithContext(context.Background(), client, durl)
+}
+
+func defaultDURLCheckWithContext(ctx context.Context, client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error) {
+	resp, err = client.ReqWithContext(ctx, http.MethodGet, durl, nil, nil)
 	if err != nil {
 		if resp != nil {
 			resp.Body.Close()
@@ -209,8 +224,22 @@ func DefaultDURLCheckFunc(client *requester.HTTPClient, durl string) (contentLen
 	return resp.ContentLength, resp, nil
 }
 
-func (der *Downloader) checkLoadBalancers() *LoadBalancerResponseList {
+func (der *Downloader) checkURL(ctx context.Context, client *requester.HTTPClient, url string) (int64, *http.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	if der.durlCheckContextFunc != nil {
+		return der.durlCheckContextFunc(ctx, client, url)
+	}
+	if der.durlCheckFunc != nil {
+		return der.durlCheckFunc(client, url)
+	}
+	return defaultDURLCheckWithContext(ctx, client, url)
+}
+
+func (der *Downloader) checkLoadBalancers(ctx context.Context) *LoadBalancerResponseList {
 	var (
+		responsesMu           sync.Mutex
 		loadBalancerResponses = make([]*LoadBalancerResponse, 0, len(der.loadBalansers)+1)
 		handleLoadBalancer    = func(req *http.Request) {
 			if req == nil {
@@ -226,7 +255,9 @@ func (der *Downloader) checkLoadBalancers() *LoadBalancerResponseList {
 				Referer: req.Referer(),
 			}
 
+			responsesMu.Lock()
 			loadBalancerResponses = append(loadBalancerResponses, loadBalancer)
+			responsesMu.Unlock()
 			pcsverbose.Verbosef("DEBUG: load balance task: URL: %s, Referer: %s\n", loadBalancer.URL, loadBalancer.Referer)
 		}
 	)
@@ -238,16 +269,19 @@ func (der *Downloader) checkLoadBalancers() *LoadBalancerResponseList {
 
 	// 多下载服务器的负载均衡, 在本项目中无意义，因为百度只用单下载服务器
 	wg := waitgroup.NewWaitGroup(4)
-	privTimeout := der.client.Client.Timeout
-	der.client.SetTimeout(5 * time.Second)
+	// Share the transport and cookie jar, but isolate request policy from
+	// callers that may be using this client concurrently.
+	probeClient := *der.client
+	probeClient.SetTimeout(5 * time.Second)
 	for _, loadBalanser := range der.loadBalansers { // 这里服务器列表数量为0，所以逻辑实际未生效
 		wg.AddDelta()
 		go func(loadBalanser string) {
 			defer wg.Done()
 
-			subContentLength, subResp, subErr := der.durlCheckFunc(der.client, loadBalanser)
+			subContentLength, subResp, subErr := der.checkURL(ctx, &probeClient, loadBalanser)
 			if subResp != nil {
-				subResp.Body.Close() // 不读Body, 马上关闭连接
+				// Error decoders may need the body before this probe finishes.
+				defer subResp.Body.Close()
 			}
 			if subErr != nil {
 				pcsverbose.Verbosef("DEBUG: loadBalanser Error: %s\n", subErr)
@@ -283,7 +317,6 @@ func (der *Downloader) checkLoadBalancers() *LoadBalancerResponseList {
 		}(loadBalanser)
 	}
 	wg.Wait()
-	der.client.SetTimeout(privTimeout)
 
 	loadBalancerResponseList := NewLoadBalancerResponseList(loadBalancerResponses)
 	return loadBalancerResponseList
@@ -291,6 +324,19 @@ func (der *Downloader) checkLoadBalancers() *LoadBalancerResponseList {
 
 // Execute 开始任务
 func (der *Downloader) Execute() error {
+	return der.ExecuteWithContext(context.Background())
+}
+
+// ExecuteWithContext cancels active ranges and persists their remaining work.
+func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	der.cancelMu.Lock()
+	der.executeCancelFunc = cancel
+	der.cancelMu.Unlock()
+	defer cancel()
 	der.lazyInit()
 	var (
 		resp *http.Response
@@ -299,7 +345,7 @@ func (der *Downloader) Execute() error {
 		// 检测
 		var contentLength int64
 		var err error
-		contentLength, resp, err = der.durlCheckFunc(der.client, der.durl)
+		contentLength, resp, err = der.checkURL(ctx, der.client, der.durl)
 		if resp != nil {
 			defer resp.Body.Close()
 		}
@@ -322,32 +368,42 @@ func (der *Downloader) Execute() error {
 		}
 
 		acceptRanges := resp.Header.Get("Accept-Ranges")
-		if contentLength < 0 {
+		if contentLength < 0 || (resp.StatusCode != http.StatusPartialContent && acceptRanges != DefaultAcceptRanges) || (resp.StatusCode == http.StatusOK && resp.Request != nil && resp.Request.Header.Get("Range") != "") {
 			acceptRanges = ""
 		} else {
 			acceptRanges = DefaultAcceptRanges
 		}
 
 		// 初始化firstInfo
-		der.firstInfo = &DownloadFirstInfo{
-			ContentLength: contentLength,
-			ContentMD5:    resp.Header.Get("Content-MD5"),
-			ContentCRC32:  resp.Header.Get("x-bs-meta-crc32"),
-			AcceptRanges:  acceptRanges,
-			Referer:       resp.Header.Get("Referer"),
-		}
+		der.firstInfo = NewDownloadFirstInfoByResp(contentLength, resp)
+		der.firstInfo.AcceptRanges = acceptRanges
 		pcsverbose.Verbosef("DEBUG: download task: URL: %s, Referer: %s\n", resp.Request.URL, resp.Request.Referer())
 	} else {
 		if der.firstInfo.AcceptRanges == "" {
 			der.firstInfo.AcceptRanges = DefaultAcceptRanges
 		}
 	}
+	if strings.HasPrefix(der.firstInfo.ETag, "W/") {
+		// Weak validators cannot prove byte identity across ranges and MUST
+		// NOT be used in If-Range (RFC 9110 section 13.1.5). Fetch one complete
+		// representation instead of combining separately requested pieces.
+		der.firstInfo.AcceptRanges = ""
+	}
+	if der.firstInfo.AcceptRanges == "" && resp != nil && resp.StatusCode == http.StatusPartialContent {
+		// A partial probe cannot serve as a complete stream, including when
+		// its total size is unknown and EOF only ends the prefix response.
+		resp.Body.Close()
+		resp = nil
+	}
 
 	var (
-		loadBalancerResponseList = der.checkLoadBalancers()
+		loadBalancerResponseList = der.checkLoadBalancers(ctx)
 		single                   = der.firstInfo.AcceptRanges == ""
 		bii                      *transfer.DownloadInstanceInfo
 	)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if !single {
 		//load breakpoint
@@ -356,7 +412,11 @@ func (der *Downloader) Execute() error {
 		if err != nil {
 			return err
 		}
-		bii = der.instanceState.Get()
+		bii, err = der.instanceState.Load()
+		if err != nil {
+			der.instanceState.Close()
+			return err
+		}
 		defer der.instanceState.Close()
 		if bii != nil && bii.DownloadStatus != nil && bii.DownloadStatus.TotalSize() != der.firstInfo.ContentLength {
 			der.instanceState.Close()
@@ -376,6 +436,10 @@ func (der *Downloader) Execute() error {
 	)
 	if !isInstance {
 		bii = &transfer.DownloadInstanceInfo{}
+	} else if resp != nil {
+		// Resumed ranges do not reuse the prefix probe. Close it before
+		// opening the configured workers so it consumes no extra connection.
+		resp.Body.Close()
 	}
 
 	if bii.DownloadStatus != nil {
@@ -385,6 +449,9 @@ func (der *Downloader) Execute() error {
 		// 新建状态
 		status = transfer.NewDownloadStatus()
 		status.SetTotalSize(der.firstInfo.ContentLength)
+	}
+	if single {
+		status.SetTotalSize(0)
 	}
 
 	// 设置限速
@@ -443,7 +510,14 @@ func (der *Downloader) Execute() error {
 	var (
 		writeMu = &sync.Mutex{}
 	)
-	for k, r := range bii.Ranges {
+	activeRanges := bii.Ranges
+	if len(activeRanges) > parallel {
+		// Retain unassigned saved ranges in the monitor's checkpointed queue.
+		// Dropping them would mark their missing bytes as already downloaded.
+		der.monitor.pendingRanges = append(transfer.RangeList(nil), activeRanges[parallel:]...)
+		activeRanges = activeRanges[:parallel]
+	}
+	for k, r := range activeRanges {
 		loadBalancer := loadBalancerResponseList.SequentialGet()
 		if loadBalancer == nil {
 			continue
@@ -453,6 +527,8 @@ func (der *Downloader) Execute() error {
 		worker.SetClient(der.client)
 		worker.SetWriteMutex(writeMu)
 		worker.SetReferer(loadBalancer.Referer)
+		worker.etag = der.firstInfo.ETag
+		worker.lastModified = der.firstInfo.LastModified
 		worker.SetTotalSize(der.firstInfo.ContentLength)
 
 		// 使用第一个连接
@@ -471,56 +547,87 @@ func (der *Downloader) Execute() error {
 	// 服务器不支持断点续传, 或者单线程下载, 都不重载worker
 	der.monitor.SetReloadWorker(parallel > 1)
 
-	moniterCtx, moniterCancelFunc := context.WithCancel(context.Background())
-	der.monitorCancelFunc = moniterCancelFunc
+	moniterCtx, moniterCancelFunc := context.WithCancel(ctx)
 	defer moniterCancelFunc()
 
 	der.monitor.SetInstanceState(der.instanceState)
 
 	// 开始执行
 	der.executeTime = time.Now()
-	pcsutil.Trigger(der.onExecuteEvent)
-	der.downloadStatusEvent() // 启动执行状态处理事件
+	der.monitor.prepareCompletion()
+	pcsutil.TriggerOnSync(der.onExecuteEvent)
+	progressDone := der.downloadStatusEvent()
 	der.monitor.Execute(moniterCtx)
+	if progressDone != nil {
+		<-progressDone
+	}
 
 	// 检查错误
 	err = der.monitor.Err()
-	if err == nil && !der.config.IsTest && der.firstInfo.ContentLength >= 0 {
+	if err == nil && single && der.firstInfo.ContentLength >= 0 && status.Downloaded() != der.firstInfo.ContentLength {
+		err = io.ErrUnexpectedEOF
+	}
+	finalSize := der.firstInfo.ContentLength
+	if single && finalSize < 0 {
+		// EOF determines the final size of a successful unknown-length
+		// stream. Its new contents may be shorter than the existing file.
+		finalSize = status.Downloaded()
+	}
+	if err == nil && !der.config.IsTest && finalSize >= 0 {
 		if file, ok := der.writer.(interface{ Truncate(int64) error }); ok {
-			err = file.Truncate(der.firstInfo.ContentLength)
+			err = file.Truncate(finalSize)
 		}
 	}
-	if err == nil { // 成功
-		pcsutil.Trigger(der.onSuccessEvent)
-		if !single {
-			der.removeInstanceState() // 移除断点续传文件
+	if err == nil && !der.config.IsTest {
+		if file, ok := der.writer.(interface{ Sync() error }); ok {
+			// Flush data and truncation before announcing success or discarding
+			// the ranges that are needed to recover from a delayed disk error.
+			err = file.Sync()
 		}
+	}
+	if err == nil && !single {
+		err = der.removeInstanceState()
+	}
+	if err == nil { // 成功
+		pcsutil.TriggerOnSync(der.onSuccessEvent)
 	}
 
 	// 执行结束
-	pcsutil.Trigger(der.onFinishEvent)
+	pcsutil.TriggerOnSync(der.onFinishEvent)
 	return err
 }
 
 // downloadStatusEvent 执行状态处理事件
-func (der *Downloader) downloadStatusEvent() {
-	if der.onDownloadStatusEvent == nil {
-		return
+func (der *Downloader) downloadStatusEvent() <-chan struct{} {
+	callback := der.onDownloadStatusEvent
+	if callback == nil {
+		return nil
 	}
 
-	status := der.monitor.Status()
+	monitor := der.monitor
+	status := monitor.Status()
+	completed := monitor.CompletedChan()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-der.monitor.completed:
+			case <-completed:
 				return
 			case <-ticker.C:
-				der.onDownloadStatusEvent(status, der.monitor.RangeWorker)
+				// Do not start another callback if completion and a tick are ready.
+				select {
+				case <-completed:
+					return
+				default:
+				}
+				callback(status, monitor.RangeWorker)
 			}
 		}
 	}()
+	return done
 }
 
 // Pause 暂停
@@ -542,25 +649,33 @@ func (der *Downloader) Resume() {
 }
 
 // Cancel 取消
+// It signals the current execution immediately, including context-aware probes.
 func (der *Downloader) Cancel() {
-	if der.monitor == nil {
+	der.cancelMu.Lock()
+	cancel := der.executeCancelFunc
+	der.cancelMu.Unlock()
+	if cancel == nil {
 		return
 	}
+	cancel()
 	pcsutil.Trigger(der.onCancelEvent)
-	pcsutil.Trigger(der.monitorCancelFunc)
 }
 
 // OnExecute 设置开始下载事件
+// The callback runs synchronously after setup and before any worker starts.
+// It may configure or cancel work, but must not wait for worker completion.
 func (der *Downloader) OnExecute(onExecuteEvent requester.Event) {
 	der.onExecuteEvent = onExecuteEvent
 }
 
 // OnSuccess 设置成功下载事件
+// The callback runs synchronously after data flush and checkpoint cleanup.
 func (der *Downloader) OnSuccess(onSuccessEvent requester.Event) {
 	der.onSuccessEvent = onSuccessEvent
 }
 
 // OnFinish 设置结束下载事件
+// The callback runs synchronously before a started download returns.
 func (der *Downloader) OnFinish(onFinishEvent requester.Event) {
 	der.onFinishEvent = onFinishEvent
 }
@@ -581,6 +696,8 @@ func (der *Downloader) OnCancel(onCancelEvent requester.Event) {
 }
 
 // OnDownloadStatusEvent 设置状态处理函数
+// Execute waits for an in-flight callback before final events and returning.
+// A callback may cancel the download, but must not wait for Execute to return.
 func (der *Downloader) OnDownloadStatusEvent(f DownloadStatusFunc) {
 	der.onDownloadStatusEvent = f
 }

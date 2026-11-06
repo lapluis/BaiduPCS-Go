@@ -148,7 +148,9 @@ func (a *App) run(raw []string) int {
 	defer cancel()
 	err = a.runCommand(ctx, cmd, rest, global.config)
 	if ctx.Err() != nil {
-		if err != nil {
+		if errors.Is(err, rc.ErrCheckpointSave) {
+			fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrCheckpointSave)
+		} else if err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintln(a.Stderr, "pcsclone:", err)
 		}
 		fmt.Fprintln(a.Stderr, "pcsclone: canceled")

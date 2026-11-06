@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mattn/go-colorable"
+	"github.com/mattn/go-isatty"
 	"io"
 	"math"
 	"os"
@@ -204,11 +206,14 @@ func parseRate(s string) (int64, error) {
 }
 
 type logSink struct {
-	w     io.Writer
-	file  *os.File
-	level string
-	json  bool
-	mu    sync.Mutex
+	w            io.Writer
+	file         *os.File
+	level        string
+	json         bool
+	mu           sync.Mutex
+	terminal     bool
+	lines        int
+	lastProgress time.Time
 }
 
 func newLogSink(c *commandContext) (*logSink, error) {
@@ -233,7 +238,41 @@ func newLogSink(c *commandContext) (*logSink, error) {
 		sink.file = f
 		sink.w = f
 	}
+	if f, ok := sink.w.(*os.File); ok && sink.file == nil && !sink.json && (isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())) {
+		sink.terminal = true
+		sink.w = colorable.NewColorable(f)
+	}
 	return sink, nil
+}
+
+func (s *logSink) clearProgress() {
+	if s.lines == 0 {
+		return
+	}
+	fmt.Fprintf(s.w, "\x1b[%dA", s.lines)
+	for i := 0; i < s.lines; i++ {
+		fmt.Fprint(s.w, "\r\x1b[2K\n")
+	}
+	fmt.Fprintf(s.w, "\x1b[%dA", s.lines)
+	s.lines = 0
+}
+
+func (s *logSink) Progress(p rc.ProgressSnapshot) {
+	if !s.terminal {
+		s.Emit("progress", p.String())
+		return
+	}
+	if s.level == "OFF" || s.level == "ERROR" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearProgress()
+	lines := p.Lines()
+	for _, line := range lines {
+		fmt.Fprintln(s.w, line)
+	}
+	s.lines = len(lines)
 }
 
 func (s *logSink) Emit(kind, item string) {
@@ -242,6 +281,16 @@ func (s *logSink) Emit(kind, item string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if kind == "progress" && !s.terminal {
+		if time.Since(s.lastProgress) < 5*time.Second {
+			return
+		}
+		s.lastProgress = time.Now()
+	}
+	s.clearProgress()
+	if s.terminal && (kind == "copy" || kind == "skip") {
+		return
+	}
 	if s.json {
 		_ = json.NewEncoder(s.w).Encode(map[string]interface{}{
 			"time":  time.Now().UTC().Format(time.RFC3339),
@@ -254,6 +303,11 @@ func (s *logSink) Emit(kind, item string) {
 }
 
 func (s *logSink) Close() error {
+	if s != nil {
+		s.mu.Lock()
+		s.clearProgress()
+		s.mu.Unlock()
+	}
 	if s != nil && s.file != nil {
 		return s.file.Close()
 	}
@@ -297,19 +351,22 @@ func (c *commandContext) options() (rc.Options, *logSink, error) {
 		DeleteEmptyDirs: c.flags.Bool("delete-empty-src-dirs"),
 		DeleteExcluded:  c.flags.Bool("delete-excluded"),
 		Transfers:       c.flags.IntOr("transfers", 4),
+		DownloadThreads: c.flags.IntOr("download-threads", 4),
+		MaxConnections:  c.flags.IntOr("max-connections", 16),
 		Checkers:        c.flags.IntOr("checkers", 4),
 		Retries:         c.flags.IntOr("retries", 2),
 		MaxDelete:       c.flags.IntOr("max-delete", -1),
 		ShowProgress:    c.flags.Bool("progress"),
 		Filter:          f,
 		Emit:            sink.Emit,
+		Progress:        sink.Progress,
 	}
 	o.BWLimit, err = parseRate(c.flags.String("bwlimit"))
 	if err != nil {
 		sink.Close()
 		return rc.Options{}, nil, usageErrorf("%s", err)
 	}
-	if o.Transfers < 1 || o.Transfers > 64 || o.Checkers < 1 || o.Checkers > 64 || o.Retries < 0 || o.MaxDelete < -1 {
+	if o.Transfers < 1 || o.Transfers > 64 || o.Checkers < 1 || o.Checkers > 64 || o.Retries < 0 || o.MaxDelete < -1 || o.DownloadThreads < 1 || o.DownloadThreads > 32 || o.MaxConnections < 1 || o.MaxConnections > 256 || o.Transfers > o.MaxConnections {
 		sink.Close()
 		return rc.Options{}, nil, usageErrorf("invalid concurrency, retries or deletion limit")
 	}

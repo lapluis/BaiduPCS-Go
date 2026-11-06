@@ -205,6 +205,26 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 
 日志写 stderr 或 `--log-file`；列表和 JSON 数据写 stdout。
 
+### 4.6 下载并发、进度与取消后重试
+
+```powershell
+& .\build\pcsclone.exe copy bd:/Backup D:\Downloads -P --transfers 4 --download-threads 4 --max-connections 16
+```
+
+`--transfers` 是同时传输的文件数（默认 4）；`--download-threads` 是每个文件的 Range 并发上限（默认 4，范围 1–32）；`--max-connections` 是文件传输连接预算（默认 16，范围 1–256，不能小于 `--transfers`）。实际每文件并发不超过 `floor(max-connections / transfers)`，小文件可能使用更少连接。服务端忽略 Range 时自动使用单流；预算不包含账号、目录、直链等控制接口请求。增加并发能否提速需要用实际账号和线路验证。
+
+返回弱 ETag（`W/"…"`）的资源使用完整单流下载，不复用分片断点；初始探测若只返回文件前缀，会关闭该响应并重新请求完整文件。[RFC 9110 §13.1.5](https://httpwg.org/specs/rfc9110#field.if-range) 禁止把弱 ETag 用于 `If-Range`，它也不能证明不同分片具有逐字节一致的版本。
+
+恢复旧断点时同样遵守当前并发限制。调低 `--download-threads` 或连接预算后，多余未完成区间会排队执行；再次取消仍会保存这些区间，无需丢弃断点重下。
+
+`-P` 在终端原地刷新总字节、实时速度、已用时间、ETA 和正在传输的文件。速度停止更新时显示为零，无法估计的 ETA 显示 `--`。重定向、`--log-file` 和 JSON 日志不包含终端控制码，进度最多每 5 秒一条，结束时仍输出摘要。
+
+Ctrl-C 会停止调度新文件，通知正在运行的 worker 保存断点并等待退出；无法退出的 worker 最多等待 5 秒后终止。摘要分别显示 `failed`（实际错误）、`canceled`（已开始但取消）、`pending`（尚未开始），取消退出码为 130。
+
+远端到本地下载先写在目标文件旁的 `.pcsclone-partials/` 目录，完整下载并检查后才发布为目标文件。断点按账号、源路径、目标绝对路径隔离，并检查远端文件 ID、大小、时间、HTTP ETag/Last-Modified、本地部分文件及 Range 状态；不满足条件时安全重下。相同命令可继续有效断点，两个进程不能同时使用同一断点。工具拥有的状态目录不会进入本地扫描或反向上传；遇到用户创建的同名目录会报错并保留其内容。旧版本已经删掉的临时文件无法恢复。
+
+新版本完成下载后记录本地 SHA-256；后续默认比较会重新校验本地内容、远端身份和当前 HTTP ETag，符合时无需再下载整个远端文件。缺少记录/ETag、身份变化或探测失败时回退到内容比较；`--checksum` 仍执行完整内容校验。移动删除源前仍完整校验内容。旧版本下载的文件没有记录；在专用测试目录中明确接受“存在即跳过”时，可加 `--ignore-existing` 避免重新比较这些文件，该选项不会检查它们是否完整。
+
 ## 5. 百度专有功能
 
 所有命令通过远端路径选择账号。例如 `bd:` 表示账号根，`bd:/Backup` 表示该账号的目录。
@@ -307,15 +327,15 @@ pcsclone **没有** `upload` / `download` 子命令。上传和下载分别用�
 | 默认跳过已存在文件 | `--ignore-existing` 最接近；pcsclone 默认跳过相同内容、覆盖不同内容 |
 | `--ow` | pcsclone 默认覆盖不同内容；没有强制重下相同内容的开关 |
 | `--mode pcs/stream/locate` | 只使用等价于 `locate` 的下载模式；`pcs`/`stream` 未暴露 |
-| `-p N` 单文件线程数 | worker 固定 `MaxParallel: 1`，没有对应参数 |
+| `-p N` 单文件线程数 | `--download-threads N`，默认 4；受 `--max-connections` 预算限制 |
 | `-l N` 同时下载文件数 | `--transfers N`；注意 pcsclone 默认 4，旧配置默认 1 |
 | `--retry N` | `--retries N`，按整个文件重试 worker；默认 2 次额外重试 |
 | `--nocheck` | worker 固定不校验；需要校验用 `--checksum` |
 | `--mtime` | worker 固定设置下载文件 mtime |
-| `--status` | `--progress` / `-P`（周期进度，不是逐线程状态） |
+| `--status` | `--progress` / `-P`：终端原地刷新总进度和文件进度 |
 | `--x`、`--dindex`、`--fullpath`、`--test` | 未提供对应参数 |
 | 远端通配符 `*` | 不展开远端通配符；使用 `--include`/`--exclude`/`--files-from` |
-| `.BaiduPCS-Go-downloading` 续传 | 下载先写临时文件；不提供跨命令下载续传 |
+| `.BaiduPCS-Go-downloading` 续传 | `.pcsclone-partials/` 保存经过身份检查的下载断点；重复相同命令续传 |
 
 旧下载的目录名布局与 pcsclone 的对应写法：
 
@@ -366,6 +386,7 @@ BaiduPCS-Go upload D:\Desktop /视频
 | 项目 | pcsclone |
 | --- | --- |
 | 同时传输文件数 | `--transfers N`，默认 4 |
+| 单文件下载并发 / 传输连接预算 | `--download-threads N` 默认 4；`--max-connections N` 默认 16 |
 | 比较并发数 | `--checkers N`，默认 4 |
 | 失败重试 | `--retries N`，默认 2 次额外重试 |
 | 限速 | `--bwlimit RATE`；**旧配置的 `max_download_rate`/`max_upload_rate` 不会用于 pcsclone 传输** |
@@ -394,7 +415,7 @@ pcsclone completion powershell | Out-String | Invoke-Expression
 
 - 不提供 `mount`、`serve`、`bisync` 或 rclone Remote Control API。
 - 执行引擎仍通过 `pcsconfig.Config` 全局值读取账号列表；pcsclone 在启动时把它指向独立配置文件。完整的依赖注入式账号/配置访问接口尚未重构。
-- 不提供跨命令下载续传；上传续传状态按账号、源、目标隔离。
+- 下载跨命令续传需要服务端支持 Range 并提供有效的实体校验信息；否则重下。上传续传状态按账号、源、目标隔离。
 - 不跟随符号链接，不复制 ACL/所有者。
 - 远端比较、`check`、`stat --hash`、`--checksum` 可能需要下载内容，产生流量和临时磁盘占用。
 - 真实网盘验证需要在有测试账号的环境中另行执行；当前验证范围见 [pcsclone-validation.md](pcsclone-validation.md)。

@@ -11,30 +11,32 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 )
 
 type (
 	//Worker 工作单元
 	Worker struct {
-		totalSize    int64 // 整个文件的大小, worker请求range时会获取尝试获取该值, 如果不匹配, 则返回错误
-		wrange       *transfer.Range
-		speedsStat   *speeds.Speeds
-		id           int    //id
-		url          string //下载地址
-		referer      string //来源地址
-		acceptRanges string
-		client       *requester.HTTPClient
-		firstResp    *http.Response // 第一个响应
-		writerAt     io.WriterAt
-		writeMu      *sync.Mutex
-		execMu       sync.Mutex
-		runWG        sync.WaitGroup
-		parentCtx    context.Context
-		controlMu    sync.Mutex
-		paused       bool
-		pauseVersion uint64
-		pauseCancel  context.CancelFunc
+		totalSize          int64 // 整个文件的大小, worker请求range时会获取尝试获取该值, 如果不匹配, 则返回错误
+		wrange             *transfer.Range
+		speedsStat         *speeds.Speeds
+		id                 int    //id
+		url                string //下载地址
+		referer            string //来源地址
+		etag, lastModified string
+		acceptRanges       string
+		client             *requester.HTTPClient
+		firstResp          *http.Response // 第一个响应
+		writerAt           io.WriterAt
+		writeMu            *sync.Mutex
+		execMu             sync.Mutex
+		runWG              sync.WaitGroup
+		parentCtx          context.Context
+		controlMu          sync.Mutex
+		paused             bool
+		pauseVersion       uint64
+		pauseCancel        context.CancelFunc
 
 		workerCancelFunc       context.CancelFunc
 		resetFunc              context.CancelFunc
@@ -61,6 +63,7 @@ func NewWorker(id int, durl string, writerAt io.WriterAt) *Worker {
 		id:       id,
 		url:      durl,
 		writerAt: writerAt,
+		writeMu:  &sync.Mutex{},
 	}
 }
 
@@ -164,6 +167,12 @@ func (wer *Worker) Pause() {
 
 // Resume 恢复下载
 func (wer *Worker) Resume() {
+	wer.resume(true)
+}
+
+// resume can clear a startup pause without launching a worker before its
+// monitor has installed the task context and registered the initial workers.
+func (wer *Worker) resume(start bool) {
 	wer.controlMu.Lock()
 	if !wer.paused {
 		wer.controlMu.Unlock()
@@ -172,7 +181,9 @@ func (wer *Worker) Resume() {
 	wer.paused = false
 	wer.status.SetStatusCode(StatusCodeInit)
 	wer.controlMu.Unlock()
-	wer.runAsync()
+	if start {
+		wer.runAsync()
+	}
 }
 
 // Cancel 取消下载
@@ -322,6 +333,11 @@ func (wer *Worker) Execute() {
 	//检测是否支持range
 	if wer.acceptRanges != "" && wer.wrange.Len() >= 0 {
 		header["Range"] = fmt.Sprintf("%s=%d-%d", wer.acceptRanges, requestBegin, requestEnd-1)
+		if wer.etag != "" && !strings.HasPrefix(wer.etag, "W/") {
+			header["If-Range"] = wer.etag
+		} else if wer.etag == "" && wer.lastModified != "" {
+			header["If-Range"] = wer.lastModified
+		}
 	}
 
 	wer.status.SetStatusCode(StatusCodePending)
@@ -372,6 +388,19 @@ func (wer *Worker) Execute() {
 	default:
 		wer.status.SetStatusCode(StatusCodeNetError)
 		wer.err = fmt.Errorf("unexpected http status code, %d, %s", resp.StatusCode, resp.Status)
+		return
+	}
+	if single && resp.StatusCode == http.StatusPartialContent {
+		wer.status.SetStatusCode(StatusCodeInternalError)
+		wer.err = errors.New("unexpected partial response for full-stream download")
+		return
+	}
+	// Only successful file responses describe the entity being downloaded.
+	// A throttling/authentication/error document must retain its HTTP error
+	// classification and must not invalidate saved ranges through its ETag.
+	if (wer.etag != "" && resp.Header.Get("ETag") != wer.etag) || (wer.etag == "" && wer.lastModified != "" && resp.Header.Get("Last-Modified") != wer.lastModified) {
+		wer.status.SetStatusCode(StatusCodeInternalError)
+		wer.err = ErrRemoteChanged
 		return
 	}
 
@@ -448,11 +477,15 @@ func (wer *Worker) Execute() {
 				n += nn
 			}
 
-			if n > 0 && readErr == io.EOF {
-				readErr = io.ErrUnexpectedEOF
-			}
-
 			n64 = int64(n)
+			if wer.writerAt != nil {
+				wer.status.SetStatusCode(StatusCodeWaitToWrite)
+			}
+			// Splitting and committing a write share this lock. Recheck the
+			// range after acquiring it: buffered data may predate a split.
+			if wer.writeMu != nil {
+				wer.writeMu.Lock()
+			}
 
 			// 非单线程模式下
 			if !single {
@@ -460,6 +493,9 @@ func (wer *Worker) Execute() {
 
 				// 已完成 (未雨绸缪)
 				if rangeLength <= 0 {
+					if wer.writeMu != nil {
+						wer.writeMu.Unlock()
+					}
 					wer.status.SetStatusCode(StatusCodeCanceled)
 					wer.err = errors.New("worker already complete")
 					return
@@ -475,11 +511,11 @@ func (wer *Worker) Execute() {
 
 			// 写入数据
 			if wer.writerAt != nil {
-				wer.status.SetStatusCode(StatusCodeWaitToWrite)
-				if wer.writeMu != nil {
-					wer.writeMu.Lock() // 加锁, 减轻硬盘的压力
+				written, writeErr := wer.writerAt.WriteAt(buf[:n], wer.wrange.LoadBegin())
+				if writeErr == nil && written != n {
+					writeErr = io.ErrShortWrite
 				}
-				_, wer.err = wer.writerAt.WriteAt(buf[:n], wer.wrange.Begin) // 写入数据
+				wer.err = writeErr
 				if wer.err != nil {
 					if wer.writeMu != nil {
 						wer.writeMu.Unlock() //解锁
@@ -487,11 +523,6 @@ func (wer *Worker) Execute() {
 					wer.status.SetStatusCode(StatusCodeInternalError)
 					return
 				}
-
-				if wer.writeMu != nil {
-					wer.writeMu.Unlock() //解锁
-				}
-				wer.status.SetStatusCode(StatusCodeDownloading)
 			}
 
 			// 更新下载统计数据
@@ -502,29 +533,36 @@ func (wer *Worker) Execute() {
 					wer.downloadStatus.AddTotalSize(n64)
 				}
 			}
+			if wer.writeMu != nil {
+				wer.writeMu.Unlock()
+			}
+			if wer.writerAt != nil {
+				wer.status.SetStatusCode(StatusCodeDownloading)
+			}
 
+			if !single && wer.wrange.Len() <= 0 {
+				wer.status.SetStatusCode(StatusCodeSucceeded)
+				return
+			}
 			if readErr != nil {
-				rlen := wer.wrange.Len()
-				switch {
-				case single && readErr == io.ErrUnexpectedEOF:
-					// 单线程判断下载成功
-					fallthrough
-				case readErr == io.EOF:
-					fallthrough
-				case rlen <= 0:
-					// 下载完成
-					// 小于0可能是因为 worker 被 duplicate
+				if single && readErr == io.EOF {
 					wer.status.SetStatusCode(StatusCodeSucceeded)
-					if rlen < 0 {
-						pcsverbose.Verbosef("DEBUG: RangeLen is negative at end: %v, %d\n", wer.wrange, wer.wrange.Len())
-					}
-					return
-				default:
-					// 其他错误, 返回
-					wer.status.SetStatusCode(StatusCodeFailed)
-					wer.err = readErr
 					return
 				}
+				// A range may outlive the initial prefix response. Its EOF must
+				// leave the remainder pending rather than certify missing bytes.
+				if readErr == io.EOF {
+					readErr = io.ErrUnexpectedEOF
+				}
+				wer.err = readErr
+				if single {
+					// A full stream cannot resume at the current write offset:
+					// return the error so the enclosing task can restart it.
+					wer.status.SetStatusCode(StatusCodeInternalError)
+				} else {
+					wer.status.SetStatusCode(StatusCodeFailed)
+				}
+				return
 			}
 		}
 	}

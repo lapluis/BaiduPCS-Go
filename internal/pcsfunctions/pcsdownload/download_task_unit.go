@@ -54,7 +54,13 @@ type (
 		PcsPath  string // 要下载的网盘文件路径
 		SavePath string // 保存的路径
 
-		FileInfo *baidupcs.FileDirectory // 文件或目录详情
+		FileInfo                       *baidupcs.FileDirectory // 文件或目录详情
+		Context                        context.Context
+		Progress                       func(done, total, rate int64)
+		OnProbe                        func(etag, modified string)
+		OnTransferError                func(error)
+		ExpectedETag, ExpectedModified string
+		ProbeOnly                      bool // Inspect the current entity without writing a local file.
 	}
 )
 
@@ -108,6 +114,29 @@ func removeEmptyDownloadFile(path string) {
 
 // download 执行下载
 func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTPClient) (err error) {
+	if dtu.ProbeOnly {
+		ctx := dtu.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		size, resp, err := BaiduPCSURLCheckFuncWithContext(ctx, client, downloadURL)
+		if resp != nil {
+			defer resp.Body.Close()
+		}
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			return fmt.Errorf("download probe status %d", resp.StatusCode)
+		}
+		if size != dtu.FileInfo.Size {
+			return downloader.ErrRemoteChanged
+		}
+		if dtu.OnProbe != nil {
+			dtu.OnProbe(resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"))
+		}
+		return nil
+	}
 	var (
 		writer downloader.Writer
 		file   *os.File
@@ -149,7 +178,25 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 
 	der := downloader.NewDownloader(downloadURL, writer, dtu.Cfg)
 	der.SetClient(client)
-	der.SetDURLCheckFunc(BaiduPCSURLCheckFunc)
+	ctx := dtu.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	der.SetDURLCheckFuncWithContext(func(ctx context.Context, client *requester.HTTPClient, url string) (int64, *http.Response, error) {
+		size, resp, err := BaiduPCSURLCheckFuncWithContext(ctx, client, url)
+		// Error documents have their own validators (or none). They cannot
+		// establish that the file changed or replace the saved file identity.
+		if err == nil && resp != nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
+			etag, modified := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
+			if (dtu.ExpectedETag != "" && dtu.ExpectedETag != etag) || (dtu.ExpectedETag == "" && dtu.ExpectedModified != "" && dtu.ExpectedModified != modified) {
+				return size, resp, downloader.ErrRemoteChanged
+			}
+			if dtu.OnProbe != nil {
+				dtu.OnProbe(etag, modified)
+			}
+		}
+		return size, resp, err
+	})
 	//der.SetFileContentLength(dtu.FileInfo.Size)
 	der.SetStatusCodeBodyCheckFunc(func(respBody io.Reader) error {
 		// 返回的错误可能是pcs的json
@@ -162,10 +209,11 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 		dtu.PrintFormat = DefaultPrintFormat
 	}
 
-	// 这里用共享变量的方式
-	isComplete := false
 	der.OnDownloadStatusEvent(func(status transfer.DownloadStatuser, workersCallback func(downloader.RangeWorkerFunc)) {
-		// 这里可能会下载结束了, 还会输出内容
+		if dtu.Progress != nil {
+			dtu.Progress(status.Downloaded(), status.TotalSize(), status.SpeedsPerSecond())
+		}
+		// 状态回调会在 Execute 返回前完成，最终结果在其后输出。
 		builder := &strings.Builder{}
 		if dtu.IsPrintStatus {
 			// 输出所有的worker状态
@@ -200,10 +248,8 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			status.TimeElapsed()/1e7*1e7, leftStr,
 		)
 
-		if !isComplete {
-			// 如果未完成下载, 就输出
-			fmt.Print(builder.String())
-		}
+		// Execute joins progress callbacks before printing the final result.
+		fmt.Print(builder.String())
 	})
 
 	der.OnExecute(func() {
@@ -212,8 +258,10 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 		}
 	})
 
-	err = der.Execute()
-	isComplete = true
+	err = der.ExecuteWithContext(ctx)
+	if err != nil && dtu.OnTransferError != nil {
+		dtu.OnTransferError(err)
+	}
 	fmt.Print("\n")
 
 	if err != nil {
@@ -334,6 +382,10 @@ func (dtu *DownloadTaskUnit) locateDownload(result *taskframework.TaskUnitRunRes
 		result.ResultMessage = StrDownloadGetDlinkFailed
 		result.Err = err
 		dtu.handleError(result)
+		return
+	}
+	if len(rawDlinks) == 0 {
+		result.Err = errors.New("download link list is empty")
 		return
 	}
 
@@ -508,6 +560,10 @@ func createEmptyDownloadFile(filename string, overwrite bool) error {
 
 func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	result = &taskframework.TaskUnitRunResult{}
+	if dtu.Context != nil && dtu.Context.Err() != nil {
+		result.Err = dtu.Context.Err()
+		return
+	}
 	// 获取文件信息
 	var err error
 	if dtu.FileInfo == nil || dtu.taskInfo.Retry() > 0 {
@@ -603,6 +659,10 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	if !ok {
 		// 以上执行不成功, 返回
+		return result
+	}
+	if dtu.ProbeOnly {
+		result.Succeed = true
 		return result
 	}
 

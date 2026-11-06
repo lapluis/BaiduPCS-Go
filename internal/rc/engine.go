@@ -20,9 +20,11 @@ type Options struct {
 	DryRun, Checksum, SizeOnly, IgnoreExisting, Update bool
 	CreateEmptyDirs, DeleteEmptyDirs, DeleteExcluded   bool
 	Transfers, Checkers, Retries, MaxDelete            int
+	DownloadThreads, MaxConnections                    int
 	BWLimit                                            int64
 	Filter                                             Filter
 	Emit                                               func(string, string)
+	Progress                                           func(ProgressSnapshot)
 }
 type Action struct {
 	Kind, Path, Reason  string
@@ -37,6 +39,7 @@ type Plan struct {
 }
 type Result struct {
 	Copied, Skipped, Deleted, Failed int
+	Canceled, Pending                int
 	Bytes                            int64
 }
 
@@ -151,6 +154,15 @@ func same(ctx context.Context, src, dst Endpoint, p string, a, b Entry, o Option
 	}
 	if o.SizeOnly {
 		return true, nil
+	}
+	if !o.Checksum {
+		if sr, ok := src.FS.(*Remote); ok {
+			if _, local := dst.FS.(*Local); local {
+				if verified, err := verifiedDownloadedFile(ctx, sr, src.At(p), dst.At(p), a, b); err != nil || verified {
+					return verified, err
+				}
+			}
+		}
 	}
 	n := o.Checkers
 	if n < 1 {
@@ -380,6 +392,11 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 		return result, nil
 	}
 	if err := ctx.Err(); err != nil {
+		for _, a := range p.Actions {
+			if a.Kind == "copy" || a.Kind == "skip" {
+				result.Pending++
+			}
+		}
 		return result, err
 	}
 	for _, a := range p.Actions {
@@ -393,15 +410,21 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 	if n < 1 {
 		n = 1
 	}
+	if o.MaxConnections > 0 {
+		n = min(n, o.MaxConnections)
+	}
 	jobs := make(chan Action)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs error
 	active := 0
+	progress := newProgress(p)
 	if o.ShowProgress {
 		done := make(chan struct{})
-		defer close(done)
+		joined := make(chan struct{})
+		defer func() { close(done); <-joined }()
 		go func() {
+			defer close(joined)
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			for {
@@ -410,9 +433,13 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 					return
 				case <-ticker.C:
 					mu.Lock()
-					text := fmt.Sprintf("active=%d copied=%d skipped=%d failed=%d completed-bytes=%d", active, result.Copied, result.Skipped, result.Failed, result.Bytes)
+					snapshot := progress.snapshot(result, active)
 					mu.Unlock()
-					logAction(o, "progress", text)
+					if o.Progress != nil {
+						o.Progress(snapshot)
+					} else {
+						logAction(o, "progress", snapshot.String())
+					}
 				}
 			}
 		}()
@@ -422,16 +449,24 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 		go func() {
 			defer wg.Done()
 			for a := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
 				mu.Lock()
 				active++
+				progress.start(a)
 				mu.Unlock()
+				actionCtx := context.WithValue(ctx, transferSettingsKey{}, workerSettings{Threads: downloadThreads(o)})
+				actionCtx = context.WithValue(actionCtx, progressKey{}, func(v transferProgress) { mu.Lock(); progress.update(a.Path, v); mu.Unlock() })
 				var err error
 				if a.Kind == "skip" {
-					mu.Lock()
-					result.Skipped++
-					mu.Unlock()
 					if p.Move && a.Reason == "identical" {
 						err = verifyAndRemove(ctx, p.Source, p.Destination, a, o)
+					}
+					if err == nil {
+						mu.Lock()
+						result.Skipped++
+						mu.Unlock()
 					}
 				} else {
 					serverMoved := false
@@ -439,7 +474,7 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 						serverMoved, err = tryServerMove(ctx, p.Source, p.Destination, a, o)
 					}
 					for attempt := 0; !serverMoved && attempt <= o.Retries; attempt++ {
-						err = copyAction(ctx, p.Source, p.Destination, &a, o)
+						err = copyAction(actionCtx, p.Source, p.Destination, &a, o)
 						if err == nil || ctx.Err() != nil {
 							break
 						}
@@ -463,7 +498,11 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 				}
 				mu.Lock()
 				active--
-				if err != nil {
+				progress.finish(a, err == nil)
+				if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && !errors.Is(err, ErrCheckpointSave) {
+					result.Canceled++
+					errs = errors.Join(errs, err)
+				} else if err != nil {
 					result.Failed++
 					errs = errors.Join(errs, fmt.Errorf("%s: %w", a.Path, err))
 					logAction(o, "error", actionPath(p, a))
@@ -474,15 +513,24 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 			}
 		}()
 	}
+dispatch:
 	for _, a := range p.Actions {
 		if a.Kind == "copy" || a.Kind == "skip" {
-			jobs <- a
+			if ctx.Err() != nil {
+				break
+			}
+			select {
+			case jobs <- a:
+			case <-ctx.Done():
+				break dispatch
+			}
 		}
 	}
 	close(jobs)
 	wg.Wait()
+	result.Pending = progress.totalFiles - result.Copied - result.Skipped - result.Failed - result.Canceled
 	if errs != nil {
-		return result, errs
+		return result, errors.Join(errs, ctx.Err())
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -601,6 +649,8 @@ func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options
 	return src.FS.Remove(ctx, src.At(a.Path), false)
 }
 func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) error {
+	var completedStage *downloadStage
+	var completedDigest string
 	ctx = context.WithValue(ctx, hashRateKey{}, perTransferRate(o))
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
@@ -632,10 +682,50 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 		}
 		tmp := f.Name()
 		f.Close()
-		defer os.Remove(tmp)
+		var stage *downloadStage
 		if sremote {
-			err = runTransferWorker(ctx, "download", sr.UID, sp, tmp, perTransferRate(o))
+			_ = os.Remove(tmp)
+			base, _, e := downloadBase(sr.UID, sp, dp)
+			if e != nil {
+				return e
+			}
+			if e = prepareStageDirectory(filepath.Dir(base)); e != nil {
+				return e
+			}
+			lease, e := lockDownload(base + ".lock")
+			if e != nil {
+				return fmt.Errorf("download is already in use or state cannot be locked: %w", e)
+			}
+			defer lease.Close()
+			prepared, e := stageFor(sr, sp, dp, *a.Source)
+			if e != nil {
+				return e
+			}
+			stage = &prepared
+			tmp = stage.payload
+			settings, _ := ctx.Value(transferSettingsKey{}).(workerSettings)
+			settings.ETag = stage.info.ETag
+			settings.Modified = stage.info.LastModified
+			transferCtx := context.WithValue(ctx, transferSettingsKey{}, settings)
+			transferCtx = context.WithValue(transferCtx, progressKey{}, func(v transferProgress) {
+				if v.ETag != "" {
+					stage.info.ETag = v.ETag
+				}
+				if v.Modified != "" {
+					stage.info.LastModified = v.Modified
+				}
+				reportProgress(ctx, v)
+			})
+			err = runTransferWorker(transferCtx, "download", sr.UID, sp, tmp, perTransferRate(o))
+			if errors.Is(err, errResumeIdentity) {
+				_ = stage.reset()
+				return err
+			}
+			if saveErr := stage.save(); saveErr != nil {
+				return errors.Join(err, saveErr)
+			}
 		} else {
+			defer os.Remove(tmp)
 			err = copyLocal(ctx, sp, tmp, perTransferRate(o))
 		}
 		if err != nil {
@@ -648,6 +738,15 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 		if st.Size() != a.Source.Size {
 			return errors.New("downloaded size mismatch")
 		}
+		if stage != nil && stage.canRecordCompletion() {
+			// Bind the completion record to the downloaded payload before the
+			// destination becomes visible to other programs. Hashing the published
+			// file later could accidentally certify a concurrent editor's changes.
+			completedDigest, err = hashSHA256(ctx, tmp)
+			if err != nil {
+				return err
+			}
+		}
 		if err = unchanged(ctx, src, a.Path, a.Source); err != nil {
 			return err
 		}
@@ -659,6 +758,10 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 		}
 		if err = os.Rename(tmp, dp); err != nil {
 			return err
+		}
+		if stage != nil {
+			stage.cleanup()
+			completedStage = stage
 		}
 	} else {
 		local := sp
@@ -707,7 +810,13 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
-	return unchanged(ctx, dst, a.Path, a.Destination)
+	if err := unchanged(ctx, dst, a.Path, a.Destination); err != nil {
+		return err
+	}
+	if completedStage != nil {
+		_ = completedStage.complete(ctx, dp, completedDigest)
+	}
+	return nil
 }
 func perTransferRate(o Options) int64 {
 	if o.BWLimit <= 0 {
@@ -747,6 +856,7 @@ func copyLocal(ctx context.Context, src, dst string, rate int64) error {
 				return err
 			}
 			total += int64(n)
+			reportProgress(ctx, transferProgress{Done: total, Total: -1, Rate: int64(float64(total) / time.Since(start).Seconds())})
 			if rate > 0 {
 				wait := time.Duration(float64(total)/float64(rate)*float64(time.Second)) - time.Since(start)
 				if wait > 0 {

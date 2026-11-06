@@ -2,6 +2,7 @@ package pcsupload
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -40,6 +41,8 @@ type (
 		Policy            string // 上传重名文件策略
 
 		UploadStatistic *UploadStatistic
+		Context         context.Context
+		Progress        func(done, total, rate int64)
 
 		taskInfo *taskframework.TaskInfo
 		panDir   string
@@ -314,8 +317,18 @@ func (utu *UploadTaskUnit) upload() (result *taskframework.TaskUnitRunResult) {
 	// 注册上传器, 供优雅退出时停止; 函数结束时注销
 	RegisterActiveUploader(muer)
 	defer UnregisterActiveUploader(muer)
+	if utu.Context != nil {
+		stop := context.AfterFunc(utu.Context, muer.Cancel)
+		defer stop()
+		if utu.Context.Err() != nil {
+			muer.Cancel()
+		}
+	}
 
 	muer.OnUploadStatusEvent(func(status uploader.Status, updateChan <-chan struct{}) {
+		if utu.Progress != nil {
+			utu.Progress(status.Uploaded(), status.TotalSize(), status.SpeedsPerSecond())
+		}
 		select {
 		case <-updateChan:
 			if utu.state.Uploadid != "" {

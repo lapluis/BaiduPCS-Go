@@ -8,11 +8,12 @@ import (
 
 type (
 	DownloadFirstInfo struct {
-		ContentLength int64
-		ContentMD5    string
-		ContentCRC32  string
-		AcceptRanges  string
-		Referer       string
+		ContentLength      int64
+		ContentMD5         string
+		ContentCRC32       string
+		AcceptRanges       string
+		Referer            string
+		ETag, LastModified string
 	}
 )
 
@@ -23,8 +24,12 @@ func NewDownloadFirstInfoByResp(contentLength int64, resp *http.Response) (dfi *
 		return
 	}
 	dfi.ContentLength = contentLength
+	dfi.ContentMD5 = resp.Header.Get("Content-MD5")
+	dfi.ContentCRC32 = resp.Header.Get("x-bs-meta-crc32")
 	dfi.AcceptRanges = resp.Header.Get("Accept-Ranges")
 	dfi.Referer = resp.Header.Get("Referer")
+	dfi.ETag = resp.Header.Get("ETag")
+	dfi.LastModified = resp.Header.Get("Last-Modified")
 	return
 }
 
@@ -41,6 +46,9 @@ func (dfi *DownloadFirstInfo) Compare(n *DownloadFirstInfo) bool {
 	if dfi.Referer != n.Referer {
 		return false
 	}
+	if dfi.ETag != n.ETag || (dfi.ETag == "" && dfi.LastModified != n.LastModified) {
+		return false
+	}
 	return true
 }
 
@@ -51,6 +59,14 @@ func (dfi *DownloadFirstInfo) ToMap() map[string]string {
 		"x-bs-meta-crc32": dfi.ContentCRC32,
 		"Accept-Ranges":   dfi.AcceptRanges,
 		"Referer":         dfi.Referer,
+	}
+	// Use the same validator precedence as the actual range workers. Reject
+	// a mirror here rather than treating its different entity as a later
+	// source mutation that would unnecessarily reset a valid partial file.
+	if dfi.ETag != "" {
+		m["ETag"] = dfi.ETag
+	} else if dfi.LastModified != "" {
+		m["Last-Modified"] = dfi.LastModified
 	}
 	return m
 }

@@ -1,6 +1,7 @@
 package pcsdownload
 
 import (
+	"context"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
@@ -22,7 +23,11 @@ func IsSkipMd5Checksum(size int64, md5Str string) bool {
 
 // BaiduPCSURLCheckFunc downloader 首次检查下载地址要执行的函数
 func BaiduPCSURLCheckFunc(client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error) {
-	resp, err = client.Req(http.MethodGet, durl, nil, map[string]string{
+	return BaiduPCSURLCheckFuncWithContext(context.Background(), client, durl)
+}
+
+func BaiduPCSURLCheckFuncWithContext(ctx context.Context, client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error) {
+	resp, err = client.ReqWithContext(ctx, http.MethodGet, durl, nil, map[string]string{
 		"Range": "bytes=0-" + strconv.FormatInt(baidupcs.InitRangeSize-1, 10),
 	})
 	if err != nil {

@@ -5,16 +5,20 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/json-iterator/go"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 )
 
 // ErrResumeFileMismatch means local data cannot support the saved progress.
 var ErrResumeFileMismatch = errors.New("local file does not match download resume progress")
+
+// ErrCheckpointSave identifies persistence failures even when joined with cancellation.
+var ErrCheckpointSave = errors.New("download resume checkpoint could not be saved")
 
 func (der *Downloader) validateResumeFile(info *transfer.DownloadInstanceInfo) error {
 	file, ok := der.writer.(interface{ Stat() (os.FileInfo, error) })
@@ -80,7 +84,7 @@ const (
 	InstanceStateStorageFormatProto3
 )
 
-//NewInstanceState 初始化InstanceState
+// NewInstanceState 初始化InstanceState
 func NewInstanceState(saveFile *os.File, format InstanceStateStorageFormat) *InstanceState {
 	return &InstanceState{
 		saveFile: saveFile,
@@ -92,65 +96,123 @@ func (is *InstanceState) checkSaveFile() bool {
 	return is.saveFile != nil
 }
 
-func (is *InstanceState) getSaveFileContents() []byte {
+const maxCheckpointSize int64 = 16 << 20
+
+func (is *InstanceState) getSaveFileContents() ([]byte, error) {
 	if !is.checkSaveFile() {
-		return nil
+		return nil, nil
 	}
 
 	finfo, err := is.saveFile.Stat()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	size := finfo.Size()
-	if size > 0xffffffff {
-		panic("savePath too large")
+	if size < 0 || size > maxCheckpointSize {
+		return nil, fmt.Errorf("%w: checkpoint size %d exceeds limit", ErrResumeFileMismatch, size)
 	}
-	intSize := int(size)
-
-	buf := cachepool.RawMallocByteSlice(intSize)
-
-	n, _ := is.saveFile.ReadAt(buf, 0)
-	return buf[:n]
+	buf := make([]byte, int(size))
+	n, err := is.saveFile.ReadAt(buf, 0)
+	if err != nil {
+		return nil, err
+	}
+	if n != len(buf) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return buf, nil
 }
 
-//Get 获取断点续传信息
-func (is *InstanceState) Get() (eii *transfer.DownloadInstanceInfo) {
+// Get retains the legacy optional-state interface. Use Load to handle errors.
+func (is *InstanceState) Get() *transfer.DownloadInstanceInfo {
+	info, err := is.Load()
+	if err != nil {
+		pcsverbose.Verbosef("DEBUG: checkpoint load error: %s\n", err)
+	}
+	return info
+}
+
+// Load reads and validates a checkpoint before constructing its range generator.
+func (is *InstanceState) Load() (*transfer.DownloadInstanceInfo, error) {
 	if !is.checkSaveFile() {
-		return nil
+		return nil, nil
 	}
 
 	is.mu.Lock()
 	defer is.mu.Unlock()
 
-	contents := is.getSaveFileContents()
+	contents, err := is.getSaveFileContents()
+	if err != nil {
+		return nil, err
+	}
 	if len(contents) <= 0 {
-		return
+		return nil, nil
 	}
 
-	is.ii = &transfer.DownloadInstanceInfoExport{}
-	var err error
+	exported := &transfer.DownloadInstanceInfoExport{}
 	switch is.format {
 	case InstanceStateStorageFormatProto3:
-		err = proto.Unmarshal(contents, is.ii.(*transfer.DownloadInstanceInfoExport))
+		err = proto.Unmarshal(contents, exported)
 	default:
-		err = jsoniter.Unmarshal(contents, is.ii)
+		err = jsoniter.Unmarshal(contents, exported)
 	}
 
 	if err != nil {
-		pcsverbose.Verbosef("DEBUG: InstanceInfo unmarshal error: %s\n", err)
-		return
+		return nil, fmt.Errorf("%w: malformed checkpoint: %w", ErrResumeFileMismatch, err)
 	}
-
-	eii = is.ii.GetInstanceInfo()
-	return
+	if err := validateCheckpoint(exported); err != nil {
+		return nil, err
+	}
+	is.ii = exported
+	return exported.GetInstanceInfo(), nil
 }
 
-//Put 提交断点续传信息
-func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) {
-	if !is.checkSaveFile() {
-		return
+func validateCheckpoint(info *transfer.DownloadInstanceInfoExport) error {
+	bad := func(reason string) error { return fmt.Errorf("%w: %s", ErrResumeFileMismatch, reason) }
+	if info.TotalSize < 0 || info.GenBegin < 0 || info.GenBegin > info.TotalSize {
+		return bad("invalid generated extent")
 	}
+	generated := info.TotalSize
+	switch info.RangeGenMode {
+	case transfer.RangeGenMode_Default:
+	case transfer.RangeGenMode_BlockSize:
+		if info.BlockSize <= 0 {
+			return bad("invalid block size")
+		}
+		generated = info.GenBegin
+	default:
+		return bad("unknown range generation mode")
+	}
+	ranges := append(transfer.RangeList(nil), info.Ranges...)
+	for _, r := range ranges {
+		if r == nil || r.Begin < 0 || r.Begin > r.End || r.End > generated {
+			return bad("invalid pending range")
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Begin < ranges[j].Begin })
+	var end int64
+	for _, r := range ranges {
+		if r.Begin == r.End {
+			continue
+		}
+		if r.Begin < end {
+			return bad("overlapping pending ranges")
+		}
+		end = r.End
+	}
+	return nil
+}
+
+// Put 提交断点续传信息
+func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error) {
+	if !is.checkSaveFile() {
+		return nil
+	}
+	defer func() {
+		if saveErr != nil {
+			saveErr = fmt.Errorf("%w: %w", ErrCheckpointSave, saveErr)
+		}
+	}()
 
 	is.mu.Lock()
 	defer is.mu.Unlock()
@@ -170,27 +232,62 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) {
 		data, err = jsoniter.Marshal(is.ii)
 	}
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	err = is.saveFile.Truncate(int64(len(data)))
+	// Verify this handle is writable without destroying the previous record.
+	// Writing in place could leave a torn, but still parseable, range list.
+	info, err := is.saveFile.Stat()
 	if err != nil {
-		pcsverbose.Verbosef("DEBUG: truncate file error: %s\n", err)
+		return err
 	}
-
-	_, err = is.saveFile.WriteAt(data, 0)
+	err = is.saveFile.Truncate(info.Size())
 	if err != nil {
-		pcsverbose.Verbosef("DEBUG: write instance state error: %s\n", err)
+		return err
 	}
+	name := is.saveFile.Name()
+	temp, err := os.CreateTemp(filepath.Dir(name), ".pcs-download-state-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	n, err := temp.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = temp.Sync()
+	}
+	err = errors.Join(err, temp.Close())
+	if err != nil {
+		return err
+	}
+	// Windows cannot replace an open destination on all supported filesystems.
+	if err = is.saveFile.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temp.Name(), name); err != nil {
+		reopened, openErr := os.OpenFile(name, os.O_RDWR, 0600)
+		if openErr == nil {
+			is.saveFile = reopened
+		}
+		return errors.Join(err, openErr)
+	}
+	is.saveFile, err = os.OpenFile(name, os.O_RDWR, 0600)
+	return err
 }
 
-//Close 关闭
+// Close 关闭
 func (is *InstanceState) Close() error {
 	if !is.checkSaveFile() {
 		return nil
 	}
 
-	return is.saveFile.Close()
+	err := is.saveFile.Close()
+	if errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 func (der *Downloader) initInstanceState(format InstanceStateStorageFormat) (err error) {
@@ -211,9 +308,15 @@ func (der *Downloader) initInstanceState(format InstanceStateStorageFormat) (err
 }
 
 func (der *Downloader) removeInstanceState() error {
-	der.instanceState.Close()
+	if err := der.instanceState.Close(); err != nil {
+		return err
+	}
 	if !der.config.IsTest && der.config.InstanceStatePath != "" {
-		return os.Remove(der.config.InstanceStatePath)
+		err := os.Remove(der.config.InstanceStatePath)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	return nil
 }

@@ -88,6 +88,9 @@ func (l *Local) List(ctx context.Context, p string) ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(ds))
 	for _, d := range ds {
+		if d.IsDir() && d.Name() == ".pcsclone-partials" && ownedStageDirectory(filepath.Join(p, d.Name())) {
+			continue
+		}
 		e, err := l.Stat(ctx, filepath.Join(p, d.Name()))
 		if err != nil {
 			return nil, err

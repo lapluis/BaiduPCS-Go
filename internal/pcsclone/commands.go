@@ -254,6 +254,8 @@ func transferBaseFlags() []flagSpec {
 		boolFlag("ignore-existing", "", "Skip destination files that already exist"),
 		boolFlag("update", "", "Skip files whose destination timestamp is newer"),
 		intFlag("transfers", "", "N", "Concurrent transfers (default 4, 1-64)"),
+		intFlag("download-threads", "", "N", "Range connections per download (default 4, 1-32)"),
+		intFlag("max-connections", "", "N", "Total transfer connection budget (default 16, 1-256)"),
 		intFlag("retries", "", "N", "Extra transfer attempts (default 2)"),
 		stringFlag("bwlimit", "", "RATE", "Aggregate bandwidth, e.g. 1M, 512K, 1048576"),
 		boolFlag("progress", "P", "Show periodic progress and a final summary"),
@@ -392,8 +394,7 @@ func runTransfer(c *commandContext, mode string) error {
 	}
 	result, err := rc.Execute(c.ctx, plan, o)
 	if o.ShowProgress {
-		sink.Emit("summary", fmt.Sprintf("copied=%d skipped=%d deleted=%d failed=%d bytes=%d",
-			result.Copied, result.Skipped, result.Deleted, result.Failed, result.Bytes))
+		sink.Emit("summary", result.String())
 	}
 	return operationError(err)
 }

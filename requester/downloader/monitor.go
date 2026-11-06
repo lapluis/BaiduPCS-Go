@@ -3,9 +3,11 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,6 +21,7 @@ type (
 	//Monitor 线程监控器
 	Monitor struct {
 		workers         WorkerList
+		pendingRanges   transfer.RangeList // Saved ranges waiting for a worker.
 		status          *transfer.DownloadStatus
 		instanceState   *InstanceState
 		completed       chan struct{}
@@ -26,6 +29,9 @@ type (
 		resetController *ResetController
 		isReloadWorker  bool //是否重载worker, 单线程模式不重载
 		paused          atomic.Bool
+		scheduleMu      sync.Mutex // Serializes control transitions and scheduling.
+		stopped         bool       // Protected by scheduleMu; no new work after shutdown.
+		running         bool       // Workers have been attached to the execution context.
 
 		// 临时变量
 		lastAvaliableIndex int
@@ -56,11 +62,16 @@ func (mt *Monitor) lazyInit() {
 
 // InitMonitorCapacity 初始化workers, 用于Append
 func (mt *Monitor) InitMonitorCapacity(capacity int) {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
 	mt.workers = make(WorkerList, 0, capacity)
+	mt.pendingRanges = nil
 }
 
 // Append 增加Worker
 func (mt *Monitor) Append(worker *Worker) {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
 	if worker == nil {
 		return
 	}
@@ -69,6 +80,8 @@ func (mt *Monitor) Append(worker *Worker) {
 
 // SetWorkers 设置workers, 此操作会覆盖原有的workers
 func (mt *Monitor) SetWorkers(workers WorkerList) {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
 	mt.workers = workers
 }
 
@@ -103,7 +116,9 @@ func (mt *Monitor) GetAvailableWorker() *Worker {
 	for i := mt.lastAvaliableIndex; i < mt.lastAvaliableIndex+workerCount; i++ {
 		index := i % workerCount
 		worker := mt.workers[index]
-		if worker.Completed() {
+		// Cancellation is terminal for a request, but its byte range may still
+		// be unfinished. Reassigning that worker would discard the old range.
+		if r := worker.GetRange(); worker.Completed() && r != nil && r.Len() <= 0 {
 			mt.lastAvaliableIndex = index
 			return worker
 		}
@@ -117,7 +132,37 @@ func (mt *Monitor) GetAllWorkersRange() transfer.RangeList {
 	for _, worker := range mt.workers {
 		allWorkerRanges = append(allWorkerRanges, worker.GetRange())
 	}
-	return allWorkerRanges
+	return append(allWorkerRanges, mt.pendingRanges...)
+}
+
+// saveCheckpoint never certifies bytes that are only in the output's write
+// cache. Downloader workers share one output and its write mutex.
+func (mt *Monitor) saveCheckpoint() error {
+	if mt.instanceState == nil || !mt.instanceState.checkSaveFile() {
+		return nil
+	}
+	if len(mt.workers) != 0 {
+		worker := mt.workers[0]
+		if worker.writeMu != nil {
+			worker.writeMu.Lock()
+			defer worker.writeMu.Unlock()
+		}
+		if file, ok := worker.writerAt.(interface{ Sync() error }); ok {
+			if err := file.Sync(); err != nil {
+				return fmt.Errorf("%w: %w", ErrCheckpointSave, err)
+			}
+		}
+	}
+	// Marshal a detached range snapshot: workers can advance the live ranges
+	// after a completed write while this goroutine serializes the checkpoint.
+	live := mt.GetAllWorkersRange()
+	ranges := make(transfer.RangeList, len(live))
+	for i, r := range live {
+		if r != nil {
+			ranges[i] = &transfer.Range{Begin: r.LoadBegin(), End: r.LoadEnd()}
+		}
+	}
+	return mt.instanceState.Put(&transfer.DownloadInstanceInfo{DownloadStatus: mt.status, Ranges: ranges})
 }
 
 // NumLeftWorkers 剩余的worker数量
@@ -172,12 +217,14 @@ func (mt *Monitor) allWorkersCompleted() bool {
 		}
 	}
 	gen := mt.status.RangeListGen()
-	return completeNum == len(mt.workers) && (gen == nil || gen.IsDone())
+	return completeNum == len(mt.workers) && len(mt.pendingRanges) == 0 && (gen == nil || gen.IsDone())
 }
 
-// ResetFailedAndNetErrorWorkers 重设部分网络错误的worker
+// ResetFailedAndNetErrorWorkers 重试失败、网络错误和限流的worker
 func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
-	if mt.paused.Load() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped || mt.paused.Load() {
 		return
 	}
 	for k := range mt.workers {
@@ -186,8 +233,10 @@ func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
 		}
 
 		switch mt.workers[k].GetStatus().StatusCode() {
-		case StatusCodeNetError:
-			pcsverbose.Verbosef("DEBUG: monitor: ResetFailedAndNetErrorWorkers: reset StatusCodeNetError worker, id: %d\n", mt.workers[k].id)
+		case StatusCodeNetError, StatusCodeTooManyConnections:
+			// Throttled responses need the normal retry path too: a single
+			// worker does not enter the dynamic reload branch.
+			pcsverbose.Verbosef("DEBUG: monitor: ResetFailedAndNetErrorWorkers: reset retryable response worker, id: %d\n", mt.workers[k].id)
 			goto reset
 		case StatusCodeFailed:
 			pcsverbose.Verbosef("DEBUG: monitor: ResetFailedAndNetErrorWorkers: reset StatusCodeFailed worker, id: %d\n", mt.workers[k].id)
@@ -204,8 +253,13 @@ func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
 
 // RangeWorker 遍历worker
 func (mt *Monitor) RangeWorker(f RangeWorkerFunc) {
-	for k := range mt.workers {
-		if !f(k, mt.workers[k]) {
+	mt.scheduleMu.Lock()
+	workers := mt.workers.Duplicate()
+	mt.scheduleMu.Unlock()
+	// Callbacks may pause or resume the monitor; invoke them without the
+	// scheduling lock and keep iteration stable across worker sorting.
+	for k := range workers {
+		if !f(k, workers[k]) {
 			break
 		}
 	}
@@ -213,6 +267,11 @@ func (mt *Monitor) RangeWorker(f RangeWorkerFunc) {
 
 // Pause 暂停所有的下载
 func (mt *Monitor) Pause() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped {
+		return
+	}
 	mt.paused.Store(true)
 	for k := range mt.workers {
 		mt.workers[k].Pause()
@@ -221,22 +280,29 @@ func (mt *Monitor) Pause() {
 
 // Resume 恢复所有的下载
 func (mt *Monitor) Resume() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped {
+		return
+	}
 	mt.paused.Store(false)
 	for k := range mt.workers {
-		mt.workers[k].Resume()
+		mt.workers[k].resume(mt.running)
 	}
 }
 
 // TryAddNewWork 尝试加入新range
 func (mt *Monitor) TryAddNewWork() {
-	if mt.paused.Load() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped || mt.paused.Load() {
 		return
 	}
 	if mt.status == nil {
 		return
 	}
 	gen := mt.status.RangeListGen()
-	if gen == nil || gen.IsDone() {
+	if len(mt.pendingRanges) == 0 && (gen == nil || gen.IsDone()) {
 		return
 	}
 
@@ -250,7 +316,14 @@ func (mt *Monitor) TryAddNewWork() {
 	}
 
 	// 有空闲的range, 执行
-	_, r := gen.GenRange()
+	var r *transfer.Range
+	if len(mt.pendingRanges) != 0 {
+		r = mt.pendingRanges[0]
+		mt.pendingRanges[0] = nil
+		mt.pendingRanges = mt.pendingRanges[1:]
+	} else {
+		_, r = gen.GenRange()
+	}
 	if r == nil {
 		// 没有range了
 		return
@@ -266,11 +339,19 @@ func (mt *Monitor) TryAddNewWork() {
 
 // DynamicSplitWorker 动态分配线程
 func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
-	if mt.paused.Load() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped || mt.paused.Load() {
 		return
 	}
 	if !mt.resetController.CanReset() {
 		return
+	}
+	// A split must observe the byte offset after any in-flight write has
+	// committed its progress, and cannot shrink a write already in progress.
+	if worker.writeMu != nil {
+		worker.writeMu.Lock()
+		defer worker.writeMu.Unlock()
 	}
 
 	switch worker.status.StatusCode() {
@@ -310,7 +391,9 @@ func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
 
 // ResetWorker 重设长时间无响应, 和下载速度为 0 的 Worker
 func (mt *Monitor) ResetWorker(worker *Worker) {
-	if mt.paused.Load() {
+	mt.scheduleMu.Lock()
+	defer mt.scheduleMu.Unlock()
+	if mt.stopped || mt.paused.Load() {
 		return
 	}
 	if !mt.resetController.CanReset() { //达到最大重载次数
@@ -348,8 +431,7 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 	worker.Reset()
 }
 
-// Execute 执行任务
-func (mt *Monitor) Execute(cancelCtx context.Context) {
+func (mt *Monitor) prepareCompletion() {
 	if mt.completed == nil {
 		mt.completed = make(chan struct{})
 	} else {
@@ -359,13 +441,46 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 		default:
 		}
 	}
-	defer close(mt.completed)
+}
+
+// Execute 执行任务
+func (mt *Monitor) Execute(cancelCtx context.Context) {
+	mt.prepareCompletion()
+	mt.scheduleMu.Lock()
+	mt.stopped = false
+	mt.scheduleMu.Unlock()
+	var stopWorkers context.CancelFunc
+	defer func() {
+		// Finish all accepted scheduling operations before waiting for workers.
+		// Resume/reset calls after this point cannot race a WaitGroup wait or
+		// change the range snapshot used for the final checkpoint.
+		mt.scheduleMu.Lock()
+		mt.stopped = true
+		mt.running = false
+		if stopWorkers != nil {
+			stopWorkers()
+		}
+		mt.scheduleMu.Unlock()
+		if stopWorkers != nil {
+			mt.status.StopRateLimit()
+			for _, worker := range mt.workers {
+				worker.runWG.Wait()
+			}
+			if err := cancelCtx.Err(); err != nil {
+				if !errors.Is(mt.err, err) {
+					mt.err = errors.Join(mt.err, err)
+				}
+				mt.err = errors.Join(mt.err, mt.saveCheckpoint())
+			}
+		}
+		close(mt.completed)
+	}()
 	if err := cancelCtx.Err(); err != nil {
 		mt.err = err
 		return
 	}
 	if len(mt.workers) == 0 {
-		if mt.status != nil && mt.status.TotalSize() == 0 {
+		if mt.status != nil && mt.status.TotalSize() >= 0 && mt.status.Downloaded() == mt.status.TotalSize() && len(mt.pendingRanges) == 0 {
 			if gen := mt.status.RangeListGen(); gen != nil && gen.IsDone() {
 				return
 			}
@@ -375,25 +490,16 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 	}
 
 	mt.lazyInit()
-	workerCtx, stopWorkers := context.WithCancel(cancelCtx)
-	defer func() {
-		stopWorkers()
-		mt.status.StopRateLimit()
-		for _, worker := range mt.workers {
-			worker.runWG.Wait()
-		}
-		if err := cancelCtx.Err(); err != nil {
-			mt.err = err
-			if mt.instanceState != nil {
-				mt.instanceState.Put(&transfer.DownloadInstanceInfo{DownloadStatus: mt.status, Ranges: mt.GetAllWorkersRange()})
-			}
-		}
-	}()
+	workerCtx, cancelWorkers := context.WithCancel(cancelCtx)
+	stopWorkers = cancelWorkers
+	mt.scheduleMu.Lock()
+	mt.running = true
 	for _, worker := range mt.workers {
 		worker.parentCtx = workerCtx
 		worker.SetDownloadStatus(mt.status)
 		worker.runAsync()
 	}
+	mt.scheduleMu.Unlock()
 
 	ticker := time.NewTicker(990 * time.Millisecond)
 	ticker2 := time.NewTicker(99 * time.Millisecond)
@@ -420,11 +526,9 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 			mt.status.UpdateSpeeds() // 更新速度
 
 			// 保存断点信息到文件
-			if mt.instanceState != nil {
-				mt.instanceState.Put(&transfer.DownloadInstanceInfo{
-					DownloadStatus: mt.status,
-					Ranges:         mt.GetAllWorkersRange(),
-				})
+			if err := mt.saveCheckpoint(); err != nil {
+				mt.err = err
+				return
 			}
 
 			// 不重载worker
@@ -446,7 +550,9 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 
 				// 先进行动态分配线程
 				pcsverbose.Verbosef("DEBUG: monitor: start duplicate.\n")
+				mt.scheduleMu.Lock()
 				sort.Sort(ByLeftDesc{mt.workers})
+				mt.scheduleMu.Unlock()
 				for _, worker := range mt.workers {
 					//动态分配线程
 					mt.DynamicSplitWorker(worker)

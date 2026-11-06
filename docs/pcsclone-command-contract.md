@@ -167,7 +167,9 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 
 `--dry-run`/`-n`、`--include`、`--exclude`、`--files-from`、`--checksum`、`--size-only`、`--ignore-existing`、`--update`、`--transfers N`、`--checkers N`、`--retries N`、`--bwlimit RATE`、`--max-delete N`、`--delete-excluded`、`--create-empty-src-dirs`、`--delete-empty-src-dirs`、`--progress`/`-P`。
 
-日志：`--log-level DEBUG|INFO|ERROR|OFF`、`--log-file FILE`、`--use-json-log`。日志写 stderr 或指定文件；列表和 JSON 数据写 stdout。
+下载并发：`--download-threads N`（默认 4，1–32）、`--max-connections N`（默认 16，1–256）。每文件实际并发不超过连接预算除以 `--transfers` 的整数部分；`--transfers` 不能超过预算。预算不包含控制接口请求。
+
+日志：`--log-level DEBUG|INFO|ERROR|OFF`、`--log-file FILE`、`--use-json-log`。日志写 stderr 或指定文件；列表和 JSON 数据写 stdout。`-P` 在终端原地刷新总进度、文件进度、速度和 ETA；日志输出最多每 5 秒一条进度，不写 ANSI 控制码。取消摘要区分 `failed`、`canceled`、`pending`，取消退出码 130。
 
 ## 5. 账号配置命令
 
@@ -245,7 +247,7 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 
 - `mount`、`serve`、`bisync`、rclone Remote Control API。
 - 独立仓库拆分。
-- 跨命令下载续传（上传续传状态仍按账号/源/目标隔离）。
+- 不支持 Range 或缺少有效实体校验信息时的下载续传；有效下载断点位于目标旁 `.pcsclone-partials/`，按账号/源/目标隔离，身份不匹配时重下。
 - 交互式覆盖确认、ACL/所有者/完整文件系统元数据同步。
 - 符号链接和特殊文件复制。
 - 旧 `rc` 前缀和隐式账号/工作目录。

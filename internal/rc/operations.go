@@ -58,6 +58,11 @@ func FilePlan(ctx context.Context, src, dst Endpoint, move bool, o Options) (*Pl
 }
 
 func Check(ctx context.Context, src, dst Endpoint, o Options) error {
+	// An explicit check compares current content even when a prior download
+	// has an unchanged entity validator and a verified local completion record.
+	if !o.SizeOnly {
+		o.Checksum = true
+	}
 	sm, err := snapshot(ctx, src)
 	if err != nil {
 		return err
