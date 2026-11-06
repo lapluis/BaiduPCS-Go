@@ -68,7 +68,9 @@ func TestCheckpointCloseWaitsForSaveAndPreservesRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	loaded, err := NewInstanceState(reader, InstanceStateStorageFormatJSON).Load()
+	reloaded := NewInstanceState(reader, InstanceStateStorageFormatJSON)
+	defer reloaded.Close()
+	loaded, err := reloaded.Load()
 	if err != nil || loaded == nil {
 		t.Fatalf("saved checkpoint lost: info=%v err=%v", loaded, err)
 	}

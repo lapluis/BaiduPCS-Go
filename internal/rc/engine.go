@@ -702,7 +702,7 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 				return fmt.Errorf("download is already in use or state cannot be locked: %w", e)
 			}
 			defer lease.Close()
-			prepared, e := stageFor(sr, sp, dp, *a.Source)
+			prepared, e := stageFor(ctx, sr, sp, dp, *a.Source)
 			if e != nil {
 				return e
 			}

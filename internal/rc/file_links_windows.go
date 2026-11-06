@@ -7,8 +7,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func logHasMultipleLinks(path string, _ os.FileInfo) (bool, error) {
-	// Metadata access also works for append-only log files. Extend long paths
+func fileHasMultipleLinks(path string, _ os.FileInfo) (bool, error) {
+	// Inspect metadata without requiring read-data permission. Extend long paths
 	// while preserving Windows alias handling for ordinary paths.
 	if len(path) >= 248 && !strings.HasPrefix(path, `\\?\`) && !strings.HasPrefix(path, `\\.\`) {
 		if strings.HasPrefix(path, `\\`) {

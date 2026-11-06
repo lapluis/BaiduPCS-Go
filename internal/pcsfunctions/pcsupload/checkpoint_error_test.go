@@ -99,11 +99,11 @@ func checkpointFailureTask(t *testing.T) (*UploadTaskUnit, string, []byte, func(
 	if err := os.WriteFile(database, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(database)
+	db, err := NewUploadingDatabaseAt(database)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := &UploadingDatabase{dataFile: f}
+	db.openFile = func(path string, _ int, _ os.FileMode) (*os.File, error) { return os.Open(path) }
 	local := checksum.NewLocalFileChecksum(source, 4)
 	if err := local.OpenPath(); err != nil {
 		db.Close()

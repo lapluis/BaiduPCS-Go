@@ -13,11 +13,11 @@ func TestUploadDatabaseReadOnlySavePreservesPreviousRecord(t *testing.T) {
 	if err := os.WriteFile(name, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(name)
+	db, err := NewUploadingDatabaseAt(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := &UploadingDatabase{dataFile: f}
+	db.openFile = func(path string, _ int, _ os.FileMode) (*os.File, error) { return os.Open(path) }
 	defer db.Close()
 	var pathErr *os.PathError
 	if err := db.Save(); !errors.As(err, &pathErr) {

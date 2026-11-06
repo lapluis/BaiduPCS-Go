@@ -277,11 +277,11 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 	defer cancel()
 	var logFile io.WriteCloser
 	if p.LogFile != "" {
-		protected := []string{p.FilesFrom, pcsconfig.Config.FilePath(), aliasesPath()}
+		var endpoints []string
 		if args[0] != "remote" && args[0] != "listremotes" {
-			protected = append(protected, p.Args...)
+			endpoints = p.Args
 		}
-		if err := ValidateLogPath(ctx, cwd, p.LogFile, protected...); err != nil {
+		if err := ValidateCommandLogPath(ctx, cwd, p.LogFile, pcsconfig.Config.FilePath(), p.FilesFrom, endpoints...); err != nil {
 			fmt.Fprintln(stderr, err)
 			if ctx.Err() != nil {
 				return 130

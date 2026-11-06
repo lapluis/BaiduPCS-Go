@@ -170,16 +170,9 @@ func RunWorker(args []string) error {
 				return err
 			}
 		}
-		if info.Size == 0 {
-			if kind == "probe" {
-				report(transferProgress{Total: 0})
-				return nil
-			}
-			f, err := os.Create(args[3])
-			if err != nil {
-				return err
-			}
-			return f.Close()
+		if info.Size == 0 && kind == "probe" {
+			report(transferProgress{Total: 0})
+			return nil
 		}
 		statistic := &pcsdownload.DownloadStatistic{}
 		statistic.StartTimer()

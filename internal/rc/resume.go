@@ -20,6 +20,9 @@ const stageMarker = "pcsclone-owned-download-state-v1\n"
 
 var stageDirectoryMu sync.Mutex
 
+var readDownloadRecord = os.ReadFile
+var statDownloadState = os.Stat
+
 func ownedStageDirectory(dir string) bool {
 	info, err := os.Lstat(filepath.Join(dir, ".owner"))
 	if err != nil || !info.Mode().IsRegular() {
@@ -68,7 +71,10 @@ func downloadBase(uid uint64, source, destination string) (string, string, error
 	return filepath.Join(filepath.Dir(abs), ".pcsclone-partials", fmt.Sprintf("%x", key)), abs, nil
 }
 
-func stageFor(remote *Remote, source, destination string, entry Entry) (downloadStage, error) {
+func stageFor(ctx context.Context, remote *Remote, source, destination string, entry Entry) (downloadStage, error) {
+	if err := ctx.Err(); err != nil {
+		return downloadStage{}, err
+	}
 	base, abs, err := downloadBase(remote.UID, source, destination)
 	if err != nil {
 		return downloadStage{}, err
@@ -86,18 +92,33 @@ func stageFor(remote *Remote, source, destination string, entry Entry) (download
 		}
 	}
 	var old downloadRecord
-	b, readErr := os.ReadFile(s.record)
+	b, readErr := readDownloadRecord(s.record)
+	// An unreadable checkpoint is not evidence of a stale entity. Preserve all
+	// files on inspection failures so a transient lock or I/O error is retryable.
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return s, fmt.Errorf("read download checkpoint: %w", readErr)
+	}
 	valid := readErr == nil && json.Unmarshal(b, &old) == nil && old.Version == 1 && old.Account == s.info.Account && old.Source == source && old.Destination == abs && old.ID == entry.ID && old.ID != "" && old.ID != "0" && old.Size == entry.Size && old.Modified == s.info.Modified && (old.ETag != "" || old.LastModified != "")
 	if strings.HasPrefix(old.ETag, "W/") {
 		valid = false
 	}
-	if f, e := os.Stat(s.payload); e != nil || f.Size() != old.LocalSize || f.ModTime().UnixNano() != old.LocalModified {
+	f, statErr := statDownloadState(s.payload)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return s, fmt.Errorf("inspect partial download: %w", statErr)
+	}
+	if statErr != nil || f.Size() != old.LocalSize || f.ModTime().UnixNano() != old.LocalModified {
 		valid = false
 	}
-	if _, e := os.Stat(s.payload + pcsdownload.DownloadSuffix); e != nil {
+	if _, e := statDownloadState(s.payload + pcsdownload.DownloadSuffix); e != nil {
+		if !errors.Is(e, os.ErrNotExist) {
+			return s, fmt.Errorf("inspect download ranges: %w", e)
+		}
 		valid = false
 	}
 	if valid {
+		if err := detachSharedPartial(ctx, s.payload, f); err != nil {
+			return s, fmt.Errorf("prepare shared download partial: %w", err)
+		}
 		s.info = old
 		return s, nil
 	}
@@ -105,6 +126,53 @@ func stageFor(remote *Remote, source, destination string, entry Entry) (download
 		return s, err
 	}
 	return s, s.save()
+}
+
+// A resumed payload is written in place. Give it an independent inode before
+// handing it to a worker, preserving both progress and any external hard links.
+func detachSharedPartial(ctx context.Context, path string, before os.FileInfo) error {
+	shared, err := fileHasMultipleLinks(path, before)
+	if err != nil || !shared {
+		return err
+	}
+	if !os.SameFile(before, before) {
+		return errors.New("cannot capture partial file identity")
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".detach-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	// Local preparation does not count as newly downloaded network bytes.
+	copyCtx := context.WithValue(ctx, progressKey{}, func(transferProgress) {})
+	if err := copyLocal(copyCtx, path, name, 0); err != nil {
+		return err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return errors.New("partial download changed while preparing an independent copy")
+	}
+	cloned, err := os.Stat(name)
+	if err != nil {
+		return err
+	}
+	if cloned.Size() != before.Size() {
+		return io.ErrUnexpectedEOF
+	}
+	if err := os.Chtimes(name, before.ModTime(), before.ModTime()); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 func (s *downloadStage) reset() error {
 	for _, p := range []string{s.payload, s.payload + pcsdownload.DownloadSuffix, s.record} {

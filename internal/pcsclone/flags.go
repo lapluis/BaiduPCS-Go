@@ -17,7 +17,6 @@ import (
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 
-	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkedwriter"
 )
@@ -256,14 +255,7 @@ func newLogSink(c *commandContext) (*logSink, error) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		protected := append([]string{}, c.args...)
-		filesFrom := c.flags.String("files-from")
-		if filesFrom != "" && !filepath.IsAbs(filesFrom) {
-			filesFrom = filepath.Join(c.app.CWD, filesFrom)
-		}
-		protected = append(protected, filesFrom, c.app.ConfigFile,
-			filepath.Join(pcsconfig.GetConfigDir(), "rc_remotes.json"))
-		if err := rc.ValidateLogPath(ctx, c.app.CWD, path, protected...); err != nil {
+		if err := rc.ValidateCommandLogPath(ctx, c.app.CWD, path, c.app.ConfigFile, c.flags.String("files-from"), c.args...); err != nil {
 			return nil, err
 		}
 		if !filepath.IsAbs(path) {

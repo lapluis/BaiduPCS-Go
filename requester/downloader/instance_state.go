@@ -27,7 +27,9 @@ func (der *Downloader) validateResumeFile(info *transfer.DownloadInstanceInfo) e
 	}
 	stat, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrResumeFileMismatch, err)
+		// Failure to inspect the file is not evidence that saved bytes are
+		// missing. Keep the cause and avoid requesting destructive resume reset.
+		return fmt.Errorf("inspect resumed download file: %w", err)
 	}
 	total := info.DownloadStatus.TotalSize()
 	if stat.Size() > total {
@@ -68,6 +70,10 @@ type (
 	//InstanceState 状态, 断点续传信息
 	InstanceState struct {
 		saveFile *os.File
+		filename string
+		lease    *os.File
+		initErr  error
+		closed   bool
 		format   InstanceStateStorageFormat
 		ii       transfer.DownloadInstanceInfoExporter
 		mu       sync.Mutex
@@ -84,12 +90,17 @@ const (
 	InstanceStateStorageFormatProto3
 )
 
-// NewInstanceState 初始化InstanceState
+// NewInstanceState takes ownership of saveFile. Close the state, including
+// read-only users; Load and Put report any ownership-acquisition failure.
 func NewInstanceState(saveFile *os.File, format InstanceStateStorageFormat) *InstanceState {
-	return &InstanceState{
+	state := &InstanceState{
 		saveFile: saveFile,
 		format:   format,
 	}
+	if saveFile != nil {
+		state.claimCheckpoint()
+	}
+	return state
 }
 
 func (is *InstanceState) checkSaveFile() bool {
@@ -104,6 +115,9 @@ const maxCheckpointSize int64 = 16 << 20
 func (is *InstanceState) getSaveFileContents() ([]byte, error) {
 	if is.saveFile == nil {
 		return nil, nil
+	}
+	if err := is.verifyCheckpointLocked(); err != nil {
+		return nil, err
 	}
 
 	finfo, err := is.saveFile.Stat()
@@ -215,6 +229,9 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 	if is.saveFile == nil {
 		return nil
 	}
+	if err := is.verifyCheckpointLocked(); err != nil {
+		return err
+	}
 
 	if is.ii == nil {
 		is.ii = &transfer.DownloadInstanceInfoExport{}
@@ -244,7 +261,7 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 	if err != nil {
 		return err
 	}
-	name := is.saveFile.Name()
+	name := is.filename
 	temp, err := os.CreateTemp(filepath.Dir(name), ".pcs-download-state-*")
 	if err != nil {
 		return err
@@ -280,15 +297,7 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 func (is *InstanceState) Close() error {
 	is.mu.Lock()
 	defer is.mu.Unlock()
-	if is.saveFile == nil {
-		return nil
-	}
-
-	err := is.saveFile.Close()
-	if errors.Is(err, os.ErrClosed) {
-		return nil
-	}
-	return err
+	return is.closeCheckpointLocked()
 }
 
 func (der *Downloader) initInstanceState(format InstanceStateStorageFormat) (err error) {
@@ -296,28 +305,20 @@ func (der *Downloader) initInstanceState(format InstanceStateStorageFormat) (err
 		return errors.New("already initInstanceState")
 	}
 
-	var saveFile *os.File
-	if !der.config.IsTest && der.config.InstanceStatePath != "" {
-		saveFile, err = os.OpenFile(der.config.InstanceStatePath, os.O_RDWR|os.O_CREATE, 0777)
-		if err != nil {
-			return err
-		}
+	if der.config.IsTest || der.config.InstanceStatePath == "" {
+		der.instanceState = NewInstanceState(nil, format)
+		return nil
 	}
-
-	der.instanceState = NewInstanceState(saveFile, format)
+	der.instanceState, err = openCheckpointState(der.config.InstanceStatePath, format)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 func (der *Downloader) removeInstanceState() error {
-	if err := der.instanceState.Close(); err != nil {
-		return err
-	}
 	if !der.config.IsTest && der.config.InstanceStatePath != "" {
-		err := os.Remove(der.config.InstanceStatePath)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+		return der.instanceState.removeCheckpoint()
 	}
-	return nil
+	return der.instanceState.Close()
 }

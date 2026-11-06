@@ -10,6 +10,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsfunctions"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/filelock"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
@@ -104,14 +105,6 @@ func (dtu *DownloadTaskUnit) verboseInfof(format string, a ...interface{}) {
 	}
 }
 
-// removeEmptyDownloadFile 删除 0 字节的残缺下载文件
-func removeEmptyDownloadFile(path string) {
-	info, statErr := os.Stat(path)
-	if statErr == nil && info.Size() == 0 {
-		_ = os.Remove(path)
-	}
-}
-
 // download 执行下载
 func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTPClient) (err error) {
 	if dtu.ProbeOnly {
@@ -143,19 +136,31 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 	)
 
 	if !dtu.Cfg.IsTest {
-		// panic 时清理空文件并转为可重试错误，避免整进程退出
+		var created bool
+		var outputPath, checkpoint string
+		// Keep the original handle and paths through recovery. Callback changes
+		// to task settings must not redirect cleanup to another user's file.
 		defer func() {
 			if r := recover(); r != nil {
-				removeEmptyDownloadFile(dtu.SavePath)
 				err = fmt.Errorf("%s: panic: %v", StrDownloadFailed, r)
 			}
+			if file != nil {
+				if err != nil && created {
+					if cleanupErr := removeOwnedEmptyDownload(file, outputPath, checkpoint); cleanupErr != nil {
+						dtu.verboseInfof("retain failed download output %s: %s\n", outputPath, cleanupErr)
+					}
+				}
+				file.Close()
+			}
 		}()
-		// 非测试下载
-		dtu.Cfg.InstanceStatePath = dtu.SavePath + DownloadSuffix
+		outputPath, err = filepath.Abs(dtu.SavePath)
+		if err != nil {
+			return err
+		}
 
 		// 创建下载的目录
 		// 获取SavePath所在的目录
-		dir := filepath.Dir(dtu.SavePath)
+		dir := filepath.Dir(outputPath)
 		fileInfo, err := os.Stat(dir)
 		if err != nil {
 			// 目录不存在, 创建
@@ -168,12 +173,17 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			return fmt.Errorf("%s, %w", StrDownloadInitError, &os.PathError{Op: "mkdir", Path: dir, Err: errors.New("not a directory")})
 		}
 
-		// 打开文件
-		writer, file, err = downloader.NewDownloaderWriterByFilename(dtu.SavePath, os.O_CREATE|os.O_WRONLY, 0666)
+		checkpoint, err = filelock.CanonicalPath(outputPath + DownloadSuffix)
+		if err != nil {
+			return err
+		}
+		dtu.Cfg.InstanceStatePath = checkpoint
+		file, created, err = openDownloadOutput(outputPath)
 		if err != nil {
 			return fmt.Errorf("%s, %w", StrDownloadInitError, err)
 		}
-		defer file.Close()
+		outputPath = file.Name()
+		writer = file
 	}
 
 	der := downloader.NewDownloader(downloadURL, writer, dtu.Cfg)
@@ -265,16 +275,6 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 	fmt.Print("\n")
 
 	if err != nil {
-		// 下载发生错误
-		if !dtu.Cfg.IsTest {
-			// 下载失败, 删去空文件
-			if info, infoErr := file.Stat(); infoErr == nil && info.Size() == 0 {
-				dtu.verboseInfof("[%s] remove empty file: %s\n", dtu.taskInfo.Id(), dtu.SavePath)
-				if removeErr := os.Remove(dtu.SavePath); removeErr != nil {
-					dtu.verboseInfof("[%s] remove file error: %s\n", dtu.taskInfo.Id(), removeErr)
-				}
-			}
-		}
 		return err
 	}
 
@@ -541,10 +541,21 @@ func (dtu *DownloadTaskUnit) RetryWait() time.Duration {
 	return pcsfunctions.RetryWait(dtu.taskInfo.Retry())
 }
 
-func createEmptyDownloadFile(filename string, overwrite bool) error {
+func createEmptyDownloadFile(filename string, overwrite bool) (err error) {
 	if err := os.MkdirAll(filepath.Dir(filename), 0777); err != nil {
 		return err
 	}
+	// Empty files bypass the HTTP downloader, but must share its checkpoint
+	// lease before creating or truncating the same output.
+	checkpoint, err := filelock.CanonicalPath(filename + DownloadSuffix)
+	if err != nil {
+		return err
+	}
+	lease, err := filelock.TryLock(checkpoint + ".lock")
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, lease.Close()) }()
 	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
 	if overwrite {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -563,7 +574,15 @@ func createEmptyDownloadFile(filename string, overwrite bool) error {
 		}
 		return err
 	}
-	return file.Close()
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	// The old ranges no longer describe the now-empty output. Retain the
+	// independent lease through cleanup, as the HTTP downloader does.
+	if err := os.Remove(checkpoint); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
@@ -638,7 +657,7 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 		return
 	}
 
-	if dtu.FileInfo.Size == 0 {
+	if dtu.FileInfo.Size == 0 && !dtu.ProbeOnly {
 		if !dtu.Cfg.IsTest {
 			if err := createEmptyDownloadFile(dtu.SavePath, dtu.IsOverwrite); err != nil {
 				result.ResultMessage = StrDownloadInitError
@@ -653,7 +672,7 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	fmt.Printf("[%s] 准备下载: %s\n", dtu.taskInfo.Id(), dtu.PcsPath)
 
-	if !dtu.Cfg.IsTest && !dtu.IsOverwrite && FileExist(dtu.SavePath) {
+	if !dtu.ProbeOnly && !dtu.Cfg.IsTest && !dtu.IsOverwrite && FileExist(dtu.SavePath) {
 		fmt.Printf("[%s] 文件已经存在: %s, 跳过...\n", dtu.taskInfo.Id(), dtu.SavePath)
 		result.Succeed = true // 执行成功
 		return

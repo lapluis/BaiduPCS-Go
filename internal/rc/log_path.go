@@ -4,10 +4,55 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
+	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsfunctions/pcsupload"
 )
+
+func localLogPath(cwd, path string) (string, error) {
+	if filepath.VolumeName(path) != "" && !filepath.IsAbs(path) {
+		return "", fmt.Errorf("drive-relative path is not supported: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	return filepath.Abs(path)
+}
+
+// ValidateCommandLogPath protects both command data and its runtime storage.
+// A file endpoint's download state lives beside the file, outside its own path.
+func ValidateCommandLogPath(ctx context.Context, cwd, logPath, configFile, filesFrom string, endpoints ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var protected []string
+	for _, file := range []string{configFile, filesFrom, aliasesPath(),
+		filepath.Join(pcsconfig.GetConfigDir(), "rc-state"),
+		filepath.Join(pcsconfig.GetConfigDir(), pcsupload.UploadingFileName),
+		filepath.Join(pcsconfig.GetConfigDir(), pcsupload.UploadingFileName+".lock")} {
+		if file == "" {
+			continue
+		}
+		path, err := localLogPath(cwd, file)
+		if err != nil {
+			return err
+		}
+		protected = append(protected, path)
+	}
+	for _, endpoint := range endpoints {
+		if endpoint == "" || IsRemote(endpoint) {
+			continue
+		}
+		path, err := localLogPath(cwd, endpoint)
+		if err != nil {
+			return err
+		}
+		protected = append(protected, path, filepath.Join(filepath.Dir(path), ".pcsclone-partials"))
+	}
+	return ValidateLogPath(ctx, cwd, logPath, protected...)
+}
 
 // ValidateLogPath rejects logs that could change an input, output or state file.
 // Call it before creating the log or starting an operation. Paths are endpoints;
@@ -16,16 +61,7 @@ func ValidateLogPath(ctx context.Context, cwd, logPath string, paths ...string) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	localPath := func(p string) (string, error) {
-		if filepath.VolumeName(p) != "" && !filepath.IsAbs(p) {
-			return "", fmt.Errorf("drive-relative path is not supported: %s", p)
-		}
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(cwd, p)
-		}
-		return filepath.Abs(p)
-	}
-	logPath, err := localPath(logPath)
+	logPath, err := localLogPath(cwd, logPath)
 	if err != nil {
 		return err
 	}
@@ -40,7 +76,7 @@ func ValidateLogPath(ctx context.Context, cwd, logPath string, paths ...string) 
 	}
 	checkLinks := false
 	if logInfo != nil && logInfo.Mode().IsRegular() {
-		checkLinks, err = logHasMultipleLinks(logPath, logInfo)
+		checkLinks, err = fileHasMultipleLinks(logPath, logInfo)
 		if err != nil {
 			return fmt.Errorf("log file links: %w", err)
 		}
@@ -52,7 +88,7 @@ func ValidateLogPath(ctx context.Context, cwd, logPath string, paths ...string) 
 		if p == "" || IsRemote(p) {
 			continue
 		}
-		p, err = localPath(p)
+		p, err = localLogPath(cwd, p)
 		if err != nil {
 			return err
 		}
@@ -74,25 +110,43 @@ func ValidateLogPath(ctx context.Context, cwd, logPath string, paths ...string) 
 		}
 		// An external hard link to a descendant has no common path prefix.
 		// Scan only for logs with multiple links, keeping normal startup cheap.
-		if err := filepath.WalkDir(p, func(path string, entry fs.DirEntry, walkErr error) error {
+		// Read the root already confirmed by Stat as a directory: WalkDir would
+		// inspect it with Lstat and skip a Windows junction. Descendant links
+		// remain untraversed, avoiding cycles through linked directories.
+		var walk func(string) error
+		walk = func(dir string) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			info, err := entry.Info()
+			entries, err := os.ReadDir(dir)
 			if err != nil {
 				return err
 			}
-			if os.SameFile(logInfo, info) {
-				return fmt.Errorf("log file overlaps %q (hard link)", path)
+			for _, entry := range entries {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				path := filepath.Join(dir, entry.Name())
+				if entry.IsDir() {
+					if err := walk(path); err != nil {
+						return err
+					}
+					continue
+				}
+				if entry.Type()&os.ModeSymlink != 0 {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					return err
+				}
+				if os.SameFile(logInfo, info) {
+					return fmt.Errorf("log file overlaps %q (hard link)", path)
+				}
 			}
 			return nil
-		}); err != nil {
+		}
+		if err := walk(p); err != nil {
 			return err
 		}
 	}

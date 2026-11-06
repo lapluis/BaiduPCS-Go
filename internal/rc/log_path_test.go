@@ -21,7 +21,10 @@ func TestValidateLogPath(t *testing.T) {
 	if err := os.Mkdir(dataDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	data := filepath.Join(dataDir, "one.txt")
+	data := filepath.Join(dataDir, "nested", "one.txt")
+	if err := os.Mkdir(filepath.Dir(data), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(data, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}

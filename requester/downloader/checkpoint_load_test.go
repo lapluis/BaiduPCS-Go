@@ -89,6 +89,7 @@ func TestCheckpointLoadBoundsAndReadErrors(t *testing.T) {
 			}
 			defer f.Close()
 			state := NewInstanceState(f, InstanceStateStorageFormatJSON)
+			defer state.Close()
 			if oversized {
 				if err := f.Truncate(maxCheckpointSize + 1); err != nil {
 					t.Fatal(err)
@@ -141,7 +142,9 @@ func TestCheckpointLoadAllowsCompletedRangeMarkers(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer f.Close()
-			info, err := NewInstanceState(f, format).Load()
+			state := NewInstanceState(f, format)
+			defer state.Close()
+			info, err := state.Load()
 			if err != nil || info == nil || info.Ranges.Len() != 8 || info.DownloadStatus.Downloaded() != 0 {
 				t.Fatalf("valid zero-length marker rejected: info=%v err=%v", info, err)
 			}
@@ -155,6 +158,7 @@ func TestClosedCheckpointGetDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := NewInstanceState(f, InstanceStateStorageFormatJSON)
+	defer state.Close()
 	f.Close()
 	defer func() {
 		if r := recover(); r != nil {

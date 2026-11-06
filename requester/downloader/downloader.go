@@ -404,19 +404,24 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 		return err
 	}
 
-	if !single {
-		//load breakpoint
-		//服务端不支持多线程时, 不记录断点
-		err := der.initInstanceState(der.config.InstanceStateStorageFormat)
-		if err != nil {
+	// Single streams write the same output as ranged attempts. They must own
+	// its checkpoint too, even though their progress cannot be resumed.
+	if err := der.initInstanceState(der.config.InstanceStateStorageFormat); err != nil {
+		return err
+	}
+	defer der.instanceState.Close()
+	if single {
+		if err := der.instanceState.discardRanges(); err != nil {
 			return err
 		}
+	} else {
+		//load breakpoint
+		var err error
 		bii, err = der.instanceState.Load()
 		if err != nil {
 			der.instanceState.Close()
 			return err
 		}
-		defer der.instanceState.Close()
 		if bii != nil && bii.DownloadStatus != nil && bii.DownloadStatus.TotalSize() != der.firstInfo.ContentLength {
 			der.instanceState.Close()
 			return fmt.Errorf("%w: saved=%d, remote=%d", ErrResumeSizeMismatch, bii.DownloadStatus.TotalSize(), der.firstInfo.ContentLength)
@@ -549,7 +554,13 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	moniterCtx, moniterCancelFunc := context.WithCancel(ctx)
 	defer moniterCancelFunc()
 
-	der.monitor.SetInstanceState(der.instanceState)
+	if single {
+		// Single streams cannot describe restartable byte ranges, but retain
+		// the checkpoint lease until the transfer and cleanup have finished.
+		der.monitor.SetInstanceState(nil)
+	} else {
+		der.monitor.SetInstanceState(der.instanceState)
+	}
 
 	// 开始执行
 	der.executeTime = time.Now()
@@ -584,7 +595,7 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 			err = file.Sync()
 		}
 	}
-	if err == nil && !single {
+	if err == nil {
 		err = der.removeInstanceState()
 	}
 	if err == nil { // 成功

@@ -102,7 +102,14 @@ func (utu *UploadTaskUnit) prepareFile() {
 	utu.panFile = panFile
 
 	// 检测断点续传
-	utu.state = utu.UploadingDatabase.Search(&utu.LocalFileChecksum.LocalFileMeta)
+	state, err := utu.UploadingDatabase.SearchWithError(&utu.LocalFileChecksum.LocalFileMeta)
+	if err != nil {
+		utu.state = nil
+		utu.prepareResult = &taskframework.TaskUnitRunResult{ResultMessage: "读取上传断点失败", Err: errors.Join(err, ctx.Err())}
+		utu.Step = JustGoon
+		return
+	}
+	utu.state = state
 	if utu.state != nil || utu.LocalFileChecksum.LocalFileMeta.BlocksList != nil { // 读取到了断点信息
 		fmt.Printf("[%s] 检测到断点信息, 准备续传...\n", utu.taskInfo.Id())
 		if utu.LocalFileChecksum.LocalFileMeta.BlocksList != nil {

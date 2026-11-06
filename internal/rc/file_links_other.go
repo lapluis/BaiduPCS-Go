@@ -4,4 +4,4 @@ package rc
 
 import "os"
 
-func logHasMultipleLinks(string, os.FileInfo) (bool, error) { return true, nil }
+func fileHasMultipleLinks(string, os.FileInfo) (bool, error) { return true, nil }

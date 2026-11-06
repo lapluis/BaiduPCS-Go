@@ -249,7 +249,7 @@ func TestLegacyCompletionRecordRequiresFullComparison(t *testing.T) {
 			remote := &Remote{UID: 7}
 			target := filepath.Join(t.TempDir(), "result.bin")
 			entry := Entry{Size: 8, ID: "original", ModTime: time.Unix(100, 0)}
-			stage, err := stageFor(remote, "/file", target, entry)
+			stage, err := stageFor(context.Background(), remote, "/file", target, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -360,7 +360,7 @@ func TestDownloadStageRejectsChangedIdentityAndLocalData(t *testing.T) {
 			remote := &Remote{UID: 7}
 			target := filepath.Join(t.TempDir(), "result.bin")
 			entry := Entry{Size: 8, ID: "original", ModTime: time.Unix(100, 0)}
-			stage, err := stageFor(remote, "/file", target, entry)
+			stage, err := stageFor(context.Background(), remote, "/file", target, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -389,7 +389,7 @@ func TestDownloadStageRejectsChangedIdentityAndLocalData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			next, err := stageFor(remote, "/file", target, entry)
+			next, err := stageFor(context.Background(), remote, "/file", target, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
