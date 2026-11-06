@@ -264,7 +264,7 @@ func runBaiduShareCreate(c *commandContext) error {
 	if period < 0 {
 		return usageErrorf("--period must be zero or greater")
 	}
-	shared, pcsErr := pcs.ShareSet(paths, &baidupcs.ShareOption{Password: code, Period: period})
+	shared, pcsErr := pcs.ShareSetWithContext(c.ctx, paths, &baidupcs.ShareOption{Password: code, Period: period})
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -298,7 +298,7 @@ func runBaiduShareList(c *commandContext) error {
 	if page < 1 {
 		return usageErrorf("--page must be 1 or greater")
 	}
-	records, pcsErr := remote.PCS.ShareList(page)
+	records, pcsErr := remote.PCS.ShareListWithContext(c.ctx, page)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -327,7 +327,7 @@ func runBaiduShareCancel(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	if pcsErr := remote.PCS.ShareCancel(ids); pcsErr != nil {
+	if pcsErr := remote.PCS.ShareCancelWithContext(c.ctx, ids); pcsErr != nil {
 		return operationError(pcsErr)
 	}
 	if c.flags.Bool("json") {
@@ -359,7 +359,7 @@ func runBaiduTransfer(c *commandContext) error {
 	if code != "" {
 		params = append(params, code)
 	}
-	result, err := pcscommand.ShareTransferTo(remote.PCS, params, root, &baidupcs.TransferOption{Collect: c.flags.Bool("collect")})
+	result, err := pcscommand.ShareTransferToWithContext(c.ctx, remote.PCS, params, root, &baidupcs.TransferOption{Collect: c.flags.Bool("collect")})
 	if err != nil {
 		return operationError(err)
 	}
@@ -391,7 +391,7 @@ func runBaiduLink(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	info, pcsErr := remote.PCS.FilesDirectoriesMeta(root)
+	info, pcsErr := remote.PCS.FilesDirectoriesMetaWithContext(c.ctx, root)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -406,7 +406,7 @@ func runBaiduLink(c *commandContext) error {
 		}
 		output.URLs = append(output.URLs, linkView{URL: link})
 	} else {
-		located, pcsErr := remote.PCS.LocateDownload(root)
+		located, pcsErr := remote.PCS.LocateDownloadWithContext(c.ctx, root)
 		if pcsErr != nil {
 			return operationError(pcsErr)
 		}
@@ -416,6 +416,9 @@ func runBaiduLink(c *commandContext) error {
 		for _, item := range located.URLs {
 			output.URLs = append(output.URLs, linkView{URL: item.URL, Encrypt: item.Encrypt})
 		}
+	}
+	if err := c.ctx.Err(); err != nil {
+		return operationError(err)
 	}
 	if c.flags.Bool("json") {
 		return writeJSON(c, output)
@@ -444,7 +447,7 @@ func runBaiduSearch(c *commandContext) error {
 	if strings.TrimSpace(keyword) == "" {
 		return usageErrorf("search keyword cannot be empty")
 	}
-	files, pcsErr := remote.PCS.Search(root, keyword, c.flags.Bool("recursive"))
+	files, pcsErr := remote.PCS.SearchWithContext(c.ctx, root, keyword, c.flags.Bool("recursive"))
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -461,6 +464,9 @@ func runBaiduSearch(c *commandContext) error {
 			Path: filePath, Name: file.Filename, Size: file.Size,
 			ModTime: time.Unix(file.Mtime, 0), IsDir: file.Isdir, FsID: file.FsID,
 		})
+	}
+	if err := c.ctx.Err(); err != nil {
+		return operationError(err)
 	}
 	if c.flags.Bool("json") {
 		return writeJSON(c, views)
@@ -539,10 +545,13 @@ func runBaiduOfflineAdd(c *commandContext) error {
 			failures = append(failures, err)
 			break
 		}
-		taskID, pcsErr := remote.PCS.CloudDlAddTask(source, savePath)
+		taskID, pcsErr := remote.PCS.CloudDlAddTaskWithContext(c.ctx, source, savePath)
 		if pcsErr != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", source, pcsErr))
 			failures = append(failures, fmt.Errorf("%s: %w", source, pcsErr))
+			if c.ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		result.Added = append(result.Added, offlineAddEntry{TaskID: taskID, URL: source})
@@ -567,9 +576,12 @@ func runBaiduOfflineList(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	tasks, pcsErr := remote.PCS.CloudDlListTask()
+	tasks, pcsErr := remote.PCS.CloudDlListTaskWithContext(c.ctx)
 	if pcsErr != nil {
 		return operationError(pcsErr)
+	}
+	if err := c.ctx.Err(); err != nil {
+		return operationError(err)
 	}
 	views := offlineViews(tasks)
 	if c.flags.Bool("json") {
@@ -588,9 +600,12 @@ func runBaiduOfflineQuery(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	tasks, pcsErr := remote.PCS.CloudDlQueryTask(ids)
+	tasks, pcsErr := remote.PCS.CloudDlQueryTaskWithContext(c.ctx, ids)
 	if pcsErr != nil {
 		return operationError(pcsErr)
+	}
+	if err := c.ctx.Err(); err != nil {
+		return operationError(err)
 	}
 	views := offlineViews(tasks)
 	if c.flags.Bool("json") {
@@ -626,12 +641,15 @@ func runOfflineIDAction(c *commandContext, action string) error {
 		}
 		var pcsErr error
 		if action == "cancel" {
-			pcsErr = remote.PCS.CloudDlCancelTask(id)
+			pcsErr = remote.PCS.CloudDlCancelTaskWithContext(c.ctx, id)
 		} else {
-			pcsErr = remote.PCS.CloudDlDeleteTask(id)
+			pcsErr = remote.PCS.CloudDlDeleteTaskWithContext(c.ctx, id)
 		}
 		if pcsErr != nil {
 			failures = append(failures, fmt.Errorf("%d: %w", id, pcsErr))
+			if c.ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		done = append(done, id)
@@ -656,7 +674,7 @@ func runBaiduOfflineClear(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	total, pcsErr := remote.PCS.CloudDlClearTask()
+	total, pcsErr := remote.PCS.CloudDlClearTaskWithContext(c.ctx)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -688,7 +706,7 @@ func runBaiduRecycleList(c *commandContext) error {
 	if page < 1 {
 		return usageErrorf("--page must be 1 or greater")
 	}
-	files, pcsErr := remote.PCS.RecycleList(page)
+	files, pcsErr := remote.PCS.RecycleListWithContext(c.ctx, page)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -725,7 +743,7 @@ func runBaiduRecycleRestore(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	restored, pcsErr := remote.PCS.RecycleRestore(ids...)
+	restored, pcsErr := remote.PCS.RecycleRestoreWithContext(c.ctx, ids...)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
@@ -751,7 +769,7 @@ func runBaiduRecycleDelete(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	if pcsErr := remote.PCS.RecycleDelete(ids...); pcsErr != nil {
+	if pcsErr := remote.PCS.RecycleDeleteWithContext(c.ctx, ids...); pcsErr != nil {
 		return operationError(pcsErr)
 	}
 	if c.flags.Bool("json") {
@@ -766,7 +784,7 @@ func runBaiduRecycleClear(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	total, pcsErr := remote.PCS.RecycleClear()
+	total, pcsErr := remote.PCS.RecycleClearWithContext(c.ctx)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}

@@ -2,11 +2,12 @@ package baidupcs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"github.com/tidwall/gjson"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -73,8 +74,13 @@ func sharePageData(body []byte) (gjson.Result, bool) {
 }
 
 func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken string) (res map[string]string) {
+	return pcs.ExtractShareInfoWithContext(context.Background(), shareURL, shardID, shareUK, bdstoken)
+}
+
+// ExtractShareInfoWithContext bounds share listing by ctx.
+func (pcs *BaiduPCS) ExtractShareInfoWithContext(ctx context.Context, shareURL, shardID, shareUK, bdstoken string) (res map[string]string) {
 	res = make(map[string]string)
-	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareURL, nil, map[string]string{
+	dataReadCloser, panError := pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareURL, nil, map[string]string{
 		"User-Agent":   requester.UserAgent,
 		"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 	})
@@ -83,7 +89,7 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 		return
 	}
 	defer dataReadCloser.Close()
-	body, err := ioutil.ReadAll(dataReadCloser)
+	body, err := readShareResponse(ctx, dataReadCloser)
 	if err != nil {
 		res["ErrMsg"] = "读取分享项响应失败"
 		return
@@ -142,7 +148,12 @@ func (pcs *BaiduPCS) ExtractShareInfo(shareURL, shardID, shareUK, bdstoken strin
 }
 
 func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]string) (res map[string]string) {
-	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, http.MethodPost, url, data, map[string]string{
+	return pcs.PostShareQueryWithContext(context.Background(), url, referer, data)
+}
+
+// PostShareQueryWithContext bounds extraction-code verification by ctx.
+func (pcs *BaiduPCS) PostShareQueryWithContext(ctx context.Context, url string, referer string, data map[string]string) (res map[string]string) {
+	dataReadCloser, panError := pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationShareFileSavetoLocal, http.MethodPost, url, data, map[string]string{
 		"User-Agent":   requester.UserAgent,
 		"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 		"Referer":      referer,
@@ -153,7 +164,7 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 		return
 	}
 	defer dataReadCloser.Close()
-	body, err := ioutil.ReadAll(dataReadCloser)
+	body, err := readShareResponse(ctx, dataReadCloser)
 	if err != nil {
 		res["ErrMsg"] = "读取分享验证响应失败"
 		return
@@ -176,6 +187,11 @@ func (pcs *BaiduPCS) PostShareQuery(url string, referer string, data map[string]
 }
 
 func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[string]string) {
+	return pcs.AccessSharePageWithContext(context.Background(), featurestr, first)
+}
+
+// AccessSharePageWithContext bounds page requests and response reads by ctx.
+func (pcs *BaiduPCS) AccessSharePageWithContext(ctx context.Context, featurestr string, first bool) (tokens map[string]string) {
 	tokens = make(map[string]string)
 	tokens["ErrMsg"] = "0"
 	if len(featurestr) < 2 || featurestr[0] != '1' {
@@ -190,14 +206,14 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 	}
 	shareLink := fmt.Sprintf("https://pan.baidu.com/s/%s", featurestr)
 
-	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareLink, nil, headers)
+	dataReadCloser, panError := pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationShareFileSavetoLocal, http.MethodGet, shareLink, nil, headers)
 
 	if panError != nil {
 		tokens["ErrMsg"] = "访问分享页失败"
 		return
 	}
 	defer dataReadCloser.Close()
-	body, readErr := ioutil.ReadAll(dataReadCloser)
+	body, readErr := readShareResponse(ctx, dataReadCloser)
 	if readErr != nil {
 		tokens["ErrMsg"] = "读取分享页失败"
 		return
@@ -227,6 +243,11 @@ func (pcs *BaiduPCS) AccessSharePage(featurestr string, first bool) (tokens map[
 }
 
 func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string) (res map[string]string) {
+	return pcs.GenerateRequestQueryWithContext(context.Background(), mode, params)
+}
+
+// GenerateRequestQueryWithContext bounds transfer submission by ctx.
+func (pcs *BaiduPCS) GenerateRequestQueryWithContext(ctx context.Context, mode string, params map[string]string) (res map[string]string) {
 	res = make(map[string]string)
 	res["ErrNo"] = "0"
 	headers := map[string]string{
@@ -239,14 +260,14 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 	postdata := make(map[string]string)
 	postdata["fsidlist"] = params["fs_id"]
 	postdata["path"] = params["path"]
-	dataReadCloser, panError := pcs.sendReqReturnReadCloser(reqTypePan, OperationShareFileSavetoLocal, mode, params["shareUrl"], postdata, headers)
+	dataReadCloser, panError := pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationShareFileSavetoLocal, mode, params["shareUrl"], postdata, headers)
 	if panError != nil {
 		res["ErrNo"] = "1"
 		res["ErrMsg"] = "网络错误"
 		return
 	}
 	defer dataReadCloser.Close()
-	body, err := ioutil.ReadAll(dataReadCloser)
+	body, err := readShareResponse(ctx, dataReadCloser)
 	if err != nil {
 		res["ErrNo"] = "-1"
 		res["ErrMsg"] = "未知错误"
@@ -307,6 +328,14 @@ func (pcs *BaiduPCS) GenerateRequestQuery(mode string, params map[string]string)
 		res["filename"] += "等多个文件/文件夹"
 	}
 	return
+}
+
+func readShareResponse(ctx context.Context, reader io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(reader)
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return nil, cancelErr
+	}
+	return body, err
 }
 
 func (pcs *BaiduPCS) SuperTransfer(params map[string]string, limit string) {

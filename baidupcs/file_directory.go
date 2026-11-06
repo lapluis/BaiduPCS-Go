@@ -163,6 +163,9 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, p
 		return
 	}
 
+	if err := validateFileDirectoryList(OperationFilesDirectoriesMeta, jsonData.List); err != nil {
+		return nil, err
+	}
 	// 修复MD5
 	jsonData.List.fixMD5()
 
@@ -295,11 +298,16 @@ func incompleteListing(reason string) pcserror.Error {
 
 // Search 按文件名搜索文件, 不支持查找目录
 func (pcs *BaiduPCS) Search(targetPath, keyword string, recursive bool) (fdl FileDirectoryList, pcsError pcserror.Error) {
+	return pcs.SearchWithContext(context.Background(), targetPath, keyword, recursive)
+}
+
+// SearchWithContext cancels both the search request and response decoding.
+func (pcs *BaiduPCS) SearchWithContext(ctx context.Context, targetPath, keyword string, recursive bool) (fdl FileDirectoryList, pcsError pcserror.Error) {
 	if targetPath == "" {
 		targetPath = PathSeparator
 	}
 
-	dataReadCloser, pcsError := pcs.PrepareSearch(targetPath, keyword, recursive)
+	dataReadCloser, pcsError := pcs.PrepareSearchWithContext(ctx, targetPath, keyword, recursive)
 	if pcsError != nil {
 		return nil, pcsError
 	}
@@ -312,8 +320,15 @@ func (pcs *BaiduPCS) Search(targetPath, keyword string, recursive bool) (fdl Fil
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationSearch, dataReadCloser, (*fdDataJSONExport)(unsafe.Pointer(&jsonData)))
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
+	}
+	if err := validateFileDirectoryList(OperationSearch, jsonData.List); err != nil {
+		return nil, err
 	}
 
 	// 修复MD5
@@ -321,6 +336,19 @@ func (pcs *BaiduPCS) Search(targetPath, keyword string, recursive bool) (fdl Fil
 
 	fdl = jsonData.List
 	return
+}
+
+func validateFileDirectoryList(operation string, files FileDirectoryList) pcserror.Error {
+	for index, file := range files {
+		if file == nil {
+			return &pcserror.PCSErrInfo{
+				Operation: operation,
+				ErrType:   pcserror.ErrTypeOthers,
+				Err:       fmt.Errorf("invalid file list: null entry at index %d", index),
+			}
+		}
+	}
+	return nil
 }
 
 func (pcs *BaiduPCS) recurseList(path string, depth int, options *OrderOptions, prebase string, handleFileDirectoryFunc HandleFileDirectoryFunc) (fdl FileDirectoryList, ok bool) {

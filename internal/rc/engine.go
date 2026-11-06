@@ -671,7 +671,7 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 	sr, sremote := src.FS.(*Remote)
 	dr, dremote := dst.FS.(*Remote)
 	if sremote && dremote && sr.UID == dr.UID && a.Destination == nil {
-		if err := sr.copyFile(sp, dp); err != nil {
+		if err := sr.copyFile(ctx, sp, dp); err != nil {
 			return err
 		}
 	} else if !dremote {
@@ -942,7 +942,7 @@ func tryServerMove(ctx context.Context, src, dst Endpoint, a Action, o Options) 
 	if err := dr.Mkdir(ctx, path.Dir(dp)); err != nil {
 		return true, err
 	}
-	if err := sr.moveFile(sp, dp); err != nil {
+	if err := sr.moveFile(ctx, sp, dp); err != nil {
 		return true, err
 	}
 	got, err := dr.Stat(ctx, dp)

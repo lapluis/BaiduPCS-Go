@@ -2,13 +2,14 @@ package baidupcs
 
 import (
 	"context"
+	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
 
 type quotaInfo struct {
 	*pcserror.PCSErrInfo
-	Quota int64 `json:"quota"`
-	Used  int64 `json:"used"`
+	Quota *int64 `json:"quota"`
+	Used  *int64 `json:"used"`
 }
 
 // QuotaInfo 获取当前用户空间配额信息
@@ -38,7 +39,12 @@ func (pcs *BaiduPCS) QuotaInfoWithContext(ctx context.Context) (quota, used int6
 		return
 	}
 
-	return quotaInfo.Quota, quotaInfo.Used, nil
+	if quotaInfo.Quota == nil || quotaInfo.Used == nil {
+		quotaInfo.ErrType = pcserror.ErrTypeOthers
+		quotaInfo.Err = errors.New("quota response is missing quota or used")
+		return 0, 0, quotaInfo.PCSErrInfo
+	}
+	return *quotaInfo.Quota, *quotaInfo.Used, nil
 }
 
 // SpaceLeftInfo 获取当前用户剩余空间

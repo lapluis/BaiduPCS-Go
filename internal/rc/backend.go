@@ -191,7 +191,7 @@ func (r *Remote) Stat(ctx context.Context, p string) (Entry, error) {
 	if p == "/" {
 		return Entry{Name: "/", IsDir: true}, nil
 	}
-	f, err := r.PCS.FilesDirectoriesMeta(p)
+	f, err := r.PCS.FilesDirectoriesMetaWithContext(ctx, p)
 	if err != nil {
 		return Entry{}, remoteError(err)
 	}
@@ -206,7 +206,7 @@ func (r *Remote) List(ctx context.Context, p string) ([]Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	fs, err := r.PCS.FilesDirectoriesList(p, baidupcs.DefaultOrderOptions)
+	fs, err := r.PCS.FilesDirectoriesListWithContext(ctx, p, baidupcs.DefaultOrderOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func (r *Remote) Mkdir(ctx context.Context, p string) error {
 		return err
 	}
 	r.mu.Lock()
-	err = r.PCS.Mkdir(p)
+	err = r.PCS.MkdirWithContext(ctx, p)
 	r.mu.Unlock()
 	if err != nil {
 		current, statErr := r.Stat(ctx, p)
@@ -293,19 +293,19 @@ func (r *Remote) Remove(ctx context.Context, p string, dir bool) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.PCS.Remove(p)
+	return r.PCS.RemoveWithContext(ctx, p)
 }
 
 type hashRateKey struct{}
 
 func hashRate(ctx context.Context) int64 { rate, _ := ctx.Value(hashRateKey{}).(int64); return rate }
-func (r *Remote) copyFile(from, to string) error {
+func (r *Remote) copyFile(ctx context.Context, from, to string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.PCS.Copy(&baidupcs.CpMvJSON{From: from, To: to})
+	return r.PCS.CopyWithContext(ctx, &baidupcs.CpMvJSON{From: from, To: to})
 }
-func (r *Remote) moveFile(from, to string) error {
+func (r *Remote) moveFile(ctx context.Context, from, to string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.PCS.Move(&baidupcs.CpMvJSON{From: from, To: to})
+	return r.PCS.MoveWithContext(ctx, &baidupcs.CpMvJSON{From: from, To: to})
 }

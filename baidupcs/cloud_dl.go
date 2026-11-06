@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
@@ -117,7 +118,12 @@ func (ci *cloudDlTaskInfo) convert() *CloudDlTaskInfo {
 
 // CloudDlAddTask 添加离线下载任务
 func (pcs *BaiduPCS) CloudDlAddTask(sourceURL, savePath string) (taskID int64, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareCloudDlAddTask(sourceURL, savePath)
+	return pcs.CloudDlAddTaskWithContext(context.Background(), sourceURL, savePath)
+}
+
+// CloudDlAddTaskWithContext bounds creation and response decoding by ctx.
+func (pcs *BaiduPCS) CloudDlAddTaskWithContext(ctx context.Context, sourceURL, savePath string) (taskID int64, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareCloudDlAddTaskWithContext(ctx, sourceURL, savePath)
 	if pcsError != nil {
 		return
 	}
@@ -130,6 +136,10 @@ func (pcs *BaiduPCS) CloudDlAddTask(sourceURL, savePath string) (taskID int64, p
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationCloudDlAddTask, dataReadCloser, &taskInfo)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return 0, errInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -137,7 +147,7 @@ func (pcs *BaiduPCS) CloudDlAddTask(sourceURL, savePath string) (taskID int64, p
 	return taskInfo.TaskID, nil
 }
 
-func (pcs *BaiduPCS) cloudDlQueryTask(op string, taskIDs []int64) (cl CloudDlTaskList, pcsError pcserror.Error) {
+func (pcs *BaiduPCS) cloudDlQueryTask(ctx context.Context, op string, taskIDs []int64) (cl CloudDlTaskList, pcsError pcserror.Error) {
 	errInfo := pcserror.NewPCSErrorInfo(op)
 	if len(taskIDs) == 0 {
 		errInfo.ErrType = pcserror.ErrTypeOthers
@@ -145,17 +155,12 @@ func (pcs *BaiduPCS) cloudDlQueryTask(op string, taskIDs []int64) (cl CloudDlTas
 		return nil, errInfo
 	}
 
-	// TODO: 支持100条以上的task_id查询
-	if len(taskIDs) > 100 {
-		taskIDs = taskIDs[:100]
-	}
-
 	taskStrIDs := make([]string, len(taskIDs))
 	for k := range taskStrIDs {
 		taskStrIDs[k] = strconv.FormatInt(taskIDs[k], 10)
 	}
 
-	dataReadCloser, pcsError := pcs.PrepareCloudDlQueryTask(strings.Join(taskStrIDs, ","))
+	dataReadCloser, pcsError := pcs.PrepareCloudDlQueryTaskWithContext(ctx, strings.Join(taskStrIDs, ","))
 	if pcsError != nil {
 		return
 	}
@@ -167,6 +172,10 @@ func (pcs *BaiduPCS) cloudDlQueryTask(op string, taskIDs []int64) (cl CloudDlTas
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationCloudDlQueryTask, dataReadCloser, &taskInfo)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -196,12 +205,36 @@ func (pcs *BaiduPCS) cloudDlQueryTask(op string, taskIDs []int64) (cl CloudDlTas
 
 // CloudDlQueryTask 精确查询离线下载任务
 func (pcs *BaiduPCS) CloudDlQueryTask(taskIDs []int64) (cl CloudDlTaskList, pcsError pcserror.Error) {
-	return pcs.cloudDlQueryTask(OperationCloudDlQueryTask, taskIDs)
+	return pcs.CloudDlQueryTaskWithContext(context.Background(), taskIDs)
+}
+
+// CloudDlQueryTaskWithContext queries all IDs in endpoint-sized batches.
+// Failure or cancellation discards partial results instead of reporting success.
+func (pcs *BaiduPCS) CloudDlQueryTaskWithContext(ctx context.Context, taskIDs []int64) (cl CloudDlTaskList, pcsError pcserror.Error) {
+	if len(taskIDs) == 0 {
+		return pcs.cloudDlQueryTask(ctx, OperationCloudDlQueryTask, taskIDs)
+	}
+	cl = make(CloudDlTaskList, 0, len(taskIDs))
+	for len(taskIDs) > 0 {
+		n := min(len(taskIDs), 100)
+		batch, err := pcs.cloudDlQueryTask(ctx, OperationCloudDlQueryTask, taskIDs[:n])
+		if err != nil {
+			return nil, err
+		}
+		cl = append(cl, batch...)
+		taskIDs = taskIDs[n:]
+	}
+	return cl, nil
 }
 
 // CloudDlListTask 查询离线下载任务列表
 func (pcs *BaiduPCS) CloudDlListTask() (cl CloudDlTaskList, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareCloudDlListTask()
+	return pcs.CloudDlListTaskWithContext(context.Background())
+}
+
+// CloudDlListTaskWithContext cancels listing requests and response decoding.
+func (pcs *BaiduPCS) CloudDlListTaskWithContext(ctx context.Context) (cl CloudDlTaskList, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareCloudDlListTaskWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -214,6 +247,10 @@ func (pcs *BaiduPCS) CloudDlListTask() (cl CloudDlTaskList, pcsError pcserror.Er
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationCloudDlListTask, dataReadCloser, &taskInfo)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -241,14 +278,14 @@ func (pcs *BaiduPCS) CloudDlListTask() (cl CloudDlTaskList, pcsError pcserror.Er
 	return cl, nil
 }
 
-func (pcs *BaiduPCS) cloudDlManipTask(op string, taskID int64) (pcsError pcserror.Error) {
+func (pcs *BaiduPCS) cloudDlManipTask(ctx context.Context, op string, taskID int64) (pcsError pcserror.Error) {
 	var dataReadCloser io.ReadCloser
 
 	switch op {
 	case OperationCloudDlCancelTask:
-		dataReadCloser, pcsError = pcs.PrepareCloudDlCancelTask(taskID)
+		dataReadCloser, pcsError = pcs.PrepareCloudDlCancelTaskWithContext(ctx, taskID)
 	case OperationCloudDlDeleteTask:
-		dataReadCloser, pcsError = pcs.PrepareCloudDlDeleteTask(taskID)
+		dataReadCloser, pcsError = pcs.PrepareCloudDlDeleteTaskWithContext(ctx, taskID)
 	default:
 		panic("unknown op, " + op)
 	}
@@ -259,22 +296,42 @@ func (pcs *BaiduPCS) cloudDlManipTask(op string, taskID int64) (pcsError pcserro
 	defer dataReadCloser.Close()
 
 	errInfo := pcserror.DecodePCSJSONError(op, dataReadCloser)
+	if err := ctx.Err(); err != nil {
+		cancelInfo := pcserror.NewPCSErrorInfo(op)
+		cancelInfo.SetNetError(err)
+		return cancelInfo
+	}
 	return errInfo
 }
 
 // CloudDlCancelTask 取消离线下载任务
 func (pcs *BaiduPCS) CloudDlCancelTask(taskID int64) (pcsError pcserror.Error) {
-	return pcs.cloudDlManipTask(OperationCloudDlCancelTask, taskID)
+	return pcs.CloudDlCancelTaskWithContext(context.Background(), taskID)
+}
+
+// CloudDlCancelTaskWithContext bounds the request by ctx.
+func (pcs *BaiduPCS) CloudDlCancelTaskWithContext(ctx context.Context, taskID int64) (pcsError pcserror.Error) {
+	return pcs.cloudDlManipTask(ctx, OperationCloudDlCancelTask, taskID)
 }
 
 // CloudDlDeleteTask 删除离线下载任务
 func (pcs *BaiduPCS) CloudDlDeleteTask(taskID int64) (pcsError pcserror.Error) {
-	return pcs.cloudDlManipTask(OperationCloudDlDeleteTask, taskID)
+	return pcs.CloudDlDeleteTaskWithContext(context.Background(), taskID)
+}
+
+// CloudDlDeleteTaskWithContext bounds the request by ctx.
+func (pcs *BaiduPCS) CloudDlDeleteTaskWithContext(ctx context.Context, taskID int64) (pcsError pcserror.Error) {
+	return pcs.cloudDlManipTask(ctx, OperationCloudDlDeleteTask, taskID)
 }
 
 // CloudDlClearTask 清空离线下载任务记录
 func (pcs *BaiduPCS) CloudDlClearTask() (total int, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareCloudDlClearTask()
+	return pcs.CloudDlClearTaskWithContext(context.Background())
+}
+
+// CloudDlClearTaskWithContext bounds history clearing and decoding by ctx.
+func (pcs *BaiduPCS) CloudDlClearTaskWithContext(ctx context.Context) (total int, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareCloudDlClearTaskWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -287,6 +344,10 @@ func (pcs *BaiduPCS) CloudDlClearTask() (total int, pcsError pcserror.Error) {
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationCloudDlClearTask, dataReadCloser, &clearInfo)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return 0, errInfo
+	}
 	if pcsError != nil {
 		return
 	}

@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
 
@@ -45,7 +46,12 @@ type (
 
 // RecycleList 列出回收站文件列表
 func (pcs *BaiduPCS) RecycleList(page int) (fdl RecycleFDInfoList, panError pcserror.Error) {
-	dataReadCloser, panError := pcs.PrepareRecycleList(page)
+	return pcs.RecycleListWithContext(context.Background(), page)
+}
+
+// RecycleListWithContext cancels listing and response decoding.
+func (pcs *BaiduPCS) RecycleListWithContext(ctx context.Context, page int) (fdl RecycleFDInfoList, panError pcserror.Error) {
+	dataReadCloser, panError := pcs.PrepareRecycleListWithContext(ctx, page)
 	if panError != nil {
 		return
 	}
@@ -58,6 +64,10 @@ func (pcs *BaiduPCS) RecycleList(page int) (fdl RecycleFDInfoList, panError pcse
 	}
 
 	panError = pcserror.HandleJSONParse(OperationRecycleList, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if panError != nil {
 		return
 	}
@@ -67,7 +77,12 @@ func (pcs *BaiduPCS) RecycleList(page int) (fdl RecycleFDInfoList, panError pcse
 
 // RecycleRestore 还原回收站文件或目录
 func (pcs *BaiduPCS) RecycleRestore(fidList ...int64) (sussFsIDList []*FsIDJSON, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareRecycleRestore(fidList...)
+	return pcs.RecycleRestoreWithContext(context.Background(), fidList...)
+}
+
+// RecycleRestoreWithContext cancels restoration requests and response decoding.
+func (pcs *BaiduPCS) RecycleRestoreWithContext(ctx context.Context, fidList ...int64) (sussFsIDList []*FsIDJSON, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareRecycleRestoreWithContext(ctx, fidList...)
 	if pcsError != nil {
 		return
 	}
@@ -80,12 +95,21 @@ func (pcs *BaiduPCS) RecycleRestore(fidList ...int64) (sussFsIDList []*FsIDJSON,
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationRecycleRestore, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	return jsonData.Extra.List, pcsError
 }
 
 // RecycleDelete 删除回收站文件或目录
 func (pcs *BaiduPCS) RecycleDelete(fidList ...int64) (panError pcserror.Error) {
-	dataReadCloser, panError := pcs.PrepareRecycleDelete(fidList...)
+	return pcs.RecycleDeleteWithContext(context.Background(), fidList...)
+}
+
+// RecycleDeleteWithContext cancels permanent deletion requests and decoding.
+func (pcs *BaiduPCS) RecycleDeleteWithContext(ctx context.Context, fidList ...int64) (panError pcserror.Error) {
+	dataReadCloser, panError := pcs.PrepareRecycleDeleteWithContext(ctx, fidList...)
 	if panError != nil {
 		return
 	}
@@ -93,12 +117,22 @@ func (pcs *BaiduPCS) RecycleDelete(fidList ...int64) (panError pcserror.Error) {
 	defer dataReadCloser.Close()
 
 	panError = pcserror.DecodePanJSONError(OperationRecycleDelete, dataReadCloser)
+	if err := ctx.Err(); err != nil {
+		errInfo := pcserror.NewPanErrorInfo(OperationRecycleDelete)
+		errInfo.SetNetError(err)
+		return errInfo
+	}
 	return
 }
 
 // RecycleClear 清空回收站
 func (pcs *BaiduPCS) RecycleClear() (sussNum int, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareRecycleClear()
+	return pcs.RecycleClearWithContext(context.Background())
+}
+
+// RecycleClearWithContext cancels clearing requests and response decoding.
+func (pcs *BaiduPCS) RecycleClearWithContext(ctx context.Context) (sussNum int, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareRecycleClearWithContext(ctx)
 	if pcsError != nil {
 		return
 	}
@@ -111,5 +145,9 @@ func (pcs *BaiduPCS) RecycleClear() (sussNum int, pcsError pcserror.Error) {
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationRecycleClear, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return 0, errInfo
+	}
 	return jsonData.Extra.SussNum, pcsError
 }

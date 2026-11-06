@@ -161,12 +161,9 @@ func RunWorker(args []string) error {
 			}
 		}, IgnoreCachedMatch: true, LocalFileChecksum: checksum.NewLocalFileChecksum(args[2], int(baidupcs.SliceMD5Size)), SavePath: args[3], PCS: pcs, UploadingDatabase: db, Parallel: 1, PrintFormat: pcsupload.DefaultPrintFormat, UploadStatistic: statistic, Policy: baidupcs.OverWritePolicy}, 0)
 	} else if kind == "download" || kind == "probe" {
-		info, e := pcs.FilesDirectoriesMeta(args[2])
+		info, e := workerDownloadInfo(ctx, pcs, args[2])
 		if e != nil {
 			return e
-		}
-		if info.Isdir {
-			return errors.New("worker expects a file")
 		}
 		if kind == "download" {
 			if err = os.MkdirAll(filepath.Dir(args[3]), 0755); err != nil {
@@ -208,6 +205,20 @@ func RunWorker(args []string) error {
 		return errors.New("transfer failed")
 	}
 	return nil
+}
+
+func workerDownloadInfo(ctx context.Context, pcs *baidupcs.BaiduPCS, remote string) (*baidupcs.FileDirectory, error) {
+	info, err := pcs.FilesDirectoriesMetaWithContext(ctx, remote)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if info.Isdir {
+		return nil, errors.New("worker expects a file")
+	}
+	return info, nil
 }
 
 // Injectable transfer boundary for account-isolation regression tests.

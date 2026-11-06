@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"context"
 	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
@@ -126,7 +127,12 @@ func (pcs *BaiduPCS) DownloadStreamFile(path string, downloadFunc DownloadFunc) 
 
 // LocateDownloadWithUserAgent 获取下载链接
 func (pcs *BaiduPCS) LocateDownload(pcspath string) (info *URLInfo, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareLocateDownload(pcspath)
+	return pcs.LocateDownloadWithContext(context.Background(), pcspath)
+}
+
+// LocateDownloadWithContext keeps discovery and response decoding within ctx.
+func (pcs *BaiduPCS) LocateDownloadWithContext(ctx context.Context, pcspath string) (info *URLInfo, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareLocateDownloadWithContext(ctx, pcspath)
 	if dataReadCloser != nil {
 		defer dataReadCloser.Close()
 	}
@@ -140,6 +146,10 @@ func (pcs *BaiduPCS) LocateDownload(pcspath string) (info *URLInfo, pcsError pcs
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationLocateDownload, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
 	}

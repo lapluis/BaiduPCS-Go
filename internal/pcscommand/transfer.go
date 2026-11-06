@@ -1,6 +1,7 @@
 package pcscommand
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,14 @@ func (r *ShareTransferResult) downloadPaths() []string {
 // instead of printing so that both the legacy command and pcsclone can report
 // them with their own output and exit-code rules.
 func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, opt *baidupcs.TransferOption) (*ShareTransferResult, error) {
+	return ShareTransferToWithContext(context.Background(), pcs, params, savePath, opt)
+}
+
+// ShareTransferToWithContext keeps every transfer stage within the caller's lifetime.
+func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, params []string, savePath string, opt *baidupcs.TransferOption) (*ShareTransferResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(params) == 0 || strings.TrimSpace(params[0]) == "" {
 		return nil, errors.New("分享链接不能为空")
 	}
@@ -82,7 +91,10 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		return nil, errors.New("链接地址或提取码非法")
 	}
 
-	tokens := pcs.AccessSharePage(featureStr, true)
+	tokens := pcs.AccessSharePageWithContext(ctx, featureStr, true)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if tokens["ErrMsg"] != "0" {
 		return nil, errors.New(tokens["ErrMsg"])
 	}
@@ -93,19 +105,25 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		"clienttype": "1",
 		"uk":         tokens["share_uk"],
 	}).String()
-	res := pcs.PostShareQuery(verifyURL, link, map[string]string{
+	res := pcs.PostShareQueryWithContext(ctx, verifyURL, link, map[string]string{
 		"pwd":       extraCode,
 		"vcode":     "null",
 		"vcode_str": "null",
 		"bdstoken":  tokens["bdstoken"],
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if res["ErrMsg"] != "0" {
 		return nil, errors.New(res["ErrMsg"])
 	}
 
 	pcs.UpdatePCSCookies(true)
 
-	tokens = pcs.AccessSharePage(featureStr, false)
+	tokens = pcs.AccessSharePageWithContext(ctx, featureStr, false)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if tokens["ErrMsg"] != "0" {
 		return nil, errors.New(tokens["ErrMsg"])
 	}
@@ -118,7 +136,10 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 		"channel":  "chunlei",
 	}
 	queryShareInfoURL := pcs.GenerateShareQueryURL("list", featureMap).String()
-	transMetas := pcs.ExtractShareInfo(queryShareInfoURL, tokens["shareid"], tokens["share_uk"], tokens["bdstoken"])
+	transMetas := pcs.ExtractShareInfoWithContext(ctx, queryShareInfoURL, tokens["shareid"], tokens["share_uk"], tokens["bdstoken"])
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if transMetas["ErrMsg"] != "success" {
 		return nil, errors.New(transMetas["ErrMsg"])
 	}
@@ -138,10 +159,16 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 	if transMetas["item_num"] != "1" && opt.Collect {
 		transMetas["filename"] += "等文件"
 		transMetas["path"] = path.Join(savePath, transMetas["filename"])
-		if err = pcs.Mkdir(transMetas["path"]); err != nil {
+		if err = pcs.MkdirWithContext(ctx, transMetas["path"]); err != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return nil, cancelErr
+			}
 			// Re-transferring the same share may find the collect directory
 			// already present; an existing directory is not an error.
-			info, metaErr := pcs.FilesDirectoriesMeta(transMetas["path"])
+			info, metaErr := pcs.FilesDirectoriesMetaWithContext(ctx, transMetas["path"])
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return nil, cancelErr
+			}
 			if metaErr != nil || info == nil || !info.Isdir {
 				return nil, fmt.Errorf("创建汇总目录失败: %w", err)
 			}
@@ -149,7 +176,10 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 	}
 	transMetas["referer"] = "https://pan.baidu.com/s/" + featureStr
 	pcs.UpdatePCSCookies(true)
-	resp := pcs.GenerateRequestQuery("POST", transMetas)
+	resp := pcs.GenerateRequestQueryWithContext(ctx, "POST", transMetas)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if resp["ErrNo"] != "0" {
 		return nil, errors.New(resp["ErrMsg"])
 	}

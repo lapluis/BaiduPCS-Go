@@ -1,8 +1,10 @@
 package baidupcs
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
@@ -10,9 +12,9 @@ import (
 type (
 	// ShareOption 分享可选项
 	ShareOption struct {
-		Password string // 密码
-		Period   int    // 有效期
-		IsCombined bool // 是否将密码输出到分享链接
+		Password   string // 密码
+		Period     int    // 有效期
+		IsCombined bool   // 是否将密码输出到分享链接
 	}
 
 	// Shared 分享信息
@@ -58,10 +60,35 @@ type (
 	}
 
 	shareListJSON struct {
-		List ShareRecordInfoList `json:"list"`
+		List shareListRecords `json:"list"`
 		*pcserror.PanErrorInfo
 	}
 )
+
+// Empty share lists may be encoded as an object by the remote API.
+// Normalize that field during decoding so remote errors remain distinguishable.
+type shareListRecords ShareRecordInfoList
+
+func (list *shareListRecords) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return err
+		}
+		if len(object) != 0 {
+			return errors.New("share list must be an array or empty object")
+		}
+		*list = shareListRecords{}
+		return nil
+	}
+	var records ShareRecordInfoList
+	if err := json.Unmarshal(data, &records); err != nil {
+		return err
+	}
+	*list = shareListRecords(records)
+	return nil
+}
 
 var (
 	// ErrShareLinkNotFound 未找到分享链接
@@ -70,11 +97,16 @@ var (
 
 // ShareSet 分享文件
 func (pcs *BaiduPCS) ShareSet(paths []string, option *ShareOption) (s *Shared, pcsError pcserror.Error) {
+	return pcs.ShareSetWithContext(context.Background(), paths, option)
+}
+
+// ShareSetWithContext cancels creation requests and response decoding.
+func (pcs *BaiduPCS) ShareSetWithContext(ctx context.Context, paths []string, option *ShareOption) (s *Shared, pcsError pcserror.Error) {
 	if option.Password == "" || len(option.Password) != 4 {
 		option = &ShareOption{CreatePasswd(), option.Period, option.IsCombined}
 	}
 
-	dataReadCloser, pcsError := pcs.PrepareSharePSet(paths, option.Password, option.Period)
+	dataReadCloser, pcsError := pcs.PrepareSharePSetWithContext(ctx, paths, option.Password, option.Period)
 	if pcsError != nil {
 		return
 	}
@@ -88,6 +120,10 @@ func (pcs *BaiduPCS) ShareSet(paths []string, option *ShareOption) (s *Shared, p
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationShareSet, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		return
 	}
@@ -104,7 +140,12 @@ func (pcs *BaiduPCS) ShareSet(paths []string, option *ShareOption) (s *Shared, p
 
 // ShareCancel 取消分享
 func (pcs *BaiduPCS) ShareCancel(shareIDs []int64) (pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareShareCancel(shareIDs)
+	return pcs.ShareCancelWithContext(context.Background(), shareIDs)
+}
+
+// ShareCancelWithContext cancels the request and response decoding.
+func (pcs *BaiduPCS) ShareCancelWithContext(ctx context.Context, shareIDs []int64) (pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareShareCancelWithContext(ctx, shareIDs)
 	if pcsError != nil {
 		return
 	}
@@ -112,12 +153,22 @@ func (pcs *BaiduPCS) ShareCancel(shareIDs []int64) (pcsError pcserror.Error) {
 	defer dataReadCloser.Close()
 
 	pcsError = pcserror.DecodePanJSONError(OperationShareCancel, dataReadCloser)
+	if err := ctx.Err(); err != nil {
+		errInfo := pcserror.NewPanErrorInfo(OperationShareCancel)
+		errInfo.SetNetError(err)
+		return errInfo
+	}
 	return
 }
 
 // ShareList 列出分享列表
 func (pcs *BaiduPCS) ShareList(page int) (records ShareRecordInfoList, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareShareList(page)
+	return pcs.ShareListWithContext(context.Background(), page)
+}
+
+// ShareListWithContext cancels listing requests and response decoding.
+func (pcs *BaiduPCS) ShareListWithContext(ctx context.Context, page int) (records ShareRecordInfoList, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareShareListWithContext(ctx, page)
 	if pcsError != nil {
 		return
 	}
@@ -126,20 +177,15 @@ func (pcs *BaiduPCS) ShareList(page int) (records ShareRecordInfoList, pcsError 
 
 	errInfo := pcserror.NewPanErrorInfo(OperationShareList)
 	jsonData := shareListJSON{
-		List:         records,
 		PanErrorInfo: errInfo,
 	}
 
 	pcsError = pcserror.HandleJSONParse(OperationShareList, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
-		// json解析错误
-		if pcsError.GetErrType() == pcserror.ErrTypeJSONParseError {
-			// 服务器更改, List为空时变成{}, 导致解析错误
-			if strings.Contains(pcsError.GetError().Error(), `"list":{}`) {
-				// 返回空列表
-				return jsonData.List, nil
-			}
-		}
 		return
 	}
 
@@ -149,12 +195,17 @@ func (pcs *BaiduPCS) ShareList(page int) (records ShareRecordInfoList, pcsError 
 		return nil, errInfo
 	}
 
-	return jsonData.List, nil
+	return ShareRecordInfoList(jsonData.List), nil
 }
 
 //ShareSURLInfo 获取分享的详细信息, 包含密码
 func (pcs *BaiduPCS) ShareSURLInfo(shareID int64) (info *ShareSURLInfo, pcsError pcserror.Error) {
-	dataReadCloser, pcsError := pcs.PrepareShareSURLInfo(shareID)
+	return pcs.ShareSURLInfoWithContext(context.Background(), shareID)
+}
+
+// ShareSURLInfoWithContext cancels detail requests and response decoding.
+func (pcs *BaiduPCS) ShareSURLInfoWithContext(ctx context.Context, shareID int64) (info *ShareSURLInfo, pcsError pcserror.Error) {
+	dataReadCloser, pcsError := pcs.PrepareShareSURLInfoWithContext(ctx, shareID)
 	if pcsError != nil {
 		return
 	}
@@ -167,10 +218,19 @@ func (pcs *BaiduPCS) ShareSURLInfo(shareID int64) (info *ShareSURLInfo, pcsError
 		PanErrorInfo: errInfo,
 	}
 
-	pcsError = pcserror.HandleJSONParse(OperationShareList, dataReadCloser, &jsonData)
+	pcsError = pcserror.HandleJSONParse(OperationShareSURLInfo, dataReadCloser, &jsonData)
+	if err := ctx.Err(); err != nil {
+		errInfo.SetNetError(err)
+		return nil, errInfo
+	}
 	if pcsError != nil {
 		// json解析错误
 		return
+	}
+	if jsonData.ShareSURLInfo == nil {
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = errors.New("share details are missing")
+		return nil, errInfo
 	}
 
 	// 去掉0

@@ -441,7 +441,7 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 		if !ok {
 			return errors.New("quota requires a remote")
 		}
-		total, used, err := remote.PCS.QuotaInfo()
+		total, used, err := remote.PCS.QuotaInfoWithContext(ctx)
 		if err != nil {
 			return err
 		}

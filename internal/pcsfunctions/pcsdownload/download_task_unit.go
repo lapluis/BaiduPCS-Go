@@ -318,6 +318,10 @@ func (dtu *DownloadTaskUnit) panHTTPClient() *requester.HTTPClient {
 }
 
 func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult) {
+	if dtu.Context != nil && dtu.Context.Err() != nil {
+		result.NeedRetry = false
+		return
+	}
 	result.NeedRetry = downloadNeedsRetry(result.Err)
 }
 
@@ -377,7 +381,11 @@ func (dtu *DownloadTaskUnit) execPanDownload(dlink string, result *taskframework
 }
 
 func (dtu *DownloadTaskUnit) locateDownload(result *taskframework.TaskUnitRunResult) (ok bool) {
-	rawDlinks, err := GetLocateDownloadLinks(dtu.PCS, dtu.PcsPath)
+	ctx := dtu.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rawDlinks, err := GetLocateDownloadLinksWithContext(ctx, dtu.PCS, dtu.PcsPath)
 	if err != nil {
 		result.ResultMessage = StrDownloadGetDlinkFailed
 		result.Err = err
@@ -560,8 +568,12 @@ func createEmptyDownloadFile(filename string, overwrite bool) error {
 
 func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 	result = &taskframework.TaskUnitRunResult{}
-	if dtu.Context != nil && dtu.Context.Err() != nil {
-		result.Err = dtu.Context.Err()
+	ctx := dtu.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		result.Err = ctx.Err()
 		return
 	}
 	// 获取文件信息
@@ -570,7 +582,7 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 		// 没有获取文件信息
 		// 如果是动态添加的下载任务, 是会写入文件信息的
 		// 如果该任务重试过, 则应该再获取一次文件信息
-		dtu.FileInfo, err = dtu.PCS.FilesDirectoriesMeta(dtu.PcsPath)
+		dtu.FileInfo, err = dtu.PCS.FilesDirectoriesMetaWithContext(ctx, dtu.PcsPath)
 		if err != nil {
 			// 如果不是未登录或文件不存在, 则不重试
 			result.ResultMessage = "获取下载路径信息错误"
@@ -578,6 +590,10 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 			dtu.handleError(result)
 			return
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		result.Err = err
+		return
 	}
 
 	// 输出文件信息

@@ -546,7 +546,7 @@ func runAbout(c *commandContext) error {
 	if !ok {
 		return usageErrorf("about requires a remote path such as bd: or bd:/directory")
 	}
-	total, used, pcsErr := remote.PCS.QuotaInfo()
+	total, used, pcsErr := remote.PCS.QuotaInfoWithContext(c.ctx)
 	if pcsErr != nil {
 		return operationError(pcsErr)
 	}
