@@ -246,8 +246,9 @@ func (mt *Monitor) ResetFailedAndNetErrorWorkers() {
 		}
 
 	reset:
-		mt.workers[k].Reset()
-		mt.resetController.AddResetNum()
+		if mt.workers[k].tryReset() {
+			mt.resetController.AddResetNum()
+		}
 	}
 }
 
@@ -415,7 +416,7 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 	switch status.StatusCode() {
 	case StatusCodeInternalError: // fatal errors must reach completion checks
 		return
-	case StatusCodePending, StatusCodeReseted:
+	case StatusCodeInit, StatusCodePending, StatusCodeReseted:
 		fallthrough
 	case StatusCodeWaitToWrite, StatusCodeRateLimited: // 等待磁盘或限速额度
 		fallthrough
@@ -424,11 +425,11 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 		return
 	}
 
-	mt.resetController.AddResetNum()
-
 	// 重设连接
-	pcsverbose.Verbosef("MONITOR: worker[%d] reload\n", worker.ID())
-	worker.Reset()
+	if worker.tryReset() {
+		mt.resetController.AddResetNum()
+		pcsverbose.Verbosef("MONITOR: worker[%d] reload\n", worker.ID())
+	}
 }
 
 func (mt *Monitor) prepareCompletion() {

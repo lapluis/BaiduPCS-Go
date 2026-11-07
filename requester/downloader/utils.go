@@ -14,8 +14,9 @@ import (
 
 var (
 	// ContentRangeRE Content-Range 正则
-	ContentRangeRE       = regexp.MustCompile(`^.*? \d*?-\d*?/(\d*?)$`)
-	contentRangeBoundsRE = regexp.MustCompile(`(?i)^bytes ([0-9]+)-([0-9]+)/([0-9]+|\*)$`)
+	ContentRangeRE = regexp.MustCompile(`^.*? \d*?-\d*?/(\d*?)$`)
+	// HTTP unit names are ASCII. Unicode case folding also accepts a long s.
+	contentRangeBoundsRE = regexp.MustCompile(`^[bB][yY][tT][eE][sS] ([0-9]+)-([0-9]+)/([0-9]+|\*)$`)
 )
 
 func parseContentRangeBounds(value string) (begin, end, total int64, ok bool) {
@@ -38,6 +39,19 @@ func parseContentRangeBounds(value string) (begin, end, total int64, ok bool) {
 	}
 	ok = true
 	return
+}
+
+func acceptsByteRanges(values ...string) bool {
+	// Accept-Ranges is a list of case-insensitive ASCII unit names. Preserve
+	// non-ASCII lookalikes instead of folding them into the bytes token.
+	for _, value := range values {
+		for _, unit := range strings.Split(value, ",") {
+			if strings.ToLower(strings.Trim(unit, " \t")) == DefaultAcceptRanges {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RandomNumber returns a number in [min,max), swapping reversed bounds.

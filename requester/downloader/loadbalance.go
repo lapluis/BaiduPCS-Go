@@ -65,10 +65,26 @@ func DefaultLoadBalancerCompareFunc(info map[string]string, subResp *http.Respon
 	}
 
 	for headerKey, value := range info {
+		if headerKey == "Accept-Ranges" && acceptsByteRanges(value) {
+			if !responseSupportsByteRanges(subResp) {
+				return false
+			}
+			continue
+		}
 		if value != subResp.Header.Get(headerKey) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// Called after file response validation. A partial response proves support;
+// a full response to an explicit Range request proves that Range was ignored.
+func responseSupportsByteRanges(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusPartialContent {
+		return true
+	}
+	return resp.StatusCode == http.StatusOK && acceptsByteRanges(resp.Header.Values("Accept-Ranges")...) &&
+		(resp.Request == nil || resp.Request.Header.Get("Range") == "")
 }

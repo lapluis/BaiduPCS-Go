@@ -26,6 +26,7 @@ func TestInvalidPartialProbeCannotPlanOrTruncate(t *testing.T) {
 		{"empty-unknown-total", "bytes 0-0/*", 0, 0},
 		{"missing-range", "", 8, 4},
 		{"wrong-unit", "items 0-3/8", 8, 4},
+		{"non-ascii-unit", "byteſ 0-3/4", 4, 4},
 		{"reversed-range", "bytes 3-0/8", 8, 4},
 		{"wrong-total", "bytes 0-3/9", 8, 4},
 		{"unknown-total", "bytes 0-3/*", 8, 4},

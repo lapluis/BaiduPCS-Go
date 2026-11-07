@@ -493,12 +493,14 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 		}
 		return result, nil
 	}
-	if err := ctx.Err(); err != nil {
-		for _, a := range p.Actions {
-			if a.Kind == "copy" || a.Kind == "skip" {
-				result.Pending++
-			}
+	// Directory preparation can fail before dispatch begins. Those file
+	// actions remain pending just as they do for an already canceled context.
+	for _, a := range p.Actions {
+		if a.Kind == "copy" || a.Kind == "skip" {
+			result.Pending++
 		}
+	}
+	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	ctx, cancel := context.WithCancelCause(ctx)

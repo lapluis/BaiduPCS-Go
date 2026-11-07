@@ -20,7 +20,7 @@ func TestDefaultPartialProbeReportsEntitySize(t *testing.T) {
 	for _, tc := range []struct {
 		bounds string
 		want   int64
-	}{{"bytes 0-3/8", 8}, {"bytes 0-3/*", -1}} {
+	}{{"bytes 0-3/8", 8}, {"bytes 0-3/*", -1}, {"bYtEs 0-3/8", 8}, {"BYTES 0-3/*", -1}} {
 		for _, contextual := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/context=%v", tc.bounds, contextual), func(t *testing.T) {
 				body := &unusedSingleResponse{Reader: bytes.NewReader([]byte("abcd"))}

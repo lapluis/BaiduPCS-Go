@@ -103,7 +103,7 @@ func TestCompletedWorkerResetDoesNotRestart(t *testing.T) {
 			var cause error
 			if state == StatusCodeCanceled {
 				cause = errors.New("original cancellation")
-				w.err = cause
+				w.setError(cause)
 			}
 			resets, calls := 0, 0
 			w.resetFunc = func() { resets++ }

@@ -15,12 +15,12 @@ import (
 
 func TestSuppliedFirstInfoHonorsRangeCapability(t *testing.T) {
 	for _, size := range []int64{8, -1} {
-		for _, ranges := range []string{"", "none", "items", "bytes"} {
+		for _, ranges := range []string{"", "none", "items", "bytes", "Bytes", "BYTES", "byteſ", "items, BYTES", "BYTES, items"} {
 			t.Run(fmt.Sprintf("%d/%s", size, ranges), func(t *testing.T) {
 				var calls atomic.Int32
 				content := []byte("abcdefgh")
 				wantRange := ""
-				if size >= 0 && ranges == "bytes" {
+				if size >= 0 && (ranges == "bytes" || ranges == "Bytes" || ranges == "BYTES" || ranges == "items, BYTES" || ranges == "BYTES, items") {
 					wantRange = "bytes=0-7"
 				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

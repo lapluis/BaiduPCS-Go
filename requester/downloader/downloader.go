@@ -29,6 +29,15 @@ var BlockSizeList = [4]int64{256 * converter.KB, 512 * converter.KB, 1 * convert
 var ErrResumeSizeMismatch = errors.New("download resume size does not match remote file")
 var ErrRemoteChanged = errors.New("remote download entity changed")
 
+// A probe body can be released early or transferred to a worker while Execute
+// retains fallback cleanup. All owners must share the first Close result.
+type sharedProbeBody struct {
+	io.ReadCloser
+	close func() error
+}
+
+func (body *sharedProbeBody) Close() error { return body.close() }
+
 type (
 	// Downloader 下载
 	Downloader struct {
@@ -396,6 +405,8 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		var err error
 		contentLength, resp, err = der.checkURL(ctx, der.client, der.durl)
 		if resp != nil {
+			body := resp.Body
+			resp.Body = &sharedProbeBody{ReadCloser: body, close: sync.OnceValue(body.Close)}
 			defer resp.Body.Close()
 		}
 		if err != nil {
@@ -407,10 +418,8 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 			return err
 		}
 
-		acceptRanges := resp.Header.Get("Accept-Ranges")
-		if contentLength < 0 || (resp.StatusCode != http.StatusPartialContent && acceptRanges != DefaultAcceptRanges) || (resp.StatusCode == http.StatusOK && resp.Request != nil && resp.Request.Header.Get("Range") != "") {
-			acceptRanges = ""
-		} else {
+		acceptRanges := ""
+		if contentLength >= 0 && responseSupportsByteRanges(resp) {
 			acceptRanges = DefaultAcceptRanges
 		}
 
@@ -419,8 +428,10 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		der.firstInfo.AcceptRanges = acceptRanges
 		pcsverbose.Verbosef("DEBUG: download task: URL: %s, Referer: %s\n", resp.Request.URL, resp.Request.Referer())
 	}
-	if der.firstInfo.AcceptRanges != DefaultAcceptRanges || der.firstInfo.ContentLength < 0 {
+	if !acceptsByteRanges(der.firstInfo.AcceptRanges) || der.firstInfo.ContentLength < 0 {
 		der.firstInfo.AcceptRanges = ""
+	} else {
+		der.firstInfo.AcceptRanges = DefaultAcceptRanges
 	}
 	if strings.HasPrefix(der.firstInfo.ETag, "W/") {
 		// Weak validators cannot prove byte identity across ranges and MUST

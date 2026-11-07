@@ -44,19 +44,26 @@ func TestDownloadWithPartialURLProbe(t *testing.T) {
 
 func TestWorkerValidatesResponseRangeBeforeWriting(t *testing.T) {
 	for _, tc := range []struct {
-		name, header string
-		status       int
-		valid        bool
+		name, header   string
+		status         int
+		valid, chunked bool
 	}{
-		{"matching", "bytes 4-7/8", 206, true},
-		{"wrong_begin", "bytes 0-3/8", 206, false},
-		{"wrong_end", "bytes 4-6/8", 206, false},
-		{"wrong_total", "bytes 4-7/9", 206, false},
-		{"missing", "", 206, false},
-		{"wrong_unit", "items 4-7/8", 206, false},
-		{"overflow", "bytes 4-7/9223372036854775808", 206, false},
-		{"unknown_total", "bytes 4-7/*", 206, false},
-		{"ignored_range", "", 200, false},
+		{"matching", "bytes 4-7/8", 206, true, false},
+		{"matching_mixed_case", "bYtEs 4-7/8", 206, true, false},
+		{"matching_chunked", "bytes 4-7/8", 206, true, true},
+		{"matching_uppercase_chunked", "BYTES 4-7/8", 206, true, true},
+		{"wrong_begin", "bytes 0-3/8", 206, false, false},
+		{"wrong_end", "bytes 4-6/8", 206, false, false},
+		{"wrong_total", "bytes 4-7/9", 206, false, false},
+		{"missing", "", 206, false, false},
+		{"wrong_unit", "items 4-7/8", 206, false, false},
+		{"non_ascii_unit", "byteſ 4-7/8", 206, false, false},
+		{"non_ascii_unit_chunked", "byteſ 4-7/8", 206, false, true},
+		{"overflow", "bytes 4-7/9223372036854775808", 206, false, false},
+		{"unknown_total", "bytes 4-7/*", 206, false, false},
+		{"ignored_range", "", 200, false, false},
+		{"wrong_begin_chunked", "bytes 0-3/8", 206, false, true},
+		{"missing_chunked", "", 206, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,8 +71,13 @@ func TestWorkerValidatesResponseRangeBeforeWriting(t *testing.T) {
 					t.Errorf("unexpected request range: %s", r.Header.Get("Range"))
 				}
 				w.Header().Set("Content-Range", tc.header)
-				w.Header().Set("Content-Length", "4")
+				if !tc.chunked {
+					w.Header().Set("Content-Length", "4")
+				}
 				w.WriteHeader(tc.status)
+				if tc.chunked {
+					w.(http.Flusher).Flush()
+				}
 				w.Write([]byte("4567"))
 			}))
 			defer server.Close()

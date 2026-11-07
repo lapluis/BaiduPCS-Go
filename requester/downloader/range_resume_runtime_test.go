@@ -19,6 +19,15 @@ import (
 )
 
 func TestContextCancelPersistsRangesAndResumesExactBytes(t *testing.T) {
+	for _, chunked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chunked=%t", chunked), func(t *testing.T) {
+			testContextCancelPersistsRangesAndResumesExactBytes(t, chunked)
+		})
+	}
+}
+
+func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked bool) {
+	t.Helper()
 	data := bytes.Repeat([]byte("range-fixture-"), 150000)
 	var stall atomic.Bool
 	stall.Store(true)
@@ -37,9 +46,14 @@ func TestContextCancelPersistsRangesAndResumesExactBytes(t *testing.T) {
 		}
 		w.Header().Set("ETag", `"v1"`)
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", strconv.FormatInt(end-begin+1, 10))
+		if !chunked {
+			w.Header().Set("Content-Length", strconv.FormatInt(end-begin+1, 10))
+		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", begin, end, len(data)))
 		w.WriteHeader(206)
+		if chunked {
+			w.(http.Flusher).Flush()
+		}
 		if stall.Load() && !(begin == 0 && end == 32767) {
 			last := min(end+1, begin+16384)
 			_, _ = w.Write(data[begin:last])
@@ -63,6 +77,9 @@ func TestContextCancelPersistsRangesAndResumesExactBytes(t *testing.T) {
 		d := NewDownloader(server.URL, f, &Config{Mode: transfer.RangeGenMode_BlockSize, MaxParallel: 4, CacheSize: 8192, BlockSize: 128 * 1024, InstanceStatePath: state})
 		d.SetDURLCheckFunc(func(c *requester.HTTPClient, url string) (int64, *http.Response, error) {
 			resp, err := c.ReqWithContext(ctx, http.MethodGet, url, nil, map[string]string{"Range": "bytes=0-32767"})
+			if chunked && resp != nil && resp.ContentLength != -1 {
+				t.Errorf("chunked fixture exposed a known length: %d", resp.ContentLength)
+			}
 			return int64(len(data)), resp, err
 		})
 		return d

@@ -21,10 +21,10 @@ type (
 		totalSize          int64 // 整个文件的大小, worker请求range时会获取尝试获取该值, 如果不匹配, 则返回错误
 		cacheSize          int
 		wrange             *transfer.Range
-		speedsStat         *speeds.Speeds
-		id                 int    //id
-		url                string //下载地址
-		referer            string //来源地址
+		speedsStat         speeds.Speeds // Zero value is ready for concurrent observation.
+		id                 int           //id
+		url                string        //下载地址
+		referer            string        //来源地址
 		etag, lastModified string
 		acceptRanges       string
 		client             *requester.HTTPClient
@@ -37,14 +37,15 @@ type (
 		controlMu          sync.Mutex
 		paused             bool
 		pauseVersion       uint64
+		cancelVersion      uint64
 		pauseCancel        context.CancelFunc
 
-		workerCancelFunc       context.CancelFunc
-		resetFunc              context.CancelFunc
-		readRespBodyCancelFunc func()
-		err                    error //错误信息
-		status                 WorkerStatus
-		downloadStatus         *transfer.DownloadStatus //总的下载状态
+		workerCancelFunc context.CancelFunc
+		resetFunc        context.CancelFunc
+		errMu            sync.RWMutex
+		lastError        error // Protected by errMu; progress reads during Execute.
+		status           WorkerStatus
+		downloadStatus   *transfer.DownloadStatus //总的下载状态
 	}
 
 	// WorkerList worker列表
@@ -85,9 +86,6 @@ func (wer *Worker) lazyInit() {
 		// 取消多线程下载
 		wer.acceptRanges = ""
 		wer.wrange.StoreEnd(-2)
-	}
-	if wer.speedsStat == nil {
-		wer.speedsStat = &speeds.Speeds{}
 	}
 }
 
@@ -190,33 +188,39 @@ func (wer *Worker) resume(start bool) {
 
 // Cancel 取消下载
 func (wer *Worker) Cancel() error {
-	if wer.workerCancelFunc == nil {
+	wer.controlMu.Lock()
+	cancel := wer.workerCancelFunc
+	if cancel == nil {
+		wer.controlMu.Unlock()
 		return errors.New("cancelFunc not set")
 	}
-	wer.workerCancelFunc()
-	if wer.readRespBodyCancelFunc != nil {
-		wer.readRespBodyCancelFunc()
-	}
+	wer.cancelVersion++
+	wer.controlMu.Unlock()
+	cancel()
 	return nil
 }
 
 // Reset 重设连接
 func (wer *Worker) Reset() {
+	wer.tryReset()
+}
+
+// tryReset reports whether a restart was accepted, so monitors only charge
+// their connection budget when a new execution has actually been scheduled.
+func (wer *Worker) tryReset() bool {
 	wer.controlMu.Lock()
 	defer wer.controlMu.Unlock()
 	if wer.paused || wer.Completed() {
-		return
+		return false
 	}
 	if wer.resetFunc == nil {
 		pcsverbose.Verbosef("DEBUG: worker: resetFunc not set")
-		return
+		return false
 	}
 	wer.resetFunc()
-	if wer.readRespBodyCancelFunc != nil {
-		wer.readRespBodyCancelFunc()
-	}
 	wer.ClearStatus()
 	wer.runAsync()
+	return true
 }
 
 // Canceled 是否已经取消
@@ -251,7 +255,15 @@ func (wer *Worker) ClearStatus() {
 
 // Err 返回worker错误
 func (wer *Worker) Err() error {
-	return wer.err
+	wer.errMu.RLock()
+	defer wer.errMu.RUnlock()
+	return wer.lastError
+}
+
+func (wer *Worker) setError(err error) {
+	wer.errMu.Lock()
+	wer.lastError = err
+	wer.errMu.Unlock()
 }
 
 func (wer *Worker) runAsync() {
@@ -274,6 +286,7 @@ func (wer *Worker) Execute() {
 		return
 	}
 	pauseVersion := wer.pauseVersion
+	cancelVersion := wer.cancelVersion
 	wer.status.SetStatusCode(StatusCodeInit)
 	wer.controlMu.Unlock()
 	defer func() {
@@ -286,7 +299,7 @@ func (wer *Worker) Execute() {
 			} else {
 				wer.status.SetStatusCode(StatusCodeReseted)
 			}
-			wer.err = nil
+			wer.setError(nil)
 		}
 	}()
 	single := wer.acceptRanges == ""
@@ -307,19 +320,24 @@ func (wer *Worker) Execute() {
 		parentCtx = context.Background()
 	}
 	workerCancelCtx, workerCancelFunc := context.WithCancel(parentCtx)
-	wer.workerCancelFunc = workerCancelFunc
 	defer workerCancelFunc()
 	resetCtx, resetFunc := context.WithCancel(workerCancelCtx)
 	wer.controlMu.Lock()
+	wer.workerCancelFunc = workerCancelFunc
 	wer.resetFunc = resetFunc
 	wer.pauseCancel = resetFunc
+	if wer.cancelVersion != cancelVersion {
+		// A successful Cancel during context construction must not merely
+		// cancel the preceding request's already completed context.
+		workerCancelFunc()
+	}
 	if wer.paused || wer.pauseVersion != pauseVersion {
 		resetFunc()
 	}
 	wer.controlMu.Unlock()
 	defer resetFunc()
 	if err := resetCtx.Err(); err != nil {
-		wer.err = err
+		wer.setError(err)
 		wer.status.SetStatusCode(StatusCodeCanceled)
 		if workerCancelCtx.Err() == nil {
 			wer.status.SetStatusCode(StatusCodeReseted)
@@ -336,13 +354,14 @@ func (wer *Worker) Execute() {
 			}
 			wer.firstResp = nil
 		}
-		wer.err = errors.New("single stream cannot resume from a nonzero offset")
+		wer.setError(errors.New("single stream cannot resume from a nonzero offset"))
 		wer.status.SetStatusCode(StatusCodeInternalError)
 		return
 	}
 	setInterruptedStatus := func() {
-		wer.err = workerCancelCtx.Err()
-		if wer.err != nil {
+		err := workerCancelCtx.Err()
+		wer.setError(err)
+		if err != nil {
 			wer.status.SetStatusCode(StatusCodeCanceled)
 		} else {
 			wer.status.SetStatusCode(StatusCodeReseted)
@@ -369,21 +388,22 @@ func (wer *Worker) Execute() {
 	if wer.firstResp != nil {
 		resp = wer.firstResp // 使用第一个连接
 	} else {
-		resp, wer.err = wer.client.ReqWithContext(resetCtx, http.MethodGet, wer.url, nil, header)
+		var err error
+		resp, err = wer.client.ReqWithContext(resetCtx, http.MethodGet, wer.url, nil, header)
+		wer.setError(err)
 	}
 	if resp != nil {
 		// The reused URL-probe response was opened outside this worker context.
-		stopClose := context.AfterFunc(resetCtx, func() { resp.Body.Close() })
+		// Close once, outside controlMu, and join any in-flight Close on return.
+		closeBody := sync.OnceFunc(func() { resp.Body.Close() })
+		stopClose := context.AfterFunc(resetCtx, closeBody)
 		defer stopClose()
 		defer func() {
-			resp.Body.Close()
+			closeBody()
 			wer.firstResp = nil // 去掉第一个连接
 		}()
-		wer.readRespBodyCancelFunc = func() {
-			resp.Body.Close()
-		}
 	}
-	if wer.err != nil {
+	if wer.Err() != nil {
 		wer.status.SetStatusCode(StatusCodeNetError)
 		return
 	}
@@ -397,33 +417,33 @@ func (wer *Worker) Execute() {
 		http.StatusRequestedRangeNotSatisfiable:
 		// Repeating the same request cannot repair invalid parameters,
 		// missing credentials, a rejected method, or a removed resource.
+		wer.setError(fmt.Errorf("download rejected: HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
 		wer.status.SetStatusCode(StatusCodeInternalError)
-		wer.err = fmt.Errorf("download rejected: HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 		return
 	case 406: // Not Acceptable
+		wer.setError(errors.New(resp.Status))
 		wer.status.SetStatusCode(StatusCodeNetError)
-		wer.err = errors.New(resp.Status)
 		return
 	case 429, 509: // Too Many Requests
+		wer.setError(errors.New(resp.Status))
 		wer.status.SetStatusCode(StatusCodeTooManyConnections)
-		wer.err = errors.New(resp.Status)
 		return
 	default:
+		wer.setError(fmt.Errorf("unexpected http status code, %d, %s", resp.StatusCode, resp.Status))
 		wer.status.SetStatusCode(StatusCodeNetError)
-		wer.err = fmt.Errorf("unexpected http status code, %d, %s", resp.StatusCode, resp.Status)
 		return
 	}
 	if single && resp.StatusCode == http.StatusPartialContent {
+		wer.setError(errors.New("unexpected partial response for full-stream download"))
 		wer.status.SetStatusCode(StatusCodeInternalError)
-		wer.err = errors.New("unexpected partial response for full-stream download")
 		return
 	}
 	// Only successful file responses describe the entity being downloaded.
 	// A throttling/authentication/error document must retain its HTTP error
 	// classification and must not invalidate saved ranges through its ETag.
 	if (wer.etag != "" && resp.Header.Get("ETag") != wer.etag) || (wer.etag == "" && wer.lastModified != "" && resp.Header.Get("Last-Modified") != wer.lastModified) {
+		wer.setError(ErrRemoteChanged)
 		wer.status.SetStatusCode(StatusCodeInternalError)
-		wer.err = ErrRemoteChanged
 		return
 	}
 
@@ -439,15 +459,15 @@ func (wer *Worker) Execute() {
 		expectedLength := requestEnd - requestBegin
 		if initialFull {
 			if requestBegin != 0 || contentLength != wer.totalSize || contentLength < requestEnd {
+				wer.setError(errors.New("initial full response does not cover requested range"))
 				wer.status.SetStatusCode(StatusCodeInternalError)
-				wer.err = errors.New("initial full response does not cover requested range")
 				return
 			}
 		} else {
 			begin, end, total, ok := parseContentRangeBounds(resp.Header.Get("Content-Range"))
 			if resp.StatusCode != http.StatusPartialContent || !ok || begin != requestBegin || (wer.firstResp == nil && end != requestEnd-1) || (wer.firstResp != nil && requestBegin != 0) || (wer.totalSize > 0 && total != wer.totalSize) {
+				wer.setError(fmt.Errorf("unexpected Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), requestBegin, requestEnd-1, wer.totalSize))
 				wer.status.SetStatusCode(StatusCodeInternalError)
-				wer.err = fmt.Errorf("unexpected Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), requestBegin, requestEnd-1, wer.totalSize)
 				return
 			}
 			// The URL probe may return only a prefix of the first block. Its
@@ -457,10 +477,11 @@ func (wer *Worker) Execute() {
 				expectedLength = end - begin + 1
 			}
 		}
-		// 检查请求长度
-		if contentLength != expectedLength && !initialFull {
+		// Chunked responses have no Content-Length. Their validated
+		// Content-Range still bounds the write; early EOF leaves bytes pending.
+		if contentLength >= 0 && contentLength != expectedLength && !initialFull {
+			wer.setError(fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, expectedLength))
 			wer.status.SetStatusCode(StatusCodeNetError)
-			wer.err = fmt.Errorf("Content-Length is unexpected: %d, need %d", contentLength, expectedLength)
 			return
 		}
 	}
@@ -535,8 +556,8 @@ func (wer *Worker) Execute() {
 					if wer.writeMu != nil {
 						wer.writeMu.Unlock()
 					}
+					wer.setError(errors.New("worker already complete"))
 					wer.status.SetStatusCode(StatusCodeCanceled)
-					wer.err = errors.New("worker already complete")
 					return
 				}
 
@@ -554,8 +575,8 @@ func (wer *Worker) Execute() {
 				if writeErr == nil && written != n {
 					writeErr = io.ErrShortWrite
 				}
-				wer.err = writeErr
-				if wer.err != nil {
+				wer.setError(writeErr)
+				if writeErr != nil {
 					if wer.writeMu != nil {
 						wer.writeMu.Unlock() //解锁
 					}
@@ -599,7 +620,7 @@ func (wer *Worker) Execute() {
 				if readErr == io.EOF {
 					readErr = io.ErrUnexpectedEOF
 				}
-				wer.err = readErr
+				wer.setError(readErr)
 				if single {
 					// A full stream cannot resume at the current write offset:
 					// return the error so the enclosing task can restart it.
