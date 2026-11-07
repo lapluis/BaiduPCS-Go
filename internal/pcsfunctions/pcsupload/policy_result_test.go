@@ -42,6 +42,9 @@ func TestUploadPolicySkipHasSuccessfulResult(t *testing.T) {
 			{"conflict-skip", baidupcs.SkipPolicy, 31061, phase == "parts"},
 			{"conflict-overwrite", baidupcs.OverWritePolicy, 31061, false},
 			{"sentinel-overwrite", baidupcs.OverWritePolicy, 114514, false},
+			{"skip-sentinel-rsync", baidupcs.RsyncPolicy, 114514, false},
+			{"rsync-sentinel-overwrite", baidupcs.OverWritePolicy, 1919810, false},
+			{"rsync-sentinel-skip", baidupcs.SkipPolicy, 1919810, false},
 			{"quota-skip", baidupcs.SkipPolicy, 31112, false},
 		} {
 			t.Run(phase+"/"+tc.name, func(t *testing.T) {

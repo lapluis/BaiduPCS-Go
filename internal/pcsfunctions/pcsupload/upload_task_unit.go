@@ -128,7 +128,7 @@ func (utu *UploadTaskUnit) prepareFile() {
 	utu.panFile = panFile
 
 	// 检测断点续传
-	state, err := utu.UploadingDatabase.SearchWithError(&utu.LocalFileChecksum.LocalFileMeta)
+	state, err := utu.verifiedResumeState(ctx)
 	if err != nil {
 		utu.state = nil
 		utu.prepareResult = &taskframework.TaskUnitRunResult{ResultMessage: "读取上传断点失败", Err: errors.Join(err, ctx.Err())}
@@ -140,6 +140,9 @@ func (utu *UploadTaskUnit) prepareFile() {
 	}
 	utu.state = state
 	if utu.state != nil || utu.LocalFileChecksum.LocalFileMeta.BlocksList != nil { // 读取到了断点信息
+		if utu.state == nil {
+			utu.state = &uploader.InstanceState{}
+		}
 		fmt.Printf("[%s] 检测到断点信息, 准备续传...\n", utu.taskInfo.Id())
 		if utu.LocalFileChecksum.LocalFileMeta.BlocksList != nil {
 			utu.Step = StepUploadRapidUpload // 带校验和的断点: 走原握手流程, 顺带秒传检测
@@ -188,7 +191,10 @@ func (utu *UploadTaskUnit) prepareFile() {
 		}
 		if pcsError != nil {
 			errcode := pcsError.GetRemoteErrCode()
-			if errcode != 114514 && errcode != 1919810 {
+			policySkip := pcsError.GetErrType() == pcserror.ErrTypeRemoteError &&
+				((errcode == 114514 && utu.Policy == baidupcs.SkipPolicy) ||
+					(errcode == 1919810 && utu.Policy == baidupcs.RsyncPolicy))
+			if !policySkip {
 				fmt.Printf("[%s] 跳过秒传失败, 开始秒传...\n", utu.taskInfo.Id())
 				utu.Step = StepUploadRapidUpload
 				return
@@ -393,10 +399,12 @@ func (utu *UploadTaskUnit) rapidUpload() (isContinue bool, result *taskframework
 				return
 			case 1919810:
 				// 自定义错误码, 仅在rsync策略下出现
-				result.Succeed = true
-				result.Extra = baidupcs.SkipPolicy
-				result.Err = nil
-				result.ResultMessage = fmt.Sprintf("%s 目标大小未发生改变, 跳过", utu.SavePath)
+				if utu.Policy == baidupcs.RsyncPolicy {
+					result.Succeed = true
+					result.Extra = baidupcs.SkipPolicy
+					result.Err = nil
+					result.ResultMessage = fmt.Sprintf("%s 目标大小未发生改变, 跳过", utu.SavePath)
+				}
 				result.NeedRetry = false
 				return
 			}
@@ -453,11 +461,11 @@ func (utu *UploadTaskUnit) upload() (result *taskframework.TaskUnitRunResult) {
 }
 
 // singleUploadPCSError permits policy skips through ordinary wrappers, but not
-// through a multi-cause error that may contain an independent failure.
+// through multiple causes or a PCS error carrying an underlying failure.
 func singleUploadPCSError(err error) bool {
 	for err != nil {
-		if _, ok := err.(pcserror.Error); ok {
-			return true
+		if pcsErr, ok := err.(pcserror.Error); ok {
+			return pcsErr.GetError() == nil
 		}
 		if composite, ok := err.(interface{ Unwrap() []error }); ok {
 			causes := composite.Unwrap()
@@ -594,7 +602,7 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 			case 1919810:
 				// 自定义错误码, 仅在rsync策略下出现
 				result.ResultMessage = StrUploadFailed
-				if allowPolicySkip {
+				if utu.Policy == baidupcs.RsyncPolicy && allowPolicySkip {
 					result.Succeed = true
 					result.Extra = baidupcs.SkipPolicy
 					result.Err = nil

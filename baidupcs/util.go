@@ -68,8 +68,14 @@ func (pcs *BaiduPCS) CheckIsdirWithContext(ctx context.Context, op string, targe
 	// 很重要, 如果文件存在会直接覆盖!!! 即使是根目录!
 	targetFileSize, isdir, pcsError := pcs.IsdirWithContext(ctx, targetPath)
 	if pcsError != nil {
-		// 忽略远程服务端返回的错误
+		// Only confirmed absence permits upload without known target metadata.
 		if pcsError.GetErrType() != pcserror.ErrTypeRemoteError {
+			return pcsError
+		}
+		switch pcsError.GetRemoteErrCode() {
+		case 31066, -9:
+			// File does not exist.
+		default:
 			return pcsError
 		}
 	}

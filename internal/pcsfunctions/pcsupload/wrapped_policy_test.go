@@ -245,3 +245,44 @@ func TestWrappedExpiredUploadRetainsCheckpointSaveFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestUploadPolicyErrorRetainsInnerFailure(t *testing.T) {
+	for _, phase := range []string{"part", "merge"} {
+		for _, tc := range []struct {
+			policy string
+			code   int
+		}{{baidupcs.SkipPolicy, 114514}, {baidupcs.RsyncPolicy, 1919810}, {baidupcs.SkipPolicy, 31061}} {
+			t.Run(fmt.Sprintf("%s/%d", phase, tc.code), func(t *testing.T) {
+				task, database, original, cleanup := checkpointFailureTask(t)
+				defer cleanup()
+				task.UploadingDatabase.openFile = os.OpenFile
+				task.Policy = tc.policy
+				independent := errors.New("independent inner upload failure")
+				remote := pcserror.NewPanErrorInfo("fixture upload")
+				remote.ErrNo = tc.code
+				remote.SetRemoteError()
+				remote.Err = fmt.Errorf("inner context: %w", independent)
+				var transferErr error = remote
+				if phase == "part" {
+					transferErr = &uploader.MultiError{Err: transferErr, Terminated: true}
+				}
+				backend := &wrappedPolicyBackend{phase: phase, err: transferErr, digestResumeBackend: digestResumeBackend{parts: make(map[int]string)}}
+				u := uploader.NewMultiUploader(backend, rio.NewFileReaderAtLen64(task.LocalFileChecksum.GetFile()), &uploader.MultiUploaderConfig{Parallel: 1, BlockSize: 4}, "/fixture")
+				u.SetInstanceState(task.state)
+				result := task.executeUploader(u)
+				if result.Succeed || result.NeedRetry || result.Extra == baidupcs.SkipPolicy || !errors.Is(result.Err, independent) || !errors.Is(result.Err, remote) {
+					t.Fatalf("policy result hid inner failure: %+v", result)
+				}
+				if data, err := os.ReadFile(database); err != nil || string(data) != string(original) {
+					t.Fatalf("failure changed checkpoint: %q %v", data, err)
+				}
+				if data, err := os.ReadFile(task.LocalFileChecksum.Path); err != nil || string(data) != "abcdefgh" {
+					t.Fatalf("failure changed source: %q %v", data, err)
+				}
+				if task.UploadStatistic.TotalSize() != 0 {
+					t.Fatal("failure counted uploaded bytes")
+				}
+			})
+		}
+	}
+}

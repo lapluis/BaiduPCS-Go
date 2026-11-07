@@ -20,8 +20,9 @@ import (
 )
 
 type digestResumeBackend struct {
-	parts  map[int]string
-	merged bool
+	parts     map[int]string
+	wantParts []string
+	merged    bool
 }
 
 func (*digestResumeBackend) Precreate(context.Context) (string, pcserror.Error) {
@@ -34,7 +35,14 @@ func (b *digestResumeBackend) TmpFile(_ context.Context, _, _ string, id int, _ 
 	return hex.EncodeToString(sum[:]), err
 }
 func (b *digestResumeBackend) CreateSuperFile(_ context.Context, _, _, _ string, _ int64, sums map[int]string) error {
-	for id, data := range []string{"abcd", "efgh"} {
+	want := b.wantParts
+	if want == nil {
+		want = []string{"abcd", "efgh"}
+	}
+	if len(sums) != len(want) {
+		return fmt.Errorf("merge has %d parts, want %d", len(sums), len(want))
+	}
+	for id, data := range want {
 		sum := md5.Sum([]byte(data))
 		if !strings.EqualFold(sums[id], hex.EncodeToString(sum[:])) {
 			return fmt.Errorf("invalid restored checksum for block %d", id)
