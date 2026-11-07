@@ -27,6 +27,14 @@ func (sr *signRes) Timestamp() string {
 }
 
 func (ph *PanHome) Signature() (sign SignRes, err error) {
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+	return ph.signature()
+}
+
+// signature requires mu to be held by the caller.
+func (ph *PanHome) signature() (sign SignRes, err error) {
+	ph.lazyInit()
 	err = ph.getSignInfo()
 	if err != nil {
 		return nil, err

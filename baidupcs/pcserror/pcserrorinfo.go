@@ -7,11 +7,12 @@ import (
 type (
 	// PCSErrInfo PCS错误信息
 	PCSErrInfo struct {
-		Operation string // 正在进行的操作
-		ErrType   ErrType
-		Err       error
-		ErrCode   int    `json:"error_code"` // 错误代码
-		ErrMsg    string `json:"error_msg"`  // 错误消息
+		Operation      string  `json:"-"` // 正在进行的操作，由本地调用方设置
+		ErrType        ErrType `json:"-"`
+		Err            error   `json:"-"`
+		ErrCode        int     `json:"error_code"` // 错误代码
+		ErrMsg         string  `json:"error_msg"`  // 错误消息
+		AlternateErrNo int     `json:"errno,omitempty"`
 	}
 )
 
@@ -52,11 +53,17 @@ func (pcse *PCSErrInfo) GetErrType() ErrType {
 
 // GetRemoteErrCode 获取远端服务器错误代码
 func (pcse *PCSErrInfo) GetRemoteErrCode() int {
+	if pcse.ErrCode == 0 {
+		return pcse.AlternateErrNo
+	}
 	return pcse.ErrCode
 }
 
 // GetRemoteErrMsg 获取远端服务器错误消息
 func (pcse *PCSErrInfo) GetRemoteErrMsg() string {
+	if pcse.ErrCode == 0 && pcse.AlternateErrNo != 0 {
+		return FindPanErr(pcse.AlternateErrNo)
+	}
 	_, msg := findPCSErr(pcse.ErrCode, pcse.ErrMsg)
 	return msg
 }
@@ -82,6 +89,9 @@ func (pcse *PCSErrInfo) Error() string {
 	case ErrTypeNetError:
 		return fmt.Sprintf("%s: %s, %s", pcse.Operation, StrNetError, pcse.Err)
 	case ErrTypeRemoteError:
+		if pcse.ErrCode == 0 && pcse.AlternateErrNo != 0 {
+			return (&PanErrorInfo{Operation: pcse.Operation, ErrType: ErrTypeRemoteError, ErrNo: pcse.AlternateErrNo}).Error()
+		}
 		if pcse.ErrCode == 0 {
 			return fmt.Sprintf("%s: %s", pcse.Operation, StrSuccess)
 		}

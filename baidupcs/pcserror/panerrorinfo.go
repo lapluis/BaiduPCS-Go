@@ -7,10 +7,12 @@ import (
 type (
 	// PanErrorInfo 网盘网页的api错误
 	PanErrorInfo struct {
-		Operation string
-		ErrType   ErrType
-		Err       error
-		ErrNo     int `json:"errno"`
+		Operation        string  `json:"-"`
+		ErrType          ErrType `json:"-"`
+		Err              error   `json:"-"`
+		ErrNo            int     `json:"errno"`
+		AlternateErrCode int     `json:"error_code,omitempty"`
+		AlternateErrMsg  string  `json:"error_msg,omitempty"`
 	}
 )
 
@@ -51,11 +53,18 @@ func (pane *PanErrorInfo) GetErrType() ErrType {
 
 // GetRemoteErrCode 获取远端服务器错误代码
 func (pane *PanErrorInfo) GetRemoteErrCode() int {
+	if pane.ErrNo == 0 {
+		return pane.AlternateErrCode
+	}
 	return pane.ErrNo
 }
 
 // GetRemoteErrMsg 获取远端服务器错误消息
 func (pane *PanErrorInfo) GetRemoteErrMsg() string {
+	if pane.ErrNo == 0 && pane.AlternateErrCode != 0 {
+		_, msg := findPCSErr(pane.AlternateErrCode, pane.AlternateErrMsg)
+		return msg
+	}
 	return FindPanErr(pane.ErrNo)
 }
 
@@ -80,6 +89,9 @@ func (pane *PanErrorInfo) Error() string {
 	case ErrTypeNetError:
 		return fmt.Sprintf("%s: %s, %s", pane.Operation, StrNetError, pane.Err)
 	case ErrTypeRemoteError:
+		if pane.ErrNo == 0 && pane.AlternateErrCode != 0 {
+			return (&PCSErrInfo{Operation: pane.Operation, ErrType: ErrTypeRemoteError, ErrCode: pane.AlternateErrCode, ErrMsg: pane.AlternateErrMsg}).Error()
+		}
 		if pane.ErrNo == 0 {
 			return fmt.Sprintf("%s: %s", pane.Operation, StrSuccess)
 		}

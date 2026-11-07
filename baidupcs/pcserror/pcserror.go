@@ -55,19 +55,66 @@ const (
 // DecodePCSJSONError 解析PCS JSON的错误
 func DecodePCSJSONError(operation string, data io.Reader) Error {
 	errInfo := NewPCSErrorInfo(operation)
-	return HandleJSONParse(operation, data, errInfo)
+	response := struct {
+		*PCSErrInfo
+		ErrNo int `json:"errno"`
+	}{PCSErrInfo: errInfo}
+	if err := HandleJSONParse(operation, data, &response); err != nil {
+		return errInfo
+	}
+	if response.ErrNo != 0 {
+		alternate := NewPanErrorInfo(operation)
+		alternate.ErrNo = response.ErrNo
+		alternate.SetRemoteError()
+		return alternate
+	}
+	return nil
 }
 
 // DecodePanJSONError 解析Pan JSON的错误
 func DecodePanJSONError(operation string, data io.Reader) Error {
 	errInfo := NewPanErrorInfo(operation)
-	return HandleJSONParse(operation, data, errInfo)
+	response := struct {
+		*PanErrorInfo
+		ErrCode int    `json:"error_code"`
+		ErrMsg  string `json:"error_msg"`
+	}{PanErrorInfo: errInfo}
+	if err := HandleJSONParse(operation, data, &response); err != nil {
+		return errInfo
+	}
+	if response.ErrCode != 0 {
+		alternate := NewPCSErrorInfo(operation)
+		alternate.ErrCode, alternate.ErrMsg = response.ErrCode, response.ErrMsg
+		alternate.SetRemoteError()
+		return alternate
+	}
+	return nil
 }
 
 // DecodeXPanJSONError 解析XPan JSON的错误
 func DecodeXPanJSONError(operation string, data io.Reader) Error {
 	errInfo := NewXPanErrorInfo(operation)
-	return HandleJSONParse(operation, data, errInfo)
+	response := struct {
+		*XPanErrorInfo
+		ErrCode int    `json:"error_code"`
+		ErrMsg  string `json:"error_msg"`
+	}{XPanErrorInfo: errInfo}
+	err := HandleJSONParse(operation, data, &response)
+	if err != nil && err.GetErrType() == ErrTypeJSONParseError {
+		return errInfo
+	}
+	// An explicit native errno takes precedence. A synthetic return_type
+	// error must not hide an explicit error from the alternate envelope.
+	if errInfo.ErrNo == 0 && response.ErrCode != 0 {
+		alternate := NewPCSErrorInfo(operation)
+		alternate.ErrCode, alternate.ErrMsg = response.ErrCode, response.ErrMsg
+		alternate.SetRemoteError()
+		return alternate
+	}
+	if err != nil {
+		return errInfo
+	}
+	return nil
 }
 
 // HandleJSONParse 处理解析json

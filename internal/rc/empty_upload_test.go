@@ -37,14 +37,16 @@ func (b *emptyUploadCancelResultBody) Close() error { b.closes++; return nil }
 
 func TestEmptyUploadPreservesCancellationDuringResponseDecoding(t *testing.T) {
 	for _, tc := range []struct {
-		name, payload string
-		status        int
+		name, payload  string
+		status, remote int
 	}{
-		{"success", `{"error_code":0}`, 200},
-		{"remote-error", `{"error_code":31066}`, 200},
-		{"truncated-json", `{`, 200},
-		{"http-remote-error", `{"error_code":31066}`, 403},
-		{"http-success-shaped-error", `{"error_code":0}`, 500},
+		{"success", `{"error_code":0}`, 200, 0},
+		{"remote-error", `{"error_code":31066}`, 200, 31066},
+		{"alternate-error", `{"errno":-9}`, 200, -9},
+		{"alternate-error-with-zero", `{"error_code":0,"errno":-9}`, 200, -9},
+		{"truncated-json", `{`, 200, 0},
+		{"http-remote-error", `{"error_code":31066}`, 403, 31066},
+		{"http-success-shaped-error", `{"error_code":0}`, 500, 0},
 	} {
 		for _, canceled := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/cancel=%t", tc.name, canceled), func(t *testing.T) {
@@ -68,9 +70,9 @@ func TestEmptyUploadPreservesCancellationDuringResponseDecoding(t *testing.T) {
 				if tc.name == "success" && !canceled && err != nil {
 					t.Fatal("healthy upload changed", err)
 				}
-				if strings.Contains(tc.name, "remote-error") {
+				if tc.remote != 0 {
 					var remote pcserror.Error
-					if !errors.As(err, &remote) || remote.GetRemoteErrCode() != 31066 {
+					if !errors.As(err, &remote) || remote.GetRemoteErrCode() != tc.remote {
 						t.Fatalf("remote error lost: %v", err)
 					}
 				}

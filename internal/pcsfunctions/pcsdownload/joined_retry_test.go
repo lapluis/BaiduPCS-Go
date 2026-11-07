@@ -32,6 +32,7 @@ func TestJoinedDownloadRetryHonorsEveryCause(t *testing.T) {
 		{"missing-user", joinedRetryRemote(31045), false},
 		{"missing-file", joinedRetryRemote(31066), false},
 		{"missing-file-alternative", joinedRetryRemote(31297), false},
+		{"pan-missing-file", pcserror.DecodePanJSONError("fixture download", strings.NewReader(`{"errno":-9}`)), false},
 		{"canceled", context.Canceled, false},
 		{"checkpoint", downloader.ErrCheckpointSave, false},
 		{"progress", downloader.ErrProgressCallback, false},

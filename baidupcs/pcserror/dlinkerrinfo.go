@@ -7,11 +7,11 @@ import (
 type (
 	// DlinkErrInfo dlink服务器错误信息
 	DlinkErrInfo struct {
-		Operation string
-		ErrType   ErrType
-		Err       error
-		ErrNo     int    `json:"errno"`
-		Msg       string `json:"msg"`
+		Operation string  `json:"-"`
+		ErrType   ErrType `json:"-"`
+		Err       error   `json:"-"`
+		ErrNo     int     `json:"errno"`
+		Msg       string  `json:"msg"`
 	}
 )
 

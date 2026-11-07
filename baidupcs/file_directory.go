@@ -9,10 +9,10 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/pcstime"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unsafe"
 )
 
 type (
@@ -74,15 +74,6 @@ type (
 		Size           int64 `json:"size"` // 文件大小 (目录为0)
 		IsdirInt       int8  `json:"isdir"`
 		IfhassubdirInt int8  `json:"ifhassubdir"`
-
-		// 对齐
-		_ *fdJSON
-		_ []*fdJSON
-	}
-
-	fdData struct {
-		*pcserror.PCSErrInfo
-		List FileDirectoryList
 	}
 
 	fdDataJSONExport struct {
@@ -150,11 +141,11 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, p
 
 	errInfo := pcserror.NewPCSErrorInfo(OperationFilesDirectoriesMeta)
 	// 服务器返回数据进行处理
-	jsonData := fdData{
+	jsonData := fdDataJSONExport{
 		PCSErrInfo: errInfo,
 	}
 
-	pcsError = pcserror.HandleJSONParse(OperationFilesDirectoriesMeta, dataReadCloser, (*fdDataJSONExport)(unsafe.Pointer(&jsonData)))
+	pcsError = pcserror.HandleJSONParse(OperationFilesDirectoriesMeta, dataReadCloser, &jsonData)
 	if err := ctx.Err(); err != nil {
 		errInfo.SetNetError(err)
 		return nil, errInfo
@@ -163,13 +154,26 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, p
 		return
 	}
 
-	if err := validateFileDirectoryList(OperationFilesDirectoriesMeta, jsonData.List); err != nil {
-		return nil, err
+	data, pcsError = jsonData.fileDirectories(OperationFilesDirectoriesMeta)
+	if pcsError != nil {
+		return nil, pcsError
+	}
+	requested := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		requested[pathpkg.Clean(PathSeparator+p)] = struct{}{}
+	}
+	for i, file := range data {
+		_, matched := requested[pathpkg.Clean(PathSeparator+file.Path)]
+		if file.Path == "" || !matched {
+			return nil, &pcserror.PCSErrInfo{
+				Operation: OperationFilesDirectoriesMeta,
+				ErrType:   pcserror.ErrTypeOthers,
+				Err:       fmt.Errorf("metadata path mismatch at index %d", i),
+			}
+		}
 	}
 	// 修复MD5
-	jsonData.List.fixMD5()
-
-	data = jsonData.List
+	data.fixMD5()
 	return
 }
 
@@ -243,6 +247,11 @@ func (pcs *BaiduPCS) filesDirectoriesListWithContext(ctx context.Context, path s
 	// A listing must use the same ordering for every page.
 	order := *options
 	seen := make(map[int64]struct{}, maxListNum)
+	seenPaths := make(map[string]struct{}, maxListNum)
+	// Relative directory queries may return relative or absolute paths. Compare
+	// their rooted identities while preserving the server's original spelling.
+	listingRoot := pathpkg.Clean(PathSeparator + path)
+	absoluteRoot := pathpkg.IsAbs(directoryCachePath(path))
 
 	for page := 1; page <= maxPage; page++ {
 		dataReadCloser, err := pcs.PrepareFilesDirectoriesListWithContext(ctx, path, &order, maxListNum, page)
@@ -276,14 +285,22 @@ func (pcs *BaiduPCS) filesDirectoriesListWithContext(ctx context.Context, path s
 		// 转换为 FileDirectory 并按 fs_id 去重
 		pageList := make(FileDirectoryList, 0, len(jsonData.List))
 		for _, j := range jsonData.List {
-			if j == nil || j.FsID <= 0 || j.Size < 0 {
+			if j == nil || j.FsID <= 0 || j.Size < 0 || !validDirectoryFlags(j.IsdirInt, j.IfhassubdirInt) {
 				return nil, incompleteListing("invalid entry")
+			}
+			entryPath := pathpkg.Clean(PathSeparator + j.Path)
+			if j.Path == "" || pathpkg.Clean(j.Path) != j.Path || (absoluteRoot && !pathpkg.IsAbs(j.Path)) || entryPath == listingRoot || pathpkg.Dir(entryPath) != listingRoot {
+				return nil, incompleteListing("entry is not a direct child of the requested directory")
+			}
+			if _, ok := seenPaths[entryPath]; ok {
+				return nil, incompleteListing("repeated file path")
 			}
 			if _, ok := seen[j.FsID]; ok {
 				// Partial listings must never be mistaken for a complete snapshot.
 				return nil, incompleteListing("repeated file ID")
 			}
 			seen[j.FsID] = struct{}{}
+			seenPaths[entryPath] = struct{}{}
 			pageList = append(pageList, j.toFileDirectory())
 		}
 		// 修复MD5
@@ -320,11 +337,11 @@ func (pcs *BaiduPCS) SearchWithContext(ctx context.Context, targetPath, keyword 
 	defer dataReadCloser.Close()
 
 	errInfo := pcserror.NewPCSErrorInfo(OperationSearch)
-	jsonData := fdData{
+	jsonData := fdDataJSONExport{
 		PCSErrInfo: errInfo,
 	}
 
-	pcsError = pcserror.HandleJSONParse(OperationSearch, dataReadCloser, (*fdDataJSONExport)(unsafe.Pointer(&jsonData)))
+	pcsError = pcserror.HandleJSONParse(OperationSearch, dataReadCloser, &jsonData)
 	if err := ctx.Err(); err != nil {
 		errInfo.SetNetError(err)
 		return nil, errInfo
@@ -332,15 +349,48 @@ func (pcs *BaiduPCS) SearchWithContext(ctx context.Context, targetPath, keyword 
 	if pcsError != nil {
 		return
 	}
-	if err := validateFileDirectoryList(OperationSearch, jsonData.List); err != nil {
-		return nil, err
+	fdl, pcsError = jsonData.fileDirectories(OperationSearch)
+	if pcsError != nil {
+		return nil, pcsError
 	}
 
 	// 修复MD5
-	jsonData.List.fixMD5()
-
-	fdl = jsonData.List
+	fdl.fixMD5()
 	return
+}
+
+func validDirectoryFlags(dir, subdir int8) bool {
+	return (dir == 0 || dir == 1) && (subdir == 0 || subdir == 1)
+}
+
+func (data *fdDataJSONExport) fileDirectories(operation string) (FileDirectoryList, pcserror.Error) {
+	var files FileDirectoryList
+	if data.List != nil {
+		files = make(FileDirectoryList, len(data.List))
+	}
+	for i, file := range data.List {
+		if file == nil {
+			continue // The common list validation reports null entries.
+		}
+		if !validDirectoryFlags(file.IsdirInt, file.IfhassubdirInt) {
+			return nil, &pcserror.PCSErrInfo{
+				Operation: operation,
+				ErrType:   pcserror.ErrTypeOthers,
+				Err:       fmt.Errorf("invalid file list: invalid directory flag at index %d", i),
+			}
+		}
+		files[i] = &FileDirectory{
+			FsID: file.FsID, AppID: file.AppID,
+			Path: file.Path, Filename: file.Filename,
+			Ctime: file.Ctime, Mtime: file.Mtime, MD5: file.MD5,
+			BlockListJSON: file.BlockListJSON, Size: file.Size,
+			Isdir: file.IsdirInt == 1, Ifhassubdir: file.IfhassubdirInt == 1,
+		}
+	}
+	if err := validateFileDirectoryList(operation, files); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 func validateFileDirectoryList(operation string, files FileDirectoryList) pcserror.Error {
@@ -401,8 +451,8 @@ func (pcs *BaiduPCS) FilesDirectoriesRecurseList(path string, options *OrderOpti
 	if !fd.Isdir { // 不是一个目录
 		handleFileDirectoryFunc(0, path, fd, nil)
 		return FileDirectoryList{fd}
-	} else {
-		handleFileDirectoryFunc(0, path, fd, nil)
+	} else if !handleFileDirectoryFunc(0, path, fd, nil) {
+		return nil
 	}
 
 	data, _ = pcs.recurseList(path, 0, options, filepath.Base(path), handleFileDirectoryFunc)

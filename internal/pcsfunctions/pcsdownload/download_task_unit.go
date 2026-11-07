@@ -353,7 +353,7 @@ func downloadNeedsRetry(err error) bool {
 	if pcsErr, ok := err.(pcserror.Error); ok {
 		if pcsErr.GetErrType() == pcserror.ErrTypeRemoteError {
 			switch pcsErr.GetRemoteErrCode() {
-			case 31045, 31066, 31297: // user or file does not exist
+			case -9, 31045, 31066, 31297: // Pan missing file, or PCS missing user/file.
 				return false
 			}
 		}

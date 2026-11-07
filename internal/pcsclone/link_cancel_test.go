@@ -203,6 +203,23 @@ func TestBaiduLinkAlreadyCanceled(t *testing.T) {
 	}
 }
 
+func TestBaiduLinkRejectsWrongMetadataPath(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("direct=%t/json=%t", direct, jsonOutput), func(t *testing.T) {
+				calls := 0
+				c, out := linkCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					io.WriteString(w, `{"error_code":0,"list":[{"fs_id":1,"path":"/other","size":3}]}`)
+				}, direct, jsonOutput)
+				if err := c.cmd.Run(c); err == nil || out.Len() != 0 || calls != 1 {
+					t.Fatalf("wrong metadata produced a link: calls=%d output=%q err=%v", calls, out.String(), err)
+				}
+			})
+		}
+	}
+}
+
 func TestBaiduLinkRejectsMalformedLocateURLs(t *testing.T) {
 	for _, list := range []string{
 		`[]`, `[null]`, `[{}]`, `[{"url":""}]`,
@@ -210,6 +227,11 @@ func TestBaiduLinkRejectsMalformedLocateURLs(t *testing.T) {
 		`[{"url":"ftp://fixture.invalid/file"}]`,
 		`[{"url":"http://user:synthetic@fixture.invalid/file"}]`,
 		`[{"url":"http://fixture.invalid/%zz"}]`,
+		`[{"url":"https://fixture.invalid:65536/file"}]`,
+		`[{"url":"https://fixture.invalid:0/file"}]`,
+		`[{"url":"http://2001:db8::1/file"}]`,
+		`[{"url":"https://fixture.invalid/good"},{"url":"https://fixture.invalid:65536/file"}]`,
+		`[{"url":"http://2001:db8::1/file"},{"url":"https://fixture.invalid/good"}]`,
 		`[{"url":"http://fixture.invalid/good"},{"url":""}]`,
 		`[{"url":""},{"url":"http://fixture.invalid/good"}]`,
 	} {
@@ -237,6 +259,9 @@ func TestBaiduLinkPreservesLocatedURLDetails(t *testing.T) {
 		{URL: "http://fixture.invalid:8080/a%2Fb?token=synthetic%2Bvalue&x=1&x=2"},
 		{URL: "https://fixture.invalid/encrypted", Encrypt: 1},
 		{URL: "//fixture.invalid/relative-scheme?sign=synthetic"},
+		{URL: "https://fixture.invalid:65535/file"},
+		{URL: "http://[2001:db8::1]:8080/a%2Fb?sign=synthetic%2Bvalue"},
+		{URL: "//[fe80::1%25fixture]:8443/file"},
 	}}
 	for _, jsonOutput := range []bool{false, true} {
 		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
@@ -262,8 +287,14 @@ func TestBaiduLinkPreservesLocatedURLDetails(t *testing.T) {
 						t.Fatalf("link details changed: got=%+v want=%+v", got, want)
 					}
 				}
-			} else if out.String() != want.URLs[0].URL+"\n"+want.URLs[1].URL+"\n"+want.URLs[2].URL+"\n" {
-				t.Fatalf("link order or signed query changed: %q", out.String())
+			} else {
+				var expected strings.Builder
+				for _, item := range want.URLs {
+					fmt.Fprintln(&expected, item.URL)
+				}
+				if out.String() != expected.String() {
+					t.Fatalf("link order or signed query changed: %q", out.String())
+				}
 			}
 		})
 	}

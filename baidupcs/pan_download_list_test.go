@@ -12,7 +12,7 @@ import (
 
 func TestPanAPIDownloadRejectsUnusableLinksAndRecovers(t *testing.T) {
 	const item = `{"fs_id":"7","dlink":"https://download.fixture.invalid/file"}`
-	for _, raw := range []string{"", "/relative", "http://:80/file", "ftp://fixture.invalid/file", "http://user:synthetic@fixture.invalid/file", "http://fixture.invalid/%zz"} {
+	for _, raw := range []string{"", "/relative", "http://:80/file", "ftp://fixture.invalid/file", "http://user:synthetic@fixture.invalid/file", "http://fixture.invalid/%zz", "https://fixture.invalid:65536/file", "https://fixture.invalid:0/file", "http://2001:db8::1/file"} {
 		encoded, err := json.Marshal(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -40,7 +40,7 @@ func TestPanAPIDownloadRejectsUnusableLinksAndRecovers(t *testing.T) {
 }
 
 func TestPanAPIDownloadPreservesLinkRepresentation(t *testing.T) {
-	for _, raw := range []string{"http://fixture.invalid:8080/a%2Fb?token=synthetic%2Bvalue&x=1&x=2", "https://fixture.invalid/file", "//fixture.invalid/file?sign=synthetic"} {
+	for _, raw := range []string{"http://fixture.invalid:8080/a%2Fb?token=synthetic%2Bvalue&x=1&x=2", "https://fixture.invalid/file", "//fixture.invalid/file?sign=synthetic", "https://fixture.invalid:65535/file", "http://[2001:db8::1]:8443/a%2Fb?sign=synthetic", "http://[fe80::1%25fixture]:8080/file"} {
 		t.Run(raw, func(t *testing.T) {
 			encoded, err := json.Marshal(raw)
 			if err != nil {

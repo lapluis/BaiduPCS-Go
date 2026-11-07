@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"unsafe"
 )
 
 var (
@@ -59,12 +58,12 @@ func (ph *PanHome) getSignInfo() error {
 	}
 
 	matchRes := signInfoRE.FindSubmatch(body)
-	if len(matchRes) <= 3 {
+	if len(matchRes) <= 3 || len(matchRes[1]) == 0 || len(matchRes[2]) == 0 || len(matchRes[3]) == 0 {
 		return ErrMatchPanHome
 	}
 
-	ph.sign1 = []rune(*(*string)(unsafe.Pointer(&matchRes[1])))
-	ph.sign3 = []rune(*(*string)(unsafe.Pointer(&matchRes[2])))
-	ph.timestamp = *(*string)(unsafe.Pointer(&matchRes[3]))
+	ph.sign1 = []rune(string(matchRes[1]))
+	ph.sign3 = []rune(string(matchRes[2]))
+	ph.timestamp = string(matchRes[3])
 	return nil
 }

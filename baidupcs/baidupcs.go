@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
+	"sync"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires/cachemap"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/internal/panhome"
@@ -138,12 +139,14 @@ var (
 type (
 	// BaiduPCS 百度 PCS API 详情
 	BaiduPCS struct {
+		initOnce    sync.Once
 		appID       int                   // app_id
 		isHTTPS     bool                  // 是否启用https
 		uid         uint64                // 百度uid
 		client      *requester.HTTPClient // http 客户端
 		accessToken string                // accessToken
 		pcsUA       string
+		pcsAddrMu   sync.RWMutex // Dynamic upload server; other configuration is set before transfers.
 		pcsAddr     string
 		panUA       string
 		isSetPanUA  bool
@@ -259,18 +262,20 @@ func NewPCSWithCookieStr(appID int, cookieStr string) *BaiduPCS {
 }
 
 func (pcs *BaiduPCS) lazyInit() {
-	if pcs.cacheOpMap == nil {
-		pcs.cacheOpMap = &cachemap.CacheOpMap{}
-	}
-	if pcs.client == nil {
-		pcs.client = requester.NewHTTPClient()
-	}
-	if pcs.ph == nil {
-		pcs.ph = panhome.NewPanHome(pcs.client)
-	}
-	if !pcs.isSetPanUA {
-		pcs.panUA = NetdiskUA
-	}
+	pcs.initOnce.Do(func() {
+		if pcs.cacheOpMap == nil {
+			pcs.cacheOpMap = &cachemap.CacheOpMap{}
+		}
+		if pcs.client == nil {
+			pcs.client = requester.NewHTTPClient()
+		}
+		if pcs.ph == nil {
+			pcs.ph = panhome.NewPanHome(pcs.client)
+		}
+		if !pcs.isSetPanUA {
+			pcs.panUA = NetdiskUA
+		}
+	})
 }
 
 // GetClient 获取当前的http client
@@ -281,10 +286,11 @@ func (pcs *BaiduPCS) GetClient() *requester.HTTPClient {
 
 // GetBDUSS 获取BDUSS
 func (pcs *BaiduPCS) GetBDUSS() (bduss string) {
-	if pcs.client == nil || pcs.client.Jar == nil {
+	client := pcs.GetClient()
+	if client.Jar == nil {
 		return ""
 	}
-	cookies := pcs.client.Jar.Cookies(baiduComURL)
+	cookies := client.Jar.Cookies(baiduComURL)
 	for _, cookie := range cookies {
 		if cookie.Name == "BDUSS" {
 			return cookie.Value
@@ -295,10 +301,11 @@ func (pcs *BaiduPCS) GetBDUSS() (bduss string) {
 
 // GetBAIDUID 获取BAIDUID
 func (pcs *BaiduPCS) GetBAIDUID() (baiduid string) {
-	if pcs.client == nil || pcs.client.Jar == nil {
+	client := pcs.GetClient()
+	if client.Jar == nil {
 		return ""
 	}
-	cookies := pcs.client.Jar.Cookies(baiduComURL)
+	cookies := client.Jar.Cookies(baiduComURL)
 	for _, cookie := range cookies {
 		if cookie.Name == "BAIDUID" {
 			return cookie.Value
@@ -308,7 +315,10 @@ func (pcs *BaiduPCS) GetBAIDUID() (baiduid string) {
 }
 
 func (pcs *BaiduPCS) GetPCSAddr() string {
-	return pcs.pcsAddr
+	pcs.pcsAddrMu.RLock()
+	addr := pcs.pcsAddr
+	pcs.pcsAddrMu.RUnlock()
+	return addr
 }
 
 // SetAPPID 设置app_id
@@ -384,7 +394,9 @@ func (pcs *BaiduPCS) SetPCSUserAgent(ua string) {
 // SetPCSAddr 设置 PCS 服务器地址
 func (pcs *BaiduPCS) SetPCSAddr(addr string) {
 	if addr != "" {
+		pcs.pcsAddrMu.Lock()
 		pcs.pcsAddr = addr
+		pcs.pcsAddrMu.Unlock()
 	}
 }
 
@@ -397,7 +409,7 @@ func (pcs *BaiduPCS) CopyPCS() *BaiduPCS {
 		client:      pcs.client,
 		accessToken: pcs.accessToken,
 		pcsUA:       pcs.pcsUA,
-		pcsAddr:     pcs.pcsAddr,
+		pcsAddr:     pcs.GetPCSAddr(),
 		panUA:       pcs.panUA,
 		isSetPanUA:  pcs.isSetPanUA,
 		fixPCSAddr:  pcs.fixPCSAddr,
@@ -423,7 +435,7 @@ func (pcs *BaiduPCS) SetStaticPCSAddr(static bool) {
 
 // URL 返回 url
 func (pcs *BaiduPCS) URL() *url.URL {
-	host := pcs.pcsAddr
+	host := pcs.GetPCSAddr()
 	if host == "" {
 		host = PCSBaiduCom
 	}

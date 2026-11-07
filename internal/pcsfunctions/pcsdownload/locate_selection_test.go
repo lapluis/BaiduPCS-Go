@@ -115,7 +115,7 @@ func TestLocateDownloadSkipsUnusableLinksBeforeProbe(t *testing.T) {
 			client.SetKeepAlive(false)
 			client.Client.Transport = downloadRoundTrip(func(req *http.Request) (*http.Response, error) {
 				lookups++
-				payload := `{"error_code":0,"urls":[{"url":"","encrypt":0},{"url":"/relative","encrypt":0},{"url":"https://encrypted.fixture.invalid/file","encrypt":1},{"url":"ftp://unsupported.fixture.invalid/file","encrypt":0}`
+				payload := `{"error_code":0,"urls":[{"url":"","encrypt":0},{"url":"/relative","encrypt":0},{"url":"https://encrypted.fixture.invalid/file","encrypt":1},{"url":"ftp://unsupported.fixture.invalid/file","encrypt":0},{"url":"https://fixture.invalid:65536/file","encrypt":0},{"url":"https://fixture.invalid:0/file","encrypt":0},{"url":"http://2001:db8::1/file","encrypt":0}`
 				if !invalidOnly {
 					payload += `,{"url":"https://eligible.fixture.invalid/file","encrypt":0}`
 				}

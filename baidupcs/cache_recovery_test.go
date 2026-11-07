@@ -9,7 +9,7 @@ import (
 )
 
 func TestDirectoryCacheRecoversAfterInvalidListing(t *testing.T) {
-	for _, failure := range []string{"negative", "null", "missing-list", "duplicate", "later-negative"} {
+	for _, failure := range []string{"negative", "null", "missing-list", "duplicate", "invalid-path", "duplicate-path", "later-negative", "later-invalid-path", "later-duplicate-path"} {
 		for _, contextual := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/context=%t", failure, contextual), func(t *testing.T) {
 				calls := 0
@@ -28,10 +28,19 @@ func TestDirectoryCacheRecoversAfterInvalidListing(t *testing.T) {
 							payload = `{"errno":0}`
 						case "duplicate":
 							payload = `{"errno":0,"list":[{"fs_id":1,"path":"/Temp/one"},{"fs_id":1,"path":"/Temp/two"}]}`
-						case "later-negative":
+						case "invalid-path":
+							payload = `{"errno":0,"list":[{"fs_id":1,"path":"/Temp","isdir":1}]}`
+						case "duplicate-path":
+							payload = `{"errno":0,"list":[{"fs_id":1,"path":"/Temp/one"},{"fs_id":2,"path":"/Temp/one"}]}`
+						case "later-negative", "later-invalid-path", "later-duplicate-path":
 							payload = pageBody(1, maxListNum)
 							if calls > 1 {
 								payload = `{"errno":0,"list":[{"fs_id":1001,"path":"/Temp/bad","size":-1}]}`
+								if failure == "later-invalid-path" {
+									payload = `{"errno":0,"list":[{"fs_id":1001,"path":"/Elsewhere/bad"}]}`
+								} else if failure == "later-duplicate-path" {
+									payload = `{"errno":0,"list":[{"fs_id":1001,"path":"/Temp/1"}]}`
+								}
 							}
 						}
 					}
@@ -50,7 +59,7 @@ func TestDirectoryCacheRecoversAfterInvalidListing(t *testing.T) {
 					return files, err
 				}
 				failedCalls := 1
-				if failure == "later-negative" {
+				if strings.HasPrefix(failure, "later-") {
 					failedCalls = 2
 				}
 				files, err := fetch(contextual)

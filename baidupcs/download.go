@@ -8,6 +8,8 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 )
 
 var (
@@ -101,9 +103,15 @@ func (ui *URLInfo) LastURL(https bool) *url.URL {
 	return nil
 }
 
+// IsValidDownloadURL reports whether raw describes a supported HTTP(S) download
+// address. Scheme-relative links are accepted; the original text is unchanged.
+func IsValidDownloadURL(raw string) bool {
+	return parseDownloadURL(raw, true) != nil
+}
+
 func parseDownloadURL(raw string, https bool) *url.URL {
 	u, err := url.Parse(raw)
-	if err != nil || u.Opaque != "" || u.Hostname() == "" || u.User != nil {
+	if err != nil || u.Opaque != "" || !validServerAuthority(u) {
 		return nil
 	}
 	// Scheme-relative CDN links are supported; other protocols must not be
@@ -113,6 +121,24 @@ func parseDownloadURL(raw string, https bool) *url.URL {
 	}
 	u.Scheme = GetHTTPScheme(https)
 	return u
+}
+
+// validServerAuthority checks the parsed host without reconstructing the URL,
+// which would lose escaping for IPv6 zone identifiers.
+func validServerAuthority(u *url.URL) bool {
+	if u.Hostname() == "" || u.User != nil {
+		return false
+	}
+	if strings.Contains(u.Hostname(), ":") && !strings.HasPrefix(u.Host, "[") {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // DownloadFile 下载单个文件

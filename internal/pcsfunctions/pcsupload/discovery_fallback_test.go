@@ -16,6 +16,11 @@ func TestUploadDiscoveryPreservesUsableServer(t *testing.T) {
 	for _, tc := range []struct{ name, payload, selected string }{
 		{"null-only", `{"error_code":0,"servers":[null]}`, "original-fixture.invalid"},
 		{"mixed", `{"error_code":0,"servers":[null,{"server":"https://next-fixture.invalid/path"}]}`, "next-fixture.invalid"},
+		{"without-hyphen", `{"error_code":0,"servers":[{"server":"https://next.fixture.invalid/path"}]}`, "next.fixture.invalid"},
+		{"modern-port", `{"error_code":0,"servers":[{"server":"https://next.fixture.invalid:8443/path"}]}`, "next.fixture.invalid:8443"},
+		{"modern-ipv6", `{"error_code":0,"servers":[{"server":"https://[2001:db8::1]:8443/path"}]}`, "[2001:db8::1]:8443"},
+		{"invalid-legacy", `{"error_code":0,"server":["not a host"]}`, "original-fixture.invalid"},
+		{"invalid-modern", `{"error_code":0,"servers":[{"server":"ftp://next-fixture.invalid/path"}]}`, "original-fixture.invalid"},
 		{"legacy", `{"error_code":0,"servers":[null],"server":["legacy-fixture.invalid"]}`, "legacy-fixture.invalid"},
 		{"error", `{"error_code":1,"servers":[null]}`, "original-fixture.invalid"},
 	} {
@@ -28,6 +33,9 @@ func TestUploadDiscoveryPreservesUsableServer(t *testing.T) {
 					calls++
 					data := tc.payload
 					if calls > 1 {
+						if r.URL.Host != tc.selected {
+							t.Errorf("part upload used wrong authority: got=%q want=%q", r.URL.Host, tc.selected)
+						}
 						if _, err := io.Copy(io.Discard, r.Body); err != nil {
 							return nil, err
 						}

@@ -318,18 +318,31 @@ func (pcs *BaiduPCS) GetRandomPCSHostWithContext(ctx context.Context) (pcsError 
 			if server == nil {
 				continue
 			}
-			if strings.Contains(server.ServerAddr, "-") {
-				parsedURL, err := url.Parse(server.ServerAddr)
-				if err != nil || parsedURL.Hostname() == "" {
-					continue
+			if parsedURL := parseDownloadURL(server.ServerAddr, pcs.isHTTPS); parsedURL != nil {
+				if host := uploadServerAuthority(parsedURL.Host); host != "" {
+					pcsHostList = append(pcsHostList, host)
 				}
-				pcsHostList = append(pcsHostList, parsedURL.Hostname())
 			}
 		}
 	}
 	if len(pcsHostList) == 0 && len(pcsInfo.Server) > 0 {
-		pcsHostList = pcsInfo.Server
+		for _, server := range pcsInfo.Server {
+			if host := uploadServerAuthority(server); host != "" {
+				pcsHostList = append(pcsHostList, host)
+			}
+		}
 	}
 	pcsHost = RandomElement(pcsHostList)
 	return
+}
+
+// Preserve host ports and IPv6 brackets without admitting URL paths, user
+// information or malformed addresses into URL.Host. Legacy entries are bare
+// authorities; the servers list has already been parsed as HTTP(S) URLs.
+func uploadServerAuthority(server string) string {
+	parsed, err := url.Parse("//" + server)
+	if err != nil || parsed.Host != server || !validServerAuthority(parsed) {
+		return ""
+	}
+	return server
 }

@@ -23,6 +23,10 @@ func TestDownloadRetryClassifiesRemoteCodesAndWrappedErrors(t *testing.T) {
 		info.SetNetError(cause)
 		return info
 	}
+	panMissing := pcserror.DecodePanJSONError("synthetic download", strings.NewReader(`{"errno":-9}`))
+	embeddedMissing := pcserror.NewPCSErrorInfo("synthetic download")
+	embeddedMissing.AlternateErrNo = -9
+	embeddedMissing.SetRemoteError()
 	for _, tc := range []struct {
 		name  string
 		err   error
@@ -31,6 +35,10 @@ func TestDownloadRetryClassifiesRemoteCodesAndWrappedErrors(t *testing.T) {
 		{"missing_user", remote(31045), false},
 		{"missing_file", remote(31066), false},
 		{"missing_file_alternative", remote(31297), false},
+		{"pan_missing_file", panMissing, false},
+		{"wrapped_pan_missing_file", fmt.Errorf("download: %w", panMissing), false},
+		{"embedded_pan_missing_file", embeddedMissing, false},
+		{"pan_unknown_remote", pcserror.DecodePanJSONError("synthetic download", strings.NewReader(`{"errno":99999}`)), true},
 		{"retryable_remote", remote(31626), true},
 		{"unknown_remote", remote(99999), true},
 		{"wrapped_missing_file", fmt.Errorf("download: %w", remote(31066)), false},

@@ -4,6 +4,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"net/url"
+	"sync"
 )
 
 const (
@@ -22,6 +23,8 @@ var (
 
 type (
 	PanHome struct {
+		mu sync.Mutex // Protects signature parsing, cache publication and expiry.
+
 		client *requester.HTTPClient
 		ua     string
 		bduss  string
