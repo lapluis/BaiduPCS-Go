@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -185,26 +184,10 @@ func parseCommandFlags(args []string, specs []flagSpec) ([]string, *flagValues, 
 }
 
 func parseRate(s string) (int64, error) {
-	s = strings.ToUpper(strings.TrimSpace(s))
-	if s == "" {
+	if strings.TrimSpace(s) == "" {
 		return 0, nil
 	}
-	mult := float64(1)
-	for _, suffix := range []struct {
-		s string
-		n float64
-	}{{"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}} {
-		if strings.HasSuffix(s, suffix.s) {
-			s = strings.TrimSuffix(s, suffix.s)
-			mult = suffix.n
-			break
-		}
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*mult > float64(1<<62) {
-		return 0, errors.New("invalid --bwlimit")
-	}
-	return int64(v * mult), nil
+	return rc.ParseBandwidthRate(s)
 }
 
 type logSink struct {

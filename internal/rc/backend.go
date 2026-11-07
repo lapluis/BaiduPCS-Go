@@ -28,6 +28,12 @@ type Entry struct {
 	ID        string `json:"-"`
 	localInfo os.FileInfo
 }
+
+// SameIdentity compares remote IDs and captured local file identities.
+func (e Entry) SameIdentity(other Entry) bool {
+	return sameIdentity(e, other)
+}
+
 type Backend interface {
 	Identity() string
 	Stat(context.Context, string) (Entry, error)
@@ -81,13 +87,25 @@ func sameIdentity(a, b Entry) bool {
 	return os.SameFile(a.localInfo, b.localInfo)
 }
 func (l *Local) List(ctx context.Context, p string) ([]Entry, error) {
+	return l.list(ctx, p, true)
+}
+
+func (l *Local) list(ctx context.Context, p string, hideState bool) ([]Entry, error) {
+	// ReadDir follows a linked root. Apply the same metadata validation used
+	// for entries before opening the directory itself.
+	if _, err := l.Stat(ctx, p); err != nil {
+		return nil, err
+	}
 	ds, err := os.ReadDir(p)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Entry, 0, len(ds))
 	for _, d := range ds {
-		if d.IsDir() && d.Name() == ".pcsclone-partials" && ownedStageDirectory(filepath.Join(p, d.Name())) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if hideState && d.IsDir() && d.Name() == ".pcsclone-partials" && ownedStageDirectory(filepath.Join(p, d.Name())) {
 			continue
 		}
 		e, err := l.Stat(ctx, filepath.Join(p, d.Name()))
@@ -96,10 +114,39 @@ func (l *Local) List(ctx context.Context, p string) ([]Entry, error) {
 		}
 		out = append(out, e)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
+
+// Removal checks must see private state too. A preview may ignore children
+// whose removals have already been simulated, without hiding real contents.
+func directoryEmptyAfterRemovals(ctx context.Context, e Endpoint, rel string, removed map[string]bool) (bool, error) {
+	var children []Entry
+	var err error
+	if local, ok := e.FS.(*Local); ok {
+		children, err = local.list(ctx, e.At(rel), false)
+	} else {
+		children, err = e.FS.List(ctx, e.At(rel))
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, child := range children {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if !removed[path.Join(rel, child.Name)] {
+			return false, nil
+		}
+	}
+	return true, ctx.Err()
+}
+
 func (l *Local) Hash(ctx context.Context, p string) (string, error) {
-	if _, err := l.Stat(ctx, p); err != nil {
+	before, err := l.Stat(ctx, p)
+	if err != nil {
 		return "", err
 	}
 	f, err := os.Open(p)
@@ -107,10 +154,24 @@ func (l *Local) Hash(ctx context.Context, p string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	h := md5.New()
-	_, err = io.Copy(h, &contextReader{ctx: ctx, r: f})
+	opened, err := f.Stat()
 	if err != nil {
 		return "", err
+	}
+	if !os.SameFile(before.localInfo, opened) || opened.Size() != before.Size || !opened.ModTime().Equal(before.ModTime) {
+		return "", fmt.Errorf("file changed before hashing: %s", p)
+	}
+	h := md5.New()
+	read, err := io.Copy(h, &contextReader{ctx: ctx, r: f})
+	if err != nil {
+		return "", err
+	}
+	after, err := l.Stat(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if read != before.Size || !sameIdentity(before, after) || after.Size != before.Size || !after.ModTime.Equal(before.ModTime) {
+		return "", fmt.Errorf("file changed while hashing: %s", p)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -151,8 +212,11 @@ func (r *contextReader) Read(p []byte) (int, error) {
 func safeParents(p string) error {
 	for {
 		f, err := os.Lstat(p)
-		if err == nil && f.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink path is not supported: %s", p)
+		// Windows junctions can be reported as irregular entries rather than
+		// ModeSymlink. Only ordinary files/directories are supported anywhere
+		// in a mutation path, matching Local.Stat's metadata policy.
+		if err == nil && (f.Mode()&os.ModeSymlink != 0 || (!f.IsDir() && !f.Mode().IsRegular())) {
+			return fmt.Errorf("special file or symlink path is not supported: %s", p)
 		}
 		if err != nil && !os.IsNotExist(err) {
 			return err
@@ -191,6 +255,9 @@ func validateRemoteMetadataPath(requested string, info *baidupcs.FileDirectory) 
 	}
 	if info.Path == "" || path.Clean(info.Path) != path.Clean(requested) {
 		return fmt.Errorf("remote metadata path mismatch: requested %q, received %q", requested, info.Path)
+	}
+	if info.FsID <= 0 {
+		return fmt.Errorf("invalid remote file identity for %q", requested)
 	}
 	return nil
 }
@@ -308,6 +375,13 @@ func (r *Remote) Remove(ctx context.Context, p string, dir bool) error {
 		}
 		if len(children) != 0 {
 			return fmt.Errorf("directory not empty: %s", p)
+		}
+		current, err := r.Stat(ctx, p)
+		if err != nil {
+			return err
+		}
+		if !current.IsDir || !sameIdentity(e, current) {
+			return fmt.Errorf("directory changed during removal checks: %s", p)
 		}
 	}
 	if err := r.mu.LockContext(ctx); err != nil {

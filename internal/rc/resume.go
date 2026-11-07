@@ -26,10 +26,17 @@ var removeDownloadState = os.Remove
 
 func ownedStageDirectory(dir string) bool {
 	info, err := os.Lstat(filepath.Join(dir, ".owner"))
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(stageMarker)) {
 		return false
 	}
-	b, err := os.ReadFile(filepath.Join(dir, ".owner"))
+	f, err := os.Open(filepath.Join(dir, ".owner"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	// The file may grow or be replaced after Lstat. Read at most one byte
+	// beyond the fixed marker so a user file cannot cause an unbounded buffer.
+	b, err := io.ReadAll(io.LimitReader(f, int64(len(stageMarker))+1))
 	return err == nil && string(b) == stageMarker
 }
 func prepareStageDirectory(dir string) error {
@@ -72,7 +79,8 @@ func downloadBase(uid uint64, source, destination string) (string, string, error
 	return filepath.Join(filepath.Dir(abs), ".pcsclone-partials", fmt.Sprintf("%x", key)), abs, nil
 }
 
-func stageFor(ctx context.Context, remote *Remote, source, destination string, entry Entry) (downloadStage, error) {
+func stageFor(ctx context.Context, remote *Remote, source, destination string, entry Entry) (stage downloadStage, stageErr error) {
+	defer func() { stageErr = preserveContextError(ctx, stageErr) }()
 	if err := ctx.Err(); err != nil {
 		return downloadStage{}, err
 	}
@@ -99,6 +107,9 @@ func stageFor(ctx context.Context, remote *Remote, source, destination string, e
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return s, fmt.Errorf("read download checkpoint: %w", readErr)
 	}
+	if err := ctx.Err(); err != nil {
+		return s, err
+	}
 	valid := readErr == nil && json.Unmarshal(b, &old) == nil && old.Version == 1 && old.Account == s.info.Account && old.Source == source && old.Destination == abs && old.ID == entry.ID && old.ID != "" && old.ID != "0" && old.Size == entry.Size && old.Modified == s.info.Modified && (old.ETag != "" || old.LastModified != "")
 	if strings.HasPrefix(old.ETag, "W/") {
 		valid = false
@@ -106,6 +117,9 @@ func stageFor(ctx context.Context, remote *Remote, source, destination string, e
 	f, statErr := statDownloadState(s.payload)
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return s, fmt.Errorf("inspect partial download: %w", statErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return s, err
 	}
 	if statErr != nil || f.Size() != old.LocalSize || f.ModTime().UnixNano() != old.LocalModified {
 		valid = false
@@ -115,6 +129,9 @@ func stageFor(ctx context.Context, remote *Remote, source, destination string, e
 			return s, fmt.Errorf("inspect download ranges: %w", e)
 		}
 		valid = false
+	}
+	if err := ctx.Err(); err != nil {
+		return s, err
 	}
 	if valid {
 		if err := detachSharedPartial(ctx, s.payload, f); err != nil {
@@ -331,8 +348,13 @@ func verifiedDownloadedFile(ctx context.Context, remote *Remote, source, destina
 	var current transferProgress
 	probeCtx := context.WithValue(ctx, progressKey{}, func(p transferProgress) { current = p })
 	err = runTransferWorker(probeCtx, "probe", remote.UID, source, "", 0)
-	if ctx.Err() != nil {
-		return false, ctx.Err()
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return false, errors.Join(cancelErr, err)
+	}
+	// A cache miss can fall back to a full comparison. Failures observing the
+	// worker or saving its state must remain visible and must not start more I/O.
+	if errors.Is(err, ErrCheckpointSave) || errors.Is(err, ErrWorkerProtocol) || errors.Is(err, ErrProgressCallback) || errors.Is(err, ErrLogCallback) {
+		return false, err
 	}
 	return err == nil && current.Total == a.Size && current.ETag == v.ETag, nil
 }

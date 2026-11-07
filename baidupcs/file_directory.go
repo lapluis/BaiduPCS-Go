@@ -276,7 +276,7 @@ func (pcs *BaiduPCS) filesDirectoriesListWithContext(ctx context.Context, path s
 		// 转换为 FileDirectory 并按 fs_id 去重
 		pageList := make(FileDirectoryList, 0, len(jsonData.List))
 		for _, j := range jsonData.List {
-			if j == nil || j.FsID <= 0 {
+			if j == nil || j.FsID <= 0 || j.Size < 0 {
 				return nil, incompleteListing("invalid entry")
 			}
 			if _, ok := seen[j.FsID]; ok {
@@ -350,6 +350,13 @@ func validateFileDirectoryList(operation string, files FileDirectoryList) pcserr
 				Operation: operation,
 				ErrType:   pcserror.ErrTypeOthers,
 				Err:       fmt.Errorf("invalid file list: null entry at index %d", index),
+			}
+		}
+		if file.Size < 0 {
+			return &pcserror.PCSErrInfo{
+				Operation: operation,
+				ErrType:   pcserror.ErrTypeOthers,
+				Err:       fmt.Errorf("invalid file list: negative size at index %d", index),
 			}
 		}
 	}

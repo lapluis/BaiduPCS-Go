@@ -532,6 +532,13 @@ func runStat(c *commandContext) error {
 		if err != nil {
 			return operationError(err)
 		}
+		after, err := endpoint.FS.Stat(c.ctx, endpoint.Root)
+		if err != nil {
+			return operationError(err)
+		}
+		if !after.SameIdentity(entry) || after.Size != entry.Size || after.IsDir != entry.IsDir || !after.ModTime.Equal(entry.ModTime) {
+			return operationError(fmt.Errorf("file changed while reading metadata and hash: %s", endpoint.Root))
+		}
 		result.Hash = hash
 	}
 	return json.NewEncoder(c.app.Stdout).Encode(result)
@@ -572,6 +579,9 @@ func runMkdir(c *commandContext) (resultErr error) {
 		return operationError(err)
 	}
 	if o.DryRun {
+		if err = rc.ValidateMkdirTarget(c.ctx, endpoint); err != nil {
+			return operationError(err)
+		}
 		sink.Emit("would-mkdir", endpoint.Root)
 		return nil
 	}

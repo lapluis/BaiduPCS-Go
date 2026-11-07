@@ -483,12 +483,32 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 	defer func(parent context.Context) { executeErr = preserveContextError(parent, executeErr) }(ctx)
 	result := Result{}
 	if o.DryRun {
+		var removedFiles []string
+		removedDestination := make(map[string]bool)
 		for _, a := range p.Actions {
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
+			if a.Kind == "rmdir" {
+				if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
+					return result, err
+				}
+				empty, err := directoryEmptyAfterRemovals(ctx, p.Destination, a.Path, removedDestination)
+				if err != nil {
+					return result, err
+				}
+				if !empty {
+					continue
+				}
+				if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
+					return result, err
+				}
+			}
 			if err := logAction(o, "would-"+a.Kind, actionPath(p, a)); err != nil {
 				return result, err
+			}
+			if a.Kind == "delete" || a.Kind == "rmdir" {
+				removedDestination[a.Path] = true
 			}
 			if p.Move && (a.Kind == "copy" || a.Reason == "identical") {
 				if err := ctx.Err(); err != nil {
@@ -497,7 +517,11 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 				if err := logAction(o, "would-remove-source", actionPath(p, a)); err != nil {
 					return result, err
 				}
+				removedFiles = append(removedFiles, a.Path)
 			}
+		}
+		if p.Move && o.DeleteEmptyDirs && p.SourceSnapshot != nil {
+			return result, removeEmptyPlanned(ctx, p.Source, false, o, p.SourceSnapshot, removedFiles...)
 		}
 		return result, nil
 	}
@@ -742,11 +766,11 @@ dispatch:
 			if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
 				return result, err
 			}
-			children, err := p.Destination.FS.List(ctx, p.Destination.At(a.Path))
+			empty, err := directoryEmptyAfterRemovals(ctx, p.Destination, a.Path, nil)
 			if err != nil {
 				return result, err
 			}
-			if len(children) == 0 {
+			if empty {
 				if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
 					return result, err
 				}
@@ -1071,7 +1095,7 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) e
 	return removeEmptyPlanned(ctx, e, includeRoot, o, nil)
 }
 
-func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Options, planned map[string]Entry) (removeErr error) {
+func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Options, planned map[string]Entry, removedFiles ...string) (removeErr error) {
 	defer func() { removeErr = preserveContextError(ctx, removeErr) }()
 	var root Entry
 	if includeRoot {
@@ -1084,6 +1108,17 @@ func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Opt
 	m, err := snapshot(ctx, e)
 	if err != nil {
 		return err
+	}
+	removed := make(map[string]bool)
+	if o.DryRun {
+		// A move preview has not removed its files. Simulate only the source
+		// removals already reported so cleanup sees the predicted empty tree.
+		for _, name := range removedFiles {
+			if item, ok := m[name]; ok && !item.IsDir {
+				delete(m, name)
+				removed[name] = true
+			}
+		}
 	}
 	keys := sortedKeys(m)
 	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
@@ -1125,14 +1160,21 @@ func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Opt
 		if !empty {
 			continue
 		}
+		empty, err = directoryEmptyAfterRemovals(ctx, e, k, removed)
+		if err != nil {
+			return err
+		}
+		if !empty {
+			continue
+		}
+		if err = unchangedDirectory(ctx, e, k, &old); err != nil {
+			return err
+		}
 		if o.DryRun {
 			if err := logAction(o, "would-rmdir", k); err != nil {
 				return err
 			}
 		} else {
-			if err = unchangedDirectory(ctx, e, k, &old); err != nil {
-				return err
-			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
 			}
@@ -1141,6 +1183,9 @@ func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Opt
 			}
 		}
 		delete(m, k)
+		if o.DryRun {
+			removed[k] = true
+		}
 	}
 	return nil
 }

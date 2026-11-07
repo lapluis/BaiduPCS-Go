@@ -11,6 +11,35 @@ import (
 	"strings"
 )
 
+// ValidateMkdirTarget rejects files occupying a directory target or an ancestor
+// of that target, without creating any directories.
+func ValidateMkdirTarget(ctx context.Context, e Endpoint) (validationErr error) {
+	defer func() { validationErr = preserveContextError(ctx, validationErr) }()
+	for current := e.Root; ; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entry, err := e.FS.Stat(ctx, current)
+		if err == nil {
+			if !entry.IsDir {
+				return fmt.Errorf("file occupies directory: %s", current)
+			}
+			return ctx.Err()
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := path.Dir(current)
+		if _, local := e.FS.(*Local); local {
+			parent = filepath.Dir(current)
+		}
+		if parent == current {
+			return err
+		}
+		current = parent
+	}
+}
+
 func FilePlan(ctx context.Context, src, dst Endpoint, move bool, o Options) (*Plan, error) {
 	if err := validatePair(src, dst); err != nil {
 		return nil, err
@@ -147,6 +176,9 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 		if o.DryRun {
 			return logAction(o, "would-delete", e.Root)
 		}
+		if err := unchanged(ctx, e, "", &item); err != nil {
+			return err
+		}
 		if err := e.FS.Remove(ctx, e.Root, false); err != nil {
 			return err
 		}
@@ -160,18 +192,18 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 		if !item.IsDir {
 			return errors.New("rmdir expects a directory")
 		}
-		children, err := e.FS.List(ctx, e.Root)
+		empty, err := directoryEmptyAfterRemovals(ctx, e, "", nil)
 		if err != nil {
 			return err
 		}
-		if len(children) > 0 {
+		if !empty {
 			return errors.New("directory is not empty")
-		}
-		if o.DryRun {
-			return logAction(o, "would-rmdir", e.Root)
 		}
 		if err := unchangedDirectory(ctx, e, "", &item); err != nil {
 			return err
+		}
+		if o.DryRun {
+			return logAction(o, "would-rmdir", e.Root)
 		}
 		if err := e.FS.Remove(ctx, e.Root, true); err != nil {
 			return err
@@ -212,6 +244,7 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 			return err
 		}
 	}
+	removed := make(map[string]bool)
 	for _, k := range files {
 		if o.DryRun {
 			if err := ctx.Err(); err != nil {
@@ -220,6 +253,7 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 			if err := logAction(o, "would-delete", k); err != nil {
 				return err
 			}
+			removed[k] = true
 			continue
 		}
 		old := m[k]
@@ -247,18 +281,29 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 			if item == "" {
 				item = e.Root
 			}
-			if o.DryRun {
-				if err := logAction(o, "would-rmdir", item); err != nil {
-					return err
-				}
-				continue
-			}
 			old := m[k]
 			if k == "" {
 				old = purgeRoot
 			}
 			if err = unchangedDirectory(ctx, e, k, &old); err != nil {
 				return err
+			}
+			if o.DryRun {
+				empty, err := directoryEmptyAfterRemovals(ctx, e, k, removed)
+				if err != nil {
+					return err
+				}
+				if !empty {
+					return fmt.Errorf("directory is not empty: %s", item)
+				}
+				if err := unchangedDirectory(ctx, e, k, &old); err != nil {
+					return err
+				}
+				if err := logAction(o, "would-rmdir", item); err != nil {
+					return err
+				}
+				removed[k] = true
+				continue
 			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
@@ -277,10 +322,16 @@ func Listing(ctx context.Context, e Endpoint, recursive bool, depth int, f Filte
 	}
 	out := make([]Entry, 0, len(m))
 	for _, k := range sortedKeys(m) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		v := m[k]
 		if (v.IsDir && !f.excluded(k)) || (!v.IsDir && f.Match(k)) {
 			out = append(out, v)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -288,11 +339,20 @@ func snapshotDepth(ctx context.Context, e Endpoint, recursive bool, depth int) (
 	out := map[string]Entry{}
 	var walk func(string, int) error
 	walk = func(rel string, level int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		items, err := e.FS.List(ctx, e.At(rel))
 		if err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		for _, v := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if v.Name == "." || v.Name == ".." || strings.ContainsAny(v.Name, "/\\") {
 				return errors.New("unsafe directory entry")
 			}
@@ -304,7 +364,7 @@ func snapshotDepth(ctx context.Context, e Endpoint, recursive bool, depth int) (
 				}
 			}
 		}
-		return nil
+		return ctx.Err()
 	}
 	err := walk("", 1)
 	return out, err

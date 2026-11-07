@@ -190,6 +190,12 @@ func parse(args []string) (parsed, error) {
 	return p, nil
 }
 func parseRate(s string) (int64, error) {
+	return ParseBandwidthRate(s)
+}
+
+// ParseBandwidthRate parses a byte rate with optional K/M/G units. Zero means
+// unlimited; a nonzero value must represent at least one byte per second.
+func ParseBandwidthRate(s string) (int64, error) {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	mult := float64(1)
 	for _, suffix := range []struct {
@@ -520,6 +526,9 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			return err
 		}
 		if p.DryRun {
+			if err := ValidateMkdirTarget(ctx, src); err != nil {
+				return err
+			}
 			return logAction(p.Options, "would-mkdir", src.Root)
 		}
 		if err := src.FS.Mkdir(ctx, src.Root); err != nil {
