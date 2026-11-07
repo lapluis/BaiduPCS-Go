@@ -2,6 +2,7 @@ package uploader
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -59,30 +60,47 @@ func (u *Uploader) GetStatusChan() <-chan Status {
 }
 
 func (u *Uploader) streamStatus(c chan<- Status, ticks <-chan time.Time) {
+	u.streamStatusAt(c, ticks, time.Now)
+}
+
+func (u *Uploader) streamStatusAt(c chan<- Status, ticks <-chan time.Time, now func() time.Time) {
 	select {
 	case <-u.finished:
 		return
 	case <-u.started:
 	}
 	// Closing started publishes executeTime and totalSize before they are read.
-	old := u.readed64.Readed()
+	// Include bytes read before the status goroutine starts. Sample times belong
+	// to the byte snapshots, even when a consumer delays receiving an update.
+	var old int64
+	sampledAt := u.executeTime
 	for {
 		select {
 		case <-u.finished:
 			return
 		case <-ticks:
 			readed := u.readed64.Readed()
+			sampledNow := now()
+			var rate int64
+			if elapsed := sampledNow.Sub(sampledAt); elapsed > 0 {
+				perSecond := float64(readed-old) / elapsed.Seconds()
+				if perSecond >= float64(math.MaxInt64) {
+					rate = math.MaxInt64
+				} else if perSecond > 0 {
+					rate = int64(perSecond)
+				}
+				old, sampledAt = readed, sampledNow
+			}
 			status := &UploadStatus{
 				totalSize: u.totalSize, uploaded: readed,
-				speedsPerSecond: readed - old,
-				timeElapsed:     time.Since(u.executeTime) / 1e7 * 1e7,
+				speedsPerSecond: rate,
+				timeElapsed:     max(0, sampledNow.Sub(u.executeTime)) / (10 * time.Millisecond) * (10 * time.Millisecond),
 			}
 			select {
 			case <-u.finished:
 				return
 			case c <- status:
 			}
-			old = readed
 		}
 	}
 }

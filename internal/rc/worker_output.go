@@ -44,7 +44,7 @@ func (w *workerOutput) report(v transferProgress) {
 			if !ok {
 				cause = fmt.Errorf("%v", r)
 			}
-			w.callbackErr = fmt.Errorf("worker progress callback panic: %w", cause)
+			w.callbackErr = fmt.Errorf("%w: worker progress callback panic: %w", ErrProgressCallback, cause)
 			if w.stop != nil {
 				w.stop()
 			}

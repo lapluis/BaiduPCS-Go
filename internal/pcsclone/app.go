@@ -166,6 +166,11 @@ func (a *App) run(raw []string) (code int) {
 }
 
 func (a *App) reportCancellation(err error) int {
+	if errors.Is(err, rc.ErrLogCallback) || errors.Is(err, rc.ErrProgressCallback) {
+		fmt.Fprintln(a.Stderr, "pcsclone:", err)
+		fmt.Fprintln(a.Stderr, "pcsclone: canceled")
+		return 130
+	}
 	checkpointFailure := errors.Is(err, rc.ErrCheckpointSave)
 	protocolFailure := errors.Is(err, rc.ErrWorkerProtocol)
 	if checkpointFailure {

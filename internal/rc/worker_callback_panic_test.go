@@ -56,7 +56,7 @@ func TestWorkerParentPanicProcessFixture(t *testing.T) {
 		kind = "upload"
 	}
 	err := executeWorkerCommand(progressCtx, cmd, kind, 7)
-	if err == nil || !strings.Contains(err.Error(), cause.Error()) || (phase != "string" && !errors.Is(err, cause)) {
+	if !errors.Is(err, ErrProgressCallback) || !strings.Contains(err.Error(), cause.Error()) || (phase != "string" && !errors.Is(err, cause)) {
 		t.Fatalf("callback panic lost: %v", err)
 	}
 	if errors.Is(err, context.Canceled) != strings.HasPrefix(phase, "canceled") || errors.Is(err, context.DeadlineExceeded) {

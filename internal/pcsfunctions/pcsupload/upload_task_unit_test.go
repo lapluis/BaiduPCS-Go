@@ -2,6 +2,7 @@ package pcsupload
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -15,11 +16,11 @@ func attachTaskInfo(unit *UploadTaskUnit) {
 	executor.Append(unit, 0)
 }
 
-func TestRunReportsOversizedFileAsFailure(t *testing.T) {
+func TestRunReportsMissingFileDespiteOversizedCache(t *testing.T) {
 	unit := &UploadTaskUnit{
 		LocalFileChecksum: &checksum.LocalFileChecksum{
 			LocalFileMeta: checksum.LocalFileMeta{
-				Path:   "too-large.mp4",
+				Path:   filepath.Join(t.TempDir(), "missing-large.mp4"),
 				Length: baidupcs.MaxUploadSize + 1,
 			},
 		},
@@ -28,8 +29,9 @@ func TestRunReportsOversizedFileAsFailure(t *testing.T) {
 
 	result := unit.Run()
 
-	if result == nil || result.Succeed || result.Err == nil {
-		t.Fatalf("expected explicit failure result, got %#v", result)
+	var pathErr *os.PathError
+	if result == nil || result.Succeed || !errors.Is(result.Err, os.ErrNotExist) || !errors.As(result.Err, &pathErr) {
+		t.Fatalf("cached size hid source inspection failure: %#v", result)
 	}
 }
 

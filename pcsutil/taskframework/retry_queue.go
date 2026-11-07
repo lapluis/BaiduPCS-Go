@@ -36,10 +36,6 @@ func (te *TaskExecutor) executeTask(task *TaskInfoItem) *delayedTask {
 		return nil
 	}
 	if result.NeedRetry {
-		if te.Stopped() {
-			task.Unit.OnComplete(result)
-			return nil
-		}
 		if task.Info.IsExceedRetry() {
 			task.Unit.OnFailed(result)
 			if te.IsFailedDeque {
@@ -47,6 +43,12 @@ func (te *TaskExecutor) executeTask(task *TaskInfoItem) *delayedTask {
 			}
 			task.Unit.OnComplete(result)
 			return nil
+		}
+		if te.Stopped() {
+			// Keep unfinished work without consuming another retry or
+			// invoking retry callbacks after the executor has been stopped.
+			task.Unit.OnComplete(result)
+			return &delayedTask{task: task}
 		}
 		task.Info.retry++
 		task.Unit.OnRetry(result)

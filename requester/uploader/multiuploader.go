@@ -209,6 +209,18 @@ func (muer *MultiUploader) finish(err error) error {
 	if progressErr != nil && !errors.Is(err, progressErr) {
 		err = errors.Join(err, progressErr)
 	}
+	// Joining status callbacks can run user code after upload's final checks.
+	// Recheck before the success event can clear a checkpoint or count bytes.
+	if err == nil {
+		if muer.isAborted() || muer.isStopped() {
+			err = muer.abortError()
+		} else {
+			err = muer.validateSource()
+			if err == nil && (muer.isAborted() || muer.isStopped()) {
+				err = muer.abortError()
+			}
+		}
+	}
 	// Notify the error observer at most once, even if it or the final event
 	// also fails. The returned error remains available when notification fails.
 	notified := false

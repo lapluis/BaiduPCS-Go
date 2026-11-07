@@ -78,7 +78,9 @@ func TestSingleUploadStatusReportsProgress(t *testing.T) {
 	ticks := make(chan time.Time)
 	status := make(chan Status)
 	done := make(chan struct{})
-	go func() { defer close(done); u.streamStatus(status, ticks) }()
+	var sample int
+	now := func() time.Time { sample++; return u.executeTime.Add(time.Duration(sample) * time.Second) }
+	go func() { defer close(done); u.streamStatusAt(status, ticks, now) }()
 	defer func() { close(u.finished); <-done }()
 	ticks <- time.Now()
 	first := <-status

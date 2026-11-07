@@ -232,24 +232,35 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 	if err := is.verifyCheckpointLocked(); err != nil {
 		return err
 	}
-
-	if is.ii == nil {
-		is.ii = &transfer.DownloadInstanceInfoExport{}
+	if eii == nil || eii.DownloadStatus == nil {
+		return fmt.Errorf("%w: missing checkpoint snapshot or status", ErrResumeFileMismatch)
 	}
-	is.ii.SetInstanceInfo(eii)
+	candidate := &transfer.DownloadInstanceInfoExport{}
+	candidate.SetInstanceInfo(eii)
+	if err := validateCheckpoint(candidate); err != nil {
+		return err
+	}
+
 	var (
 		data []byte
 		err  error
 	)
 	switch is.format {
 	case InstanceStateStorageFormatProto3:
-		data, err = proto.Marshal(is.ii.(*transfer.DownloadInstanceInfoExport))
+		data, err = proto.Marshal(candidate)
 	default:
-		data, err = jsoniter.Marshal(is.ii)
+		data, err = jsoniter.Marshal(candidate)
 	}
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > maxCheckpointSize {
+		return fmt.Errorf("%w: checkpoint size %d exceeds limit", ErrResumeFileMismatch, len(data))
+	}
+	if is.ii == nil {
+		is.ii = &transfer.DownloadInstanceInfoExport{}
+	}
+	is.ii.SetInstanceInfo(eii)
 
 	// Verify this handle is writable without destroying the previous record.
 	// Writing in place could leave a torn, but still parseable, range list.

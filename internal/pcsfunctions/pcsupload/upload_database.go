@@ -107,21 +107,15 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("decode upload resume database: %w", err)
 	}
+	if err := validateUploadDatabaseEntries(ud.UploadingList); err != nil {
+		return nil, err
+	}
 	copy(ud.version[:], digest.Sum(nil))
 	for _, entry := range ud.UploadingList {
-		if entry == nil {
-			continue
-		}
-		if entry.State == nil {
-			if entry.LocalFileMeta != nil && entry.BlocksList != nil {
-				return nil, errors.New("invalid upload resume database: block checksums without upload state")
-			}
+		if entry == nil || entry.State == nil {
 			continue
 		}
 		for _, block := range entry.State.BlockList {
-			if block == nil {
-				return nil, errors.New("invalid upload resume database: null block")
-			}
 			if block.CheckSum != "" {
 				valid := false
 				if len(block.CheckSum) == 2*md5.Size {
@@ -140,6 +134,27 @@ func NewUploadingDatabaseAt(filename string) (ud *UploadingDatabase, err error) 
 	return ud, nil
 }
 
+// Apply the same structural constraints before reading or replacing a record.
+func validateUploadDatabaseEntries(entries []*Uploading) error {
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.State == nil {
+			if entry.LocalFileMeta != nil && entry.BlocksList != nil {
+				return errors.New("invalid upload resume database: block checksums without upload state")
+			}
+			continue
+		}
+		for _, block := range entry.State.BlockList {
+			if block == nil {
+				return errors.New("invalid upload resume database: null block")
+			}
+		}
+	}
+	return nil
+}
+
 // Save 保存内容
 func (ud *UploadingDatabase) Save() (saveErr error) {
 	defer func() {
@@ -151,6 +166,9 @@ func (ud *UploadingDatabase) Save() (saveErr error) {
 	defer ud.lock.Unlock()
 	if ud.closed || ud.filename == "" {
 		return errors.New("upload resume database is closed")
+	}
+	if err := validateUploadDatabaseEntries(ud.UploadingList); err != nil {
+		return err
 	}
 	name := ud.filename
 	lease, err := filelock.TryLock(name + ".lock")

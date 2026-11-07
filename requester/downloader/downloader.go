@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
@@ -43,6 +42,7 @@ type (
 
 		executeCancelFunc context.CancelFunc
 		cancelMu          sync.Mutex
+		controlEvents     *downloadControlEvents
 
 		firstInfo               *DownloadFirstInfo      // 初始信息
 		loadBalancerCompareFunc LoadBalancerCompareFunc // 负载均衡检测函数
@@ -327,15 +327,33 @@ func (der *Downloader) Execute() error {
 }
 
 // ExecuteWithContext cancels active ranges and persists their remaining work.
-func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
+func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	controls := &downloadControlEvents{accepting: true, cancel: cancel}
 	der.cancelMu.Lock()
 	der.executeCancelFunc = cancel
+	der.controlEvents = controls
 	der.cancelMu.Unlock()
 	defer cancel()
+	defer func() {
+		if controlErr := der.joinControlEvents(controls); controlErr != nil && !errors.Is(resultErr, controlErr) {
+			resultErr = errors.Join(resultErr, controlErr)
+		}
+		// A joined observer can cancel after the last ordinary return check.
+		// The execution's own deferred cancel has not run yet.
+		if canceled := ctx.Err(); canceled != nil && !errors.Is(resultErr, canceled) {
+			resultErr = errors.Join(resultErr, canceled)
+		}
+		der.cancelMu.Lock()
+		if der.controlEvents == controls {
+			der.controlEvents = nil
+			der.executeCancelFunc = nil
+		}
+		der.cancelMu.Unlock()
+	}()
 	der.lazyInit()
 	var (
 		resp *http.Response
@@ -409,7 +427,10 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	if err := der.initInstanceState(der.config.InstanceStateStorageFormat); err != nil {
 		return err
 	}
-	defer der.instanceState.Close()
+	defer func() {
+		der.joinControlEvents(controls)
+		der.instanceState.Close()
+	}()
 	if single {
 		if err := der.instanceState.discardRanges(); err != nil {
 			return err
@@ -565,7 +586,15 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	// 开始执行
 	der.executeTime = time.Now()
 	der.monitor.prepareCompletion()
-	pcsutil.TriggerOnSync(der.onExecuteEvent)
+	if eventErr := runDownloadEvent("execute", der.onExecuteEvent); eventErr != nil {
+		// Close monitor completion without starting workers, then preserve a
+		// recoverable snapshot before notifying the final observer.
+		moniterCancelFunc()
+		der.monitor.execute(moniterCtx, nil)
+		err = errors.Join(eventErr, der.joinControlEvents(controls), der.monitor.saveCheckpoint())
+		err = errors.Join(err, runDownloadEvent("finish", der.onFinishEvent))
+		return errors.Join(err, ctx.Err())
+	}
 	progress := der.downloadStatusEvent()
 	var progressFailed <-chan struct{}
 	if progress != nil {
@@ -583,7 +612,15 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	}
 
 	// 检查错误
-	err = errors.Join(der.monitor.Err(), progressErr)
+	controlErr := der.joinControlEvents(controls)
+	err = errors.Join(der.monitor.Err(), progressErr, controlErr)
+	retainCancellation := func() {
+		if canceled := ctx.Err(); canceled != nil && !errors.Is(err, canceled) {
+			err = errors.Join(err, canceled)
+		}
+	}
+	// A progress callback may cancel after the monitor has already finished.
+	retainCancellation()
 	if err == nil && single && der.firstInfo.ContentLength >= 0 && status.Downloaded() != der.firstInfo.ContentLength {
 		err = io.ErrUnexpectedEOF
 	}
@@ -598,6 +635,7 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 			err = file.Truncate(finalSize)
 		}
 	}
+	retainCancellation()
 	if err == nil && !der.config.IsTest {
 		if file, ok := der.writer.(interface{ Sync() error }); ok {
 			// Flush data and truncation before announcing success or discarding
@@ -605,15 +643,23 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 			err = file.Sync()
 		}
 	}
+	retainCancellation()
+	if ctx.Err() != nil && der.monitor.Err() == nil && progressErr == nil || controlErr != nil {
+		// The monitor finished before cancellation and did not persist a final
+		// cancellation snapshot. Save only after all workers/callbacks joined.
+		retainCancellation()
+		err = errors.Join(err, der.monitor.saveCheckpoint())
+	}
 	if err == nil {
 		err = der.removeInstanceState()
 	}
 	if err == nil { // 成功
-		pcsutil.TriggerOnSync(der.onSuccessEvent)
+		err = runDownloadEvent("success", der.onSuccessEvent)
 	}
 
 	// 执行结束
-	pcsutil.TriggerOnSync(der.onFinishEvent)
+	err = errors.Join(err, runDownloadEvent("finish", der.onFinishEvent))
+	retainCancellation()
 	return err
 }
 
@@ -640,7 +686,7 @@ func (der *Downloader) downloadStatusEvent() *downloadProgressEvent {
 				if !ok {
 					cause = fmt.Errorf("%v", r)
 				}
-				progress.err = fmt.Errorf("download progress callback panic: %w", cause)
+				progress.err = fmt.Errorf("%w: download progress callback panic: %w", ErrProgressCallback, cause)
 				close(progress.failed)
 			}
 			close(progress.done)
@@ -670,8 +716,11 @@ func (der *Downloader) Pause() {
 	if der.monitor == nil {
 		return
 	}
-	pcsutil.Trigger(der.onPauseEvent)
+	notify := der.prepareControlEvent("pause", der.onPauseEvent)
 	der.monitor.Pause()
+	if notify != nil {
+		go notify()
+	}
 }
 
 // Resume 恢复
@@ -679,8 +728,11 @@ func (der *Downloader) Resume() {
 	if der.monitor == nil {
 		return
 	}
-	pcsutil.Trigger(der.onResumeEvent)
+	notify := der.prepareControlEvent("resume", der.onResumeEvent)
 	der.monitor.Resume()
+	if notify != nil {
+		go notify()
+	}
 }
 
 // Cancel 取消
@@ -688,44 +740,54 @@ func (der *Downloader) Resume() {
 func (der *Downloader) Cancel() {
 	der.cancelMu.Lock()
 	cancel := der.executeCancelFunc
+	notify := der.prepareControlEventLocked("cancel", der.onCancelEvent)
 	der.cancelMu.Unlock()
 	if cancel == nil {
 		return
 	}
 	cancel()
-	pcsutil.Trigger(der.onCancelEvent)
+	if notify != nil {
+		go notify()
+	}
 }
 
 // OnExecute 设置开始下载事件
 // The callback runs synchronously after setup and before any worker starts.
 // It may configure or cancel work, but must not wait for worker completion.
+// A panic is returned as ErrEventCallback after checkpoint and finish handling.
 func (der *Downloader) OnExecute(onExecuteEvent requester.Event) {
 	der.onExecuteEvent = onExecuteEvent
 }
 
 // OnSuccess 设置成功下载事件
 // The callback runs synchronously after data flush and checkpoint cleanup.
+// A panic is returned as ErrEventCallback; completed data remains committed.
 func (der *Downloader) OnSuccess(onSuccessEvent requester.Event) {
 	der.onSuccessEvent = onSuccessEvent
 }
 
 // OnFinish 设置结束下载事件
 // The callback runs synchronously before a started download returns.
+// A panic is joined with any existing transfer error as ErrEventCallback.
 func (der *Downloader) OnFinish(onFinishEvent requester.Event) {
 	der.onFinishEvent = onFinishEvent
 }
 
 // OnPause 设置暂停下载事件
+// Control events run asynchronously after signaling the action. Execute joins
+// accepted events before final callbacks; they must not wait for Execute to return.
 func (der *Downloader) OnPause(onPauseEvent requester.Event) {
 	der.onPauseEvent = onPauseEvent
 }
 
 // OnResume 设置恢复下载事件
+// It follows the same asynchronous completion contract as OnPause.
 func (der *Downloader) OnResume(onResumeEvent requester.Event) {
 	der.onResumeEvent = onResumeEvent
 }
 
 // OnCancel 设置取消下载事件
+// It follows the same asynchronous completion contract as OnPause.
 func (der *Downloader) OnCancel(onCancelEvent requester.Event) {
 	der.onCancelEvent = onCancelEvent
 }

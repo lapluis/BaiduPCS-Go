@@ -381,6 +381,7 @@ func validateFlags(cmd string, p parsed) error {
 	return nil
 }
 func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.Writer) (resultErr error) {
+	defer func(parent context.Context) { resultErr = preserveContextError(parent, resultErr) }(ctx)
 	output := checkedwriter.New(out)
 	out = output
 	defer func() {
@@ -486,22 +487,20 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			return err
 		}
 		res, err := Execute(ctx, plan, p.Options)
-		if p.Progress {
-			logAction(p.Options, "summary", res.String())
+		if p.Progress && !errors.Is(err, ErrLogCallback) {
+			err = errors.Join(err, logAction(p.Options, "summary", res.String()))
 		}
 		return err
 	}
 	switch cmd {
 	case "mkdir":
 		if p.DryRun {
-			logAction(p.Options, "would-mkdir", src.Root)
-			return nil
+			return logAction(p.Options, "would-mkdir", src.Root)
 		}
 		if err := src.FS.Mkdir(ctx, src.Root); err != nil {
 			return err
 		}
-		logAction(p.Options, "mkdir", src.Root)
-		return nil
+		return logAction(p.Options, "mkdir", src.Root)
 	case "quota":
 		remote, ok := src.FS.(*Remote)
 		if !ok {

@@ -343,17 +343,18 @@ func (dtu *DownloadTaskUnit) handleError(result *taskframework.TaskUnitRunResult
 }
 
 func downloadNeedsRetry(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, downloader.ErrCheckpointSave) || errors.Is(err, downloader.ErrProgressCallback) || errors.Is(err, downloader.ErrEventCallback) {
 		return false
 	}
-	var pcsErr pcserror.Error
-	if errors.As(err, &pcsErr) {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return false
+	}
+	if pcsErr, ok := err.(pcserror.Error); ok {
 		if pcsErr.GetErrType() == pcserror.ErrTypeRemoteError {
 			switch pcsErr.GetRemoteErrCode() {
 			case 31045, 31066, 31297: // user or file does not exist
 				return false
-			default:
-				return true
 			}
 		}
 		// PCS errors expose their underlying cause through GetError.
@@ -362,8 +363,25 @@ func downloadNeedsRetry(err error) bool {
 		}
 		return true
 	}
-	var pathErr *os.PathError
-	return !errors.As(err, &pathErr)
+	if composite, ok := err.(interface{ Unwrap() []error }); ok {
+		// Every failure must be retryable; choosing the first PCS error
+		// would make the result depend on the ordering of joined causes.
+		retry := false
+		for _, cause := range composite.Unwrap() {
+			if cause == nil {
+				continue
+			}
+			if !downloadNeedsRetry(cause) {
+				return false
+			}
+			retry = true
+		}
+		return retry
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return downloadNeedsRetry(cause)
+	}
+	return true
 }
 
 func (dtu *DownloadTaskUnit) execPanDownload(dlink string, result *taskframework.TaskUnitRunResult, okPtr *bool) {
@@ -500,6 +518,7 @@ func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunRes
 	}
 	if fi.Size() != dtu.FileInfo.Size {
 		result.ResultMessage = StrDownloadCheckLengthFailed
+		result.Err = fmt.Errorf("%w: got %d, want %d", ErrDownloadLengthMismatch, fi.Size(), dtu.FileInfo.Size)
 		result.NeedNextdindex = true
 		result.NeedRetry = true
 		dtu.IsOverwrite = true
@@ -524,8 +543,8 @@ func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunRes
 		switch err {
 		case ErrDownloadNotSupportChecksum:
 			// 文件不支持校验
-			result.ResultMessage = "检验文件有效性"
-			result.Err = err
+			result.ResultMessage = fmt.Sprintf("跳过摘要校验: %v", err)
+			result.Err = nil
 			fmt.Printf("[%s] 检验文件有效性: %s\n", dtu.taskInfo.Id(), err)
 			return true
 		case ErrDownloadFileBanned:

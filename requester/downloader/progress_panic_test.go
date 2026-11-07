@@ -162,7 +162,7 @@ func TestProgressPanicProcessFixture(t *testing.T) {
 		}
 	})
 	err = d.ExecuteWithContext(ctx)
-	if err == nil || !strings.Contains(err.Error(), panicCause.Error()) || (phase != "string" && !errors.Is(err, panicCause)) {
+	if !errors.Is(err, ErrProgressCallback) || !strings.Contains(err.Error(), panicCause.Error()) || (phase != "string" && !errors.Is(err, panicCause)) {
 		t.Fatalf("progress panic not returned: %v", err)
 	}
 	if errors.Is(err, context.Canceled) != (phase == "canceled") || errors.Is(err, context.DeadlineExceeded) {

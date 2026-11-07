@@ -186,7 +186,12 @@ func (s *downloadStage) reset() error {
 	s.info.LocalModified = 0
 	return nil
 }
-func (s *downloadStage) save() error {
+func (s *downloadStage) save() (saveErr error) {
+	defer func() {
+		if saveErr != nil {
+			saveErr = fmt.Errorf("%w: %w", ErrCheckpointSave, saveErr)
+		}
+	}()
 	if info, err := os.Stat(s.payload); err == nil {
 		s.info.LocalSize = info.Size()
 		s.info.LocalModified = info.ModTime().UnixNano()

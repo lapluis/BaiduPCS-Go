@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio/speeds"
 	"sync"
 	"sync/atomic"
@@ -121,11 +122,9 @@ func (ds *DownloadStatus) TimeElapsed() (elapsed time.Duration) {
 
 // TimeLeft 返回预计剩余时间
 func (ds *DownloadStatus) TimeLeft() (left time.Duration) {
-	speeds := atomic.LoadInt64(&ds.tmpSpeeds)
-	if speeds <= 0 {
-		left = -1
-	} else {
-		left = time.Duration((ds.TotalSize()-ds.Downloaded())/speeds) * time.Second
+	left = converter.RemainingTime(ds.TotalSize(), ds.Downloaded(), ds.SpeedsPerSecond())
+	if left >= 0 {
+		left = left.Truncate(time.Second)
 	}
 	return
 }

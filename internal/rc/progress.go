@@ -2,12 +2,37 @@ package rc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/mattn/go-runewidth"
+	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"sort"
 	"strings"
 	"time"
 )
+
+// ErrProgressCallback identifies a failure rendering overall transfer progress.
+var ErrProgressCallback = errors.New("transfer progress callback failed")
+
+func runProgressCallback(o Options, snapshot ProgressSnapshot) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cause, ok := r.(error)
+			if !ok {
+				cause = fmt.Errorf("%v", r)
+			}
+			err = fmt.Errorf("%w: %w", ErrProgressCallback, cause)
+		}
+	}()
+	if o.Progress != nil {
+		o.Progress(snapshot)
+	} else {
+		if err := logAction(o, "progress", snapshot.String()); err != nil {
+			return fmt.Errorf("%w: %w", ErrProgressCallback, err)
+		}
+	}
+	return nil
+}
 
 type transferSettingsKey struct{}
 type progressKey struct{}
@@ -73,7 +98,7 @@ func (p ProgressSnapshot) String() string {
 		percent = 100 * float64(p.Done) / float64(p.Total)
 	}
 	eta := "--"
-	if p.Rate > 0 {
+	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()
 	}
 	return fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed)
@@ -84,7 +109,7 @@ func (p ProgressSnapshot) Lines() []string {
 		percent = 100 * float64(p.Done) / float64(p.Total)
 	}
 	eta := "--"
-	if p.Rate > 0 {
+	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()
 	}
 	lines := []string{fmt.Sprintf("%.1f%% | %s / %s | %s/s | ETA %s", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), eta), fmt.Sprintf("files %d/%d | active %d | failed %d | elapsed %s", p.Completed, p.Count, p.Active, p.Failed, p.Elapsed.Round(time.Second))}
@@ -164,8 +189,6 @@ func (s *progressState) snapshot(r Result, active int) ProgressSnapshot {
 		p.Files = append(p.Files, f)
 	}
 	sort.Slice(p.Files, func(i, j int) bool { return p.Files[i].Path < p.Files[j].Path })
-	if p.Rate > 0 {
-		p.ETA = time.Duration(float64(max(0, p.Total-p.Done)) / float64(p.Rate) * float64(time.Second))
-	}
+	p.ETA = converter.RemainingTime(p.Total, p.Done, p.Rate)
 	return p
 }

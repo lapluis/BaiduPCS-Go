@@ -375,18 +375,50 @@ func actionPath(p *Plan, a Action) string {
 	}
 	return p.Source.Root + " -> " + p.Destination.Root
 }
-func logAction(o Options, kind, p string) {
+
+// ErrLogCallback identifies a failed action-log observer.
+var ErrLogCallback = errors.New("action log callback failed")
+
+func logAction(o Options, kind, p string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cause, ok := r.(error)
+			if !ok {
+				cause = fmt.Errorf("%v", r)
+			}
+			err = fmt.Errorf("%w (%s): %w", ErrLogCallback, kind, cause)
+		}
+	}()
 	if o.Emit != nil {
 		o.Emit(kind, p)
 	}
+	return nil
 }
-func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
+func preserveContextError(ctx context.Context, err error) error {
+	if canceled := ctx.Err(); canceled != nil && !errors.Is(err, canceled) {
+		return errors.Join(err, canceled)
+	}
+	return err
+}
+
+func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr error) {
+	defer func(parent context.Context) { executeErr = preserveContextError(parent, executeErr) }(ctx)
 	result := Result{}
 	if o.DryRun {
 		for _, a := range p.Actions {
-			logAction(o, "would-"+a.Kind, actionPath(p, a))
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			if err := logAction(o, "would-"+a.Kind, actionPath(p, a)); err != nil {
+				return result, err
+			}
 			if p.Move && (a.Kind == "copy" || a.Reason == "identical") {
-				logAction(o, "would-remove-source", actionPath(p, a))
+				if err := ctx.Err(); err != nil {
+					return result, err
+				}
+				if err := logAction(o, "would-remove-source", actionPath(p, a)); err != nil {
+					return result, err
+				}
 			}
 		}
 		return result, nil
@@ -399,6 +431,8 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 		}
 		return result, err
 	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	for _, a := range p.Actions {
 		if a.Kind == "mkdir" {
 			if err := p.Destination.FS.Mkdir(ctx, p.Destination.At(a.Path)); err != nil {
@@ -422,7 +456,14 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 	if o.ShowProgress {
 		done := make(chan struct{})
 		joined := make(chan struct{})
-		defer func() { close(done); <-joined }()
+		var progressErr error // Published when the progress goroutine closes joined.
+		defer func() {
+			close(done)
+			<-joined
+			if progressErr != nil && !errors.Is(executeErr, progressErr) {
+				executeErr = errors.Join(executeErr, progressErr)
+			}
+		}()
 		go func() {
 			defer close(joined)
 			ticker := time.NewTicker(time.Second)
@@ -435,10 +476,9 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 					mu.Lock()
 					snapshot := progress.snapshot(result, active)
 					mu.Unlock()
-					if o.Progress != nil {
-						o.Progress(snapshot)
-					} else {
-						logAction(o, "progress", snapshot.String())
+					if progressErr = runProgressCallback(o, snapshot); progressErr != nil {
+						cancel(progressErr)
+						return
 					}
 				}
 			}
@@ -475,7 +515,9 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 					}
 					for attempt := 0; !serverMoved && attempt <= o.Retries; attempt++ {
 						err = copyAction(actionCtx, p.Source, p.Destination, &a, o)
-						if err == nil || ctx.Err() != nil {
+						// Restarting a worker must not hide failures saving state or
+						// observing its output, even if a later attempt could succeed.
+						if err == nil || ctx.Err() != nil || errors.Is(err, ErrCheckpointSave) || errors.Is(err, ErrWorkerProtocol) || errors.Is(err, ErrProgressCallback) || errors.Is(err, ErrLogCallback) {
 							break
 						}
 						if attempt < o.Retries {
@@ -496,20 +538,28 @@ func Execute(ctx context.Context, p *Plan, o Options) (Result, error) {
 						mu.Unlock()
 					}
 				}
+				if cause := context.Cause(ctx); err != nil && (errors.Is(cause, ErrProgressCallback) || errors.Is(cause, ErrLogCallback)) {
+					err = errors.Join(err, cause)
+				}
 				mu.Lock()
 				active--
 				progress.finish(a, err == nil)
 				// A request's own timeout is a failure while the parent task is live.
 				canceled := errors.Is(err, context.Canceled) || ctx.Err() != nil && errors.Is(err, context.DeadlineExceeded)
-				if canceled && !errors.Is(err, ErrCheckpointSave) && !errors.Is(err, ErrWorkerProtocol) {
+				var logErr error
+				if canceled && !errors.Is(err, ErrCheckpointSave) && !errors.Is(err, ErrWorkerProtocol) && !errors.Is(err, ErrProgressCallback) && !errors.Is(err, ErrLogCallback) {
 					result.Canceled++
 					errs = errors.Join(errs, err)
 				} else if err != nil {
 					result.Failed++
 					errs = errors.Join(errs, fmt.Errorf("%s: %w", a.Path, err))
-					logAction(o, "error", actionPath(p, a))
+					logErr = logAction(o, "error", actionPath(p, a))
 				} else {
-					logAction(o, a.Kind, actionPath(p, a))
+					logErr = logAction(o, a.Kind, actionPath(p, a))
+				}
+				if logErr != nil {
+					errs = errors.Join(errs, logErr)
+					cancel(logErr)
 				}
 				mu.Unlock()
 			}
@@ -530,7 +580,9 @@ dispatch:
 	}
 	close(jobs)
 	wg.Wait()
+	mu.Lock()
 	result.Pending = progress.totalFiles - result.Copied - result.Skipped - result.Failed - result.Canceled
+	mu.Unlock()
 	if errs != nil {
 		return result, errors.Join(errs, ctx.Err())
 	}
@@ -576,8 +628,12 @@ dispatch:
 			if err := p.Destination.FS.Remove(ctx, p.Destination.At(a.Path), false); err != nil {
 				return result, err
 			}
+			mu.Lock()
 			result.Deleted++
-			logAction(o, "delete", a.Path)
+			mu.Unlock()
+			if err := logAction(o, "delete", a.Path); err != nil {
+				return result, err
+			}
 		}
 	}
 	for _, a := range p.Actions {
@@ -590,7 +646,9 @@ dispatch:
 				if err = p.Destination.FS.Remove(ctx, p.Destination.At(a.Path), true); err != nil {
 					return result, err
 				}
-				logAction(o, "rmdir", a.Path)
+				if err := logAction(o, "rmdir", a.Path); err != nil {
+					return result, err
+				}
 			}
 		}
 	}
@@ -897,7 +955,8 @@ func copyLocal(ctx context.Context, src, dst string, rate int64) (resultErr erro
 	}
 	return out.Sync()
 }
-func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) error {
+func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) (removeErr error) {
+	defer func() { removeErr = preserveContextError(ctx, removeErr) }()
 	m, err := snapshot(ctx, e)
 	if err != nil {
 		return err
@@ -908,6 +967,9 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) e
 		keys = append(keys, "")
 	}
 	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if k != "" && !m[k].IsDir {
 			continue
 		}
@@ -929,12 +991,16 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) e
 			continue
 		}
 		if o.DryRun {
-			logAction(o, "would-rmdir", k)
+			if err := logAction(o, "would-rmdir", k); err != nil {
+				return err
+			}
 		} else {
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
 			}
-			logAction(o, "rmdir", k)
+			if err := logAction(o, "rmdir", k); err != nil {
+				return err
+			}
 		}
 		delete(m, k)
 	}

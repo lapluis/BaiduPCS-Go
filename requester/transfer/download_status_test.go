@@ -1,12 +1,40 @@
 package transfer
 
 import (
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestDownloadTimeLeftBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		total, done, rate int64
+		want              time.Duration
+	}{
+		{"slow-large-file", 128 << 30, 0, 1, -1},
+		{"extreme-size", math.MaxInt64, 0, 1, -1},
+		{"unknown-size", -1, 10, 2, -1},
+		{"complete", 10, 10, 2, 0},
+		{"over-complete", 10, 20, 2, 0},
+		{"stalled", 10, 7, 0, -1},
+		{"whole-seconds", 10, 7, 2, time.Second},
+		{"resumed", 128 << 30, (128 << 30) - 768, 128, 6 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewDownloadStatus()
+			s.SetTotalSize(tc.total)
+			s.AddDownloaded(tc.done)
+			atomic.StoreInt64(&s.tmpSpeeds, tc.rate)
+			if got := s.TimeLeft(); got != tc.want {
+				t.Fatalf("TimeLeft()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestConcurrentDownloadStatusReadsAreAtomic(t *testing.T) {
 	previous := runtime.GOMAXPROCS(4)

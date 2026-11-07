@@ -57,7 +57,8 @@ func FilePlan(ctx context.Context, src, dst Endpoint, move bool, o Options) (*Pl
 	return &Plan{Source: src, Destination: dst, Actions: []Action{a}, Move: move}, nil
 }
 
-func Check(ctx context.Context, src, dst Endpoint, o Options) error {
+func Check(ctx context.Context, src, dst Endpoint, o Options) (checkErr error) {
+	defer func() { checkErr = preserveContextError(ctx, checkErr) }()
 	// An explicit check compares current content even when a prior download
 	// has an unchanged entity validator and a verified local completion record.
 	if !o.SizeOnly {
@@ -73,18 +74,25 @@ func Check(ctx context.Context, src, dst Endpoint, o Options) error {
 	}
 	differences := 0
 	for _, k := range sortedKeys(sm) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s := sm[k]
 		if s.IsDir || !o.Filter.Match(k) {
 			continue
 		}
 		d, ok := dm[k]
 		if !ok {
-			logAction(o, "missing-on-destination", k)
+			if err := logAction(o, "missing-on-destination", k); err != nil {
+				return err
+			}
 			differences++
 			continue
 		}
 		if d.IsDir {
-			logAction(o, "different-type", k)
+			if err := logAction(o, "different-type", k); err != nil {
+				return err
+			}
 			differences++
 			continue
 		}
@@ -93,22 +101,33 @@ func Check(ctx context.Context, src, dst Endpoint, o Options) error {
 			return err
 		}
 		if !equal {
-			logAction(o, "different", k)
+			if err := logAction(o, "different", k); err != nil {
+				return err
+			}
 			differences++
 		} else {
-			logAction(o, "match", k)
+			if err := logAction(o, "match", k); err != nil {
+				return err
+			}
 		}
 	}
 	for _, k := range sortedKeys(dm) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		d := dm[k]
 		if d.IsDir || !o.Filter.Match(k) {
 			continue
 		}
 		if s, ok := sm[k]; ok && s.IsDir {
-			logAction(o, "different-type", k)
+			if err := logAction(o, "different-type", k); err != nil {
+				return err
+			}
 			differences++
 		} else if !ok {
-			logAction(o, "missing-on-source", k)
+			if err := logAction(o, "missing-on-source", k); err != nil {
+				return err
+			}
 			differences++
 		}
 	}
@@ -117,7 +136,8 @@ func Check(ctx context.Context, src, dst Endpoint, o Options) error {
 	}
 	return nil
 }
-func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
+func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr error) {
+	defer func() { deleteErr = preserveContextError(ctx, deleteErr) }()
 	if mode == "deletefile" {
 		item, err := e.FS.Stat(ctx, e.Root)
 		if err != nil {
@@ -130,14 +150,12 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			return errors.New("--max-delete is zero")
 		}
 		if o.DryRun {
-			logAction(o, "would-delete", e.Root)
-			return nil
+			return logAction(o, "would-delete", e.Root)
 		}
 		if err := e.FS.Remove(ctx, e.Root, false); err != nil {
 			return err
 		}
-		logAction(o, "delete", e.Root)
-		return nil
+		return logAction(o, "delete", e.Root)
 	}
 	if mode == "rmdir" {
 		children, err := e.FS.List(ctx, e.Root)
@@ -148,14 +166,12 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 			return errors.New("directory is not empty")
 		}
 		if o.DryRun {
-			logAction(o, "would-rmdir", e.Root)
-			return nil
+			return logAction(o, "would-rmdir", e.Root)
 		}
 		if err := e.FS.Remove(ctx, e.Root, true); err != nil {
 			return err
 		}
-		logAction(o, "rmdir", e.Root)
-		return nil
+		return logAction(o, "rmdir", e.Root)
 	}
 	if mode == "rmdirs" {
 		return removeEmpty(ctx, e, false, o)
@@ -185,7 +201,12 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 	}
 	for _, k := range files {
 		if o.DryRun {
-			logAction(o, "would-delete", k)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := logAction(o, "would-delete", k); err != nil {
+				return err
+			}
 			continue
 		}
 		old := m[k]
@@ -195,12 +216,17 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 		if err = e.FS.Remove(ctx, e.At(k), false); err != nil {
 			return err
 		}
-		logAction(o, "delete", k)
+		if err := logAction(o, "delete", k); err != nil {
+			return err
+		}
 	}
 	if mode == "purge" {
 		sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
 		keys = append(keys, "")
 		for _, k := range keys {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if k != "" && !m[k].IsDir {
 				continue
 			}
@@ -209,13 +235,17 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) error {
 				item = e.Root
 			}
 			if o.DryRun {
-				logAction(o, "would-rmdir", item)
+				if err := logAction(o, "would-rmdir", item); err != nil {
+					return err
+				}
 				continue
 			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
 			}
-			logAction(o, "rmdir", item)
+			if err := logAction(o, "rmdir", item); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

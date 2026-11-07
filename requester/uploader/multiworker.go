@@ -137,7 +137,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 					var me *MultiError
 					if errors.As(terr, &me) {
 						if me.Terminated { // 终止
-							terminate(me.Err)
+							terminate(terr)
 							return
 						}
 					}

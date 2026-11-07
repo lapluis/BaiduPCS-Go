@@ -7,6 +7,8 @@ var (
 	ErrDownloadNotSupportChecksum = errors.New("该文件不支持校验")
 	// ErrDownloadChecksumFailed 文件校验失败
 	ErrDownloadChecksumFailed = errors.New("该文件校验失败, 文件md5值与服务器记录的不匹配")
+	// ErrDownloadLengthMismatch 下载文件长度不匹配。
+	ErrDownloadLengthMismatch = errors.New("下载文件长度与服务器记录不匹配")
 	// ErrDownloadFileBanned 违规文件
 	ErrDownloadFileBanned = errors.New("该文件可能是违规文件, 不支持校验")
 	// ErrDlinkNotFound 未取得下载链接
