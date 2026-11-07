@@ -883,8 +883,7 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 			})
 			err = runTransferWorker(transferCtx, "download", sr.UID, sp, tmp, perTransferRate(o))
 			if errors.Is(err, errResumeIdentity) {
-				_ = stage.reset()
-				return err
+				return errors.Join(err, stage.reset())
 			}
 			if saveErr := stage.save(); saveErr != nil {
 				return errors.Join(err, saveErr)
@@ -1171,6 +1170,9 @@ func tryServerMove(ctx context.Context, src, dst Endpoint, a Action, o Options) 
 		return true, errors.New("server move result could not be verified")
 	}
 	if _, err = sr.Stat(ctx, sp); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
+			return true, fmt.Errorf("server move source removal could not be verified: %w", err)
+		}
 		return true, errors.New("server move source removal could not be verified")
 	}
 	return true, nil

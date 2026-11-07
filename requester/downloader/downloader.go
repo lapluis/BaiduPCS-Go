@@ -80,8 +80,14 @@ func NewDownloader(durl string, writer io.WriterAt, config *Config) (der *Downlo
 
 // SetFirstInfo 设置初始信息
 // 如果设置了此值, 将忽略检测url
+// Metadata is copied; only a known length with AcceptRanges="bytes" enables ranges.
 func (der *Downloader) SetFirstInfo(i *DownloadFirstInfo) {
-	der.firstInfo = i
+	if i == nil {
+		der.firstInfo = nil
+		return
+	}
+	info := *i
+	der.firstInfo = &info
 }
 
 // SetClient 设置http客户端
@@ -220,6 +226,15 @@ func defaultDURLCheckWithContext(ctx context.Context, client *requester.HTTPClie
 		}
 		return 0, nil, err
 	}
+	if resp.StatusCode == http.StatusPartialContent {
+		_, _, total, ok := parseContentRangeBounds(resp.Header.Get("Content-Range"))
+		if !ok {
+			return 0, resp, fmt.Errorf("invalid partial download probe: Content-Range %q", resp.Header.Get("Content-Range"))
+		}
+		// Content-Length describes this response's segment, not the entity.
+		// An unknown total must stay unknown so the full-stream fallback runs.
+		return total, resp, nil
+	}
 	return resp.ContentLength, resp, nil
 }
 
@@ -234,6 +249,31 @@ func (der *Downloader) checkURL(ctx context.Context, client *requester.HTTPClien
 		return der.durlCheckFunc(client, url)
 	}
 	return defaultDURLCheckWithContext(ctx, client, url)
+}
+
+// Only file responses can supply the size used to plan writes and truncation.
+// In particular, an empty redirect or no-content response is not an empty file.
+func (der *Downloader) checkProbeResponse(resp *http.Response, totalSize int64) error {
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if resp.StatusCode == http.StatusPartialContent {
+		begin, end, total, ok := parseContentRangeBounds(resp.Header.Get("Content-Range"))
+		// An empty partial response cannot represent an empty file. Validate
+		// before zero-sized planning can skip workers and truncate the output.
+		// Compare lengths without end+1, which could overflow for bad headers.
+		if !ok || totalSize == 0 || (totalSize > 0 && total != totalSize) ||
+			(resp.ContentLength >= 0 && (resp.ContentLength == 0 || end-begin != resp.ContentLength-1)) {
+			return fmt.Errorf("invalid partial download probe: Content-Range %q, Content-Length %d, total %d", resp.Header.Get("Content-Range"), resp.ContentLength, totalSize)
+		}
+		return nil
+	}
+	if (resp.StatusCode/100 == 4 || resp.StatusCode/100 == 5) && der.statusCodeBodyCheckFunc != nil {
+		if err := der.statusCodeBodyCheckFunc(resp.Body); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("download probe rejected: HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 }
 
 func (der *Downloader) checkLoadBalancers(ctx context.Context) *LoadBalancerResponseList {
@@ -288,15 +328,7 @@ func (der *Downloader) checkLoadBalancers(ctx context.Context) *LoadBalancerResp
 			}
 
 			// 检测状态码
-			switch subResp.StatusCode / 100 {
-			case 2: // succeed
-			case 4, 5: // error
-				var err error
-				if der.statusCodeBodyCheckFunc != nil {
-					err = der.statusCodeBodyCheckFunc(subResp.Body)
-				} else {
-					err = errors.New(subResp.Status)
-				}
+			if err := der.checkProbeResponse(subResp, subContentLength); err != nil {
 				pcsverbose.Verbosef("DEBUG: loadBalanser Status Error: %s\n", err)
 				return
 			}
@@ -371,17 +403,8 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		}
 
 		// 检测网络错误
-		switch resp.StatusCode / 100 {
-		case 2: // succeed
-		case 4, 5: // error
-			if der.statusCodeBodyCheckFunc != nil {
-				err = der.statusCodeBodyCheckFunc(resp.Body)
-				resp.Body.Close() // 关闭连接
-				if err != nil {
-					return err
-				}
-			}
-			return errors.New(resp.Status)
+		if err := der.checkProbeResponse(resp, contentLength); err != nil {
+			return err
 		}
 
 		acceptRanges := resp.Header.Get("Accept-Ranges")
@@ -395,10 +418,9 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		der.firstInfo = NewDownloadFirstInfoByResp(contentLength, resp)
 		der.firstInfo.AcceptRanges = acceptRanges
 		pcsverbose.Verbosef("DEBUG: download task: URL: %s, Referer: %s\n", resp.Request.URL, resp.Request.Referer())
-	} else {
-		if der.firstInfo.AcceptRanges == "" {
-			der.firstInfo.AcceptRanges = DefaultAcceptRanges
-		}
+	}
+	if der.firstInfo.AcceptRanges != DefaultAcceptRanges || der.firstInfo.ContentLength < 0 {
+		der.firstInfo.AcceptRanges = ""
 	}
 	if strings.HasPrefix(der.firstInfo.ETag, "W/") {
 		// Weak validators cannot prove byte identity across ranges and MUST

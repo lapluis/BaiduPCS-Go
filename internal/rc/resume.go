@@ -22,6 +22,7 @@ var stageDirectoryMu sync.Mutex
 
 var readDownloadRecord = os.ReadFile
 var statDownloadState = os.Stat
+var removeDownloadState = os.Remove
 
 func ownedStageDirectory(dir string) bool {
 	info, err := os.Lstat(filepath.Join(dir, ".owner"))
@@ -174,9 +175,14 @@ func detachSharedPartial(ctx context.Context, path string, before os.FileInfo) e
 	}
 	return os.Rename(name, path)
 }
-func (s *downloadStage) reset() error {
+func (s *downloadStage) reset() (resetErr error) {
+	defer func() {
+		if resetErr != nil {
+			resetErr = fmt.Errorf("%w: reset download partial: %w", ErrCheckpointSave, resetErr)
+		}
+	}()
 	for _, p := range []string{s.payload, s.payload + pcsdownload.DownloadSuffix, s.record} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		if err := removeDownloadState(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

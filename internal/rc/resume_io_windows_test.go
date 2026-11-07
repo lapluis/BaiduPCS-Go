@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsfunctions/pcsdownload"
 	"golang.org/x/sys/windows"
 )
 
@@ -34,4 +35,43 @@ func TestDownloadStageLockedRecordRetainsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.checkPreservedAndRetry(t)
+}
+
+func TestDownloadResetLockedStateReportsCheckpointFailure(t *testing.T) {
+	for _, kind := range []string{"payload", "ranges", "record"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newStageReadFixture(t)
+			blocked := f.stage.payload
+			if kind == "ranges" {
+				blocked += pcsdownload.DownloadSuffix
+			}
+			if kind == "record" {
+				blocked = f.stage.record
+			}
+			path, err := windows.UTF16PtrFromString(blocked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handle, err := windows.CreateFile(path, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocker := os.NewFile(uintptr(handle), blocked)
+			defer blocker.Close()
+			err = f.stage.reset()
+			var pathErr *os.PathError
+			if !errors.Is(err, ErrCheckpointSave) || !errors.As(err, &pathErr) || pathErr.Path != blocked {
+				t.Fatal("required reset failure was not preserved", err)
+			}
+			if b, err := os.ReadFile(blocked); err != nil || string(b) != string(f.before[blocked]) {
+				t.Fatal("locked state changed", err)
+			}
+			if err := blocker.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.stage.reset(); err != nil {
+				t.Fatal("reset did not recover after releasing handle", err)
+			}
+		})
+	}
 }

@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
@@ -167,7 +166,7 @@ func safeParents(p string) error {
 }
 
 type Remote struct {
-	mu  sync.Mutex
+	mu  remoteMutex
 	PCS *baidupcs.BaiduPCS
 	UID uint64
 }
@@ -180,13 +179,26 @@ func remoteError(err pcserror.Error) error {
 	if err == nil {
 		return nil
 	}
-	if err.GetRemoteErrCode() == 31066 || err.GetRemoteErrCode() == -9 {
+	if err.GetErrType() == pcserror.ErrTypeRemoteError && (err.GetRemoteErrCode() == 31066 || err.GetRemoteErrCode() == -9) {
 		return os.ErrNotExist
 	}
 	return err
 }
+
+func validateRemoteMetadataPath(requested string, info *baidupcs.FileDirectory) error {
+	if info == nil {
+		return fmt.Errorf("missing remote metadata for %q", requested)
+	}
+	if info.Path == "" || path.Clean(info.Path) != path.Clean(requested) {
+		return fmt.Errorf("remote metadata path mismatch: requested %q, received %q", requested, info.Path)
+	}
+	return nil
+}
+
 func (r *Remote) Stat(ctx context.Context, p string) (Entry, error) {
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return Entry{}, err
+	}
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Entry{}, err
@@ -198,13 +210,15 @@ func (r *Remote) Stat(ctx context.Context, p string) (Entry, error) {
 	if err != nil {
 		return Entry{}, remoteError(err)
 	}
-	if f == nil || path.Clean(f.Path) != path.Clean(p) {
-		return Entry{}, os.ErrNotExist
+	if err := validateRemoteMetadataPath(p, f); err != nil {
+		return Entry{}, err
 	}
 	return remoteEntry(f), nil
 }
 func (r *Remote) List(ctx context.Context, p string) ([]Entry, error) {
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -260,7 +274,9 @@ func (r *Remote) Mkdir(ctx context.Context, p string) error {
 	if err = r.Mkdir(ctx, path.Dir(p)); err != nil {
 		return err
 	}
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	err = r.PCS.MkdirWithContext(ctx, p)
 	r.mu.Unlock()
 	if err != nil {
@@ -294,7 +310,9 @@ func (r *Remote) Remove(ctx context.Context, p string, dir bool) error {
 			return fmt.Errorf("directory not empty: %s", p)
 		}
 	}
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer r.mu.Unlock()
 	return r.PCS.RemoveWithContext(ctx, p)
 }
@@ -303,12 +321,16 @@ type hashRateKey struct{}
 
 func hashRate(ctx context.Context) int64 { rate, _ := ctx.Value(hashRateKey{}).(int64); return rate }
 func (r *Remote) copyFile(ctx context.Context, from, to string) error {
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer r.mu.Unlock()
 	return r.PCS.CopyWithContext(ctx, &baidupcs.CpMvJSON{From: from, To: to})
 }
 func (r *Remote) moveFile(ctx context.Context, from, to string) error {
-	r.mu.Lock()
+	if err := r.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer r.mu.Unlock()
 	return r.PCS.MoveWithContext(ctx, &baidupcs.CpMvJSON{From: from, To: to})
 }

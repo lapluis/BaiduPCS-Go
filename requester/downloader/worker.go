@@ -204,7 +204,7 @@ func (wer *Worker) Cancel() error {
 func (wer *Worker) Reset() {
 	wer.controlMu.Lock()
 	defer wer.controlMu.Unlock()
-	if wer.paused {
+	if wer.paused || wer.Completed() {
 		return
 	}
 	if wer.resetFunc == nil {
@@ -327,6 +327,27 @@ func (wer *Worker) Execute() {
 		return
 	}
 
+	if single && wer.wrange.LoadBegin() != 0 {
+		// Without Range support a new response starts at byte zero. A caller
+		// must restart the whole transfer, not append that response to a prefix.
+		if wer.firstResp != nil {
+			if wer.firstResp.Body != nil {
+				_ = wer.firstResp.Body.Close()
+			}
+			wer.firstResp = nil
+		}
+		wer.err = errors.New("single stream cannot resume from a nonzero offset")
+		wer.status.SetStatusCode(StatusCodeInternalError)
+		return
+	}
+	setInterruptedStatus := func() {
+		wer.err = workerCancelCtx.Err()
+		if wer.err != nil {
+			wer.status.SetStatusCode(StatusCodeCanceled)
+		} else {
+			wer.status.SetStatusCode(StatusCodeReseted)
+		}
+	}
 	header := map[string]string{}
 	requestBegin, requestEnd := wer.wrange.LoadBegin(), wer.wrange.LoadEnd()
 	if wer.referer != "" {
@@ -477,12 +498,7 @@ func (wer *Worker) Execute() {
 						wer.status.SetStatusCode(StatusCodeRateLimited)
 					}
 					if err := wer.downloadStatus.AddSpeedsDownloadedWithContext(resetCtx, nn64); err != nil {
-						wer.status.SetStatusCode(StatusCodeReseted)
-						wer.err = nil
-						if canceled := workerCancelCtx.Err(); canceled != nil {
-							wer.err = canceled
-							wer.status.SetStatusCode(StatusCodeCanceled)
-						}
+						setInterruptedStatus()
 						return
 					}
 					wer.status.SetStatusCode(StatusCodeDownloading)
@@ -499,6 +515,15 @@ func (wer *Worker) Execute() {
 			// range after acquiring it: buffered data may predate a split.
 			if wer.writeMu != nil {
 				wer.writeMu.Lock()
+			}
+			// A control request can arrive while this buffered write waits behind
+			// another writer. Do not commit bytes from the canceled execution.
+			if resetCtx.Err() != nil {
+				if wer.writeMu != nil {
+					wer.writeMu.Unlock()
+				}
+				setInterruptedStatus()
+				return
 			}
 
 			// 非单线程模式下
@@ -552,6 +577,12 @@ func (wer *Worker) Execute() {
 			}
 			if wer.writerAt != nil {
 				wer.status.SetStatusCode(StatusCodeDownloading)
+			}
+			// A write already in progress must finish and advance its checkpoint,
+			// but cancellation during that write must not become success.
+			if resetCtx.Err() != nil {
+				setInterruptedStatus()
+				return
 			}
 
 			if !single && wer.wrange.Len() <= 0 {

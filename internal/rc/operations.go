@@ -157,6 +157,9 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 		if err != nil {
 			return err
 		}
+		if !item.IsDir {
+			return errors.New("rmdir expects a directory")
+		}
 		children, err := e.FS.List(ctx, e.Root)
 		if err != nil {
 			return err

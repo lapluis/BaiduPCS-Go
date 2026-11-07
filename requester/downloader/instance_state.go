@@ -289,6 +289,11 @@ func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) (saveErr error)
 	if err != nil {
 		return err
 	}
+	// Snapshot preparation and flushing can take time. Do not publish over a
+	// pathname that stopped referring to our owned checkpoint in that interval.
+	if err := is.verifyCheckpointLocked(); err != nil {
+		return err
+	}
 	// Windows cannot replace an open destination on all supported filesystems.
 	if err = is.saveFile.Close(); err != nil {
 		return err

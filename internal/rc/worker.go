@@ -235,6 +235,9 @@ func workerDownloadInfo(ctx context.Context, pcs *baidupcs.BaiduPCS, remote stri
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := validateRemoteMetadataPath(remote, info); err != nil {
+		return nil, err
+	}
 	if info.Isdir {
 		return nil, errors.New("worker expects a file")
 	}
