@@ -22,11 +22,6 @@ func FilePlan(ctx context.Context, src, dst Endpoint, move bool, o Options) (*Pl
 	if s.IsDir {
 		return nil, errors.New("copyto/moveto expects a single file")
 	}
-	if _, ok := dst.FS.(*Local); ok {
-		if err = validLocalName(filepath.Base(dst.Root)); err != nil {
-			return nil, err
-		}
-	}
 	a := Action{Kind: "copy", Source: &s}
 	d, err := dst.FS.Stat(ctx, dst.Root)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -158,6 +153,10 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 		return logAction(o, "delete", e.Root)
 	}
 	if mode == "rmdir" {
+		item, err := e.FS.Stat(ctx, e.Root)
+		if err != nil {
+			return err
+		}
 		children, err := e.FS.List(ctx, e.Root)
 		if err != nil {
 			return err
@@ -167,6 +166,9 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 		}
 		if o.DryRun {
 			return logAction(o, "would-rmdir", e.Root)
+		}
+		if err := unchangedDirectory(ctx, e, "", &item); err != nil {
+			return err
 		}
 		if err := e.FS.Remove(ctx, e.Root, true); err != nil {
 			return err
@@ -178,6 +180,14 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 	}
 	if mode == "purge" && (e.Root == "/" || filepath.Dir(e.Root) == e.Root) {
 		return errors.New("refusing to purge a filesystem root")
+	}
+	var purgeRoot Entry
+	if mode == "purge" {
+		var err error
+		purgeRoot, err = e.FS.Stat(ctx, e.Root)
+		if err != nil {
+			return err
+		}
 	}
 	m, err := snapshot(ctx, e)
 	if err != nil {
@@ -239,6 +249,13 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 					return err
 				}
 				continue
+			}
+			old := m[k]
+			if k == "" {
+				old = purgeRoot
+			}
+			if err = unchangedDirectory(ctx, e, k, &old); err != nil {
+				return err
 			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err

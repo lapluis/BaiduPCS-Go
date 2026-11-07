@@ -417,7 +417,7 @@ func (mt *Monitor) ResetWorker(worker *Worker) {
 		return
 	case StatusCodePending, StatusCodeReseted:
 		fallthrough
-	case StatusCodeWaitToWrite: // 正在写入数据
+	case StatusCodeWaitToWrite, StatusCodeRateLimited: // 等待磁盘或限速额度
 		fallthrough
 	case StatusCodePaused: // 已暂停
 		// 忽略, 返回

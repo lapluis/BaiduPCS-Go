@@ -2,8 +2,10 @@ package rc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,6 +15,51 @@ import (
 type windowsNameSource struct {
 	Local
 	entries map[string]Entry
+}
+
+func TestWindowsLocalNameDeviceAliasesAndControls(t *testing.T) {
+	requireWindowsNames(t)
+	for _, name := range []string{"CONIN$", "conout$", "COM¹", "com².bin", "LPT³", "LPT² .txt", "CON .txt", "nul   .log", "outer/COM¹/file"} {
+		t.Run(name, func(t *testing.T) {
+			if err := validLocalName(name); err == nil {
+				t.Fatal("device alias accepted")
+			}
+		})
+	}
+	for control := 0; control < 32; control++ {
+		t.Run(fmt.Sprintf("control-%02x", control), func(t *testing.T) {
+			if err := validLocalName("outer/a" + string(rune(control)) + "b"); err == nil {
+				t.Fatal("control character accepted")
+			}
+		})
+	}
+	for _, name := range []string{".hidden", ".pcsclone-partials", ".CON", "COM0", "LPT0.txt", "COM10", "LPT¹x", "COM⁴", "CONIN$x", "archive.tar.gz", "字幕/第一集.mkv", "a b.txt", "a .txt"} {
+		t.Run(name, func(t *testing.T) {
+			if err := validLocalName(name); err != nil {
+				t.Fatal("ordinary name rejected", err)
+			}
+		})
+	}
+}
+
+func TestWindowsInvalidFilePlansRejectBeforeDestinationAccess(t *testing.T) {
+	requireWindowsNames(t)
+	for _, name := range []string{"CONIN$", "CONOUT$.bin", "COM¹", "LPT² .txt", "CON .txt", "bad\x01name"} {
+		for _, move := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/move=%t", name, move), func(t *testing.T) {
+				source := Endpoint{FS: &windowsNameSource{entries: map[string]Entry{"file": {Size: 8}}}, Root: "/source/file"}
+				root := t.TempDir()
+				destination := Endpoint{FS: &Local{}, Root: filepath.Join(root, "not-created", name)}
+				_, err := FilePlan(context.Background(), source, destination, move, opts())
+				if err == nil || (!strings.Contains(err.Error(), "reserved Windows filename") && !strings.Contains(err.Error(), "unsupported Windows filename")) {
+					t.Fatal("invalid path reached destination access", err)
+				}
+				if _, err := os.Stat(filepath.Join(root, "not-created")); !os.IsNotExist(err) {
+					t.Fatal("planning created destination", err)
+				}
+			})
+		}
+	}
 }
 
 func (*windowsNameSource) Identity() string { return "windows-name-fixture" }
@@ -44,7 +91,7 @@ func requireWindowsNames(t *testing.T) {
 
 func TestInvalidEmptyDirectoryRejectedBeforeWrites(t *testing.T) {
 	requireWindowsNames(t)
-	for _, name := range []string{"trailing.", "trailing ", "CON", "bad:name", "outer/bad."} {
+	for _, name := range []string{"trailing.", "trailing ", "CON", "bad:name", "outer/bad.", "COM¹", "LPT²", "com³.txt", "CONIN$", "CONOUT$", "CON .txt", "outer/CONIN$", "bad\x01name", "bad\x00name"} {
 		t.Run(name, func(t *testing.T) {
 			entries := map[string]Entry{name: {IsDir: true}, "valid": {IsDir: true}}
 			if strings.Contains(name, "/") {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/mattn/go-runewidth"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -185,7 +186,8 @@ func (s *progressState) snapshot(r Result, active int) ProgressSnapshot {
 			f.Rate = 0
 		}
 		p.Done += f.Done
-		p.Rate += f.Rate
+		// Each worker rate fits int64, but their combined rate may not.
+		p.Rate += min(f.Rate, math.MaxInt64-p.Rate)
 		p.Files = append(p.Files, f)
 	}
 	sort.Slice(p.Files, func(i, j int) bool { return p.Files[i].Path < p.Files[j].Path })

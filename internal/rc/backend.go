@@ -116,6 +116,9 @@ func (l *Local) Hash(ctx context.Context, p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 func (l *Local) Mkdir(ctx context.Context, p string) error {
+	if err := validLocalPath(p); err != nil {
+		return err
+	}
 	if err := safeParents(p); err != nil {
 		return err
 	}

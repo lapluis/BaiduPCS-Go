@@ -49,9 +49,11 @@ const (
 	StatusCodeReseted
 	//StatusCodeCanceled 已取消
 	StatusCodeCanceled
+	//StatusCodeRateLimited 等待限速额度
+	StatusCodeRateLimited
 )
 
-//GetStatusText 根据状态码获取状态信息
+// GetStatusText 根据状态码获取状态信息
 func GetStatusText(sc StatusCode) string {
 	switch sc {
 	case StatusCodeInit:
@@ -64,6 +66,8 @@ func GetStatusText(sc StatusCode) string {
 		return "下载中"
 	case StatusCodeWaitToWrite:
 		return "等待写入数据"
+	case StatusCodeRateLimited:
+		return "限速等待"
 	case StatusCodeInternalError:
 		return "内部错误"
 	case StatusCodeTooManyConnections:
@@ -83,22 +87,22 @@ func GetStatusText(sc StatusCode) string {
 	}
 }
 
-//NewWorkerStatus 初始化WorkerStatus
+// NewWorkerStatus 初始化WorkerStatus
 func NewWorkerStatus() *WorkerStatus {
 	return &WorkerStatus{}
 }
 
-//SetStatusCode 设置worker状态码
+// SetStatusCode 设置worker状态码
 func (ws *WorkerStatus) SetStatusCode(sc StatusCode) {
 	ws.statusCode.Store(int32(sc))
 }
 
-//StatusCode 返回状态码
+// StatusCode 返回状态码
 func (ws *WorkerStatus) StatusCode() StatusCode {
 	return StatusCode(ws.statusCode.Load())
 }
 
-//StatusText 返回状态信息
+// StatusText 返回状态信息
 func (ws *WorkerStatus) StatusText() string {
 	return GetStatusText(ws.StatusCode())
 }

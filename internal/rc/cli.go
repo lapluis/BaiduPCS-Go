@@ -203,10 +203,27 @@ func parseRate(s string) (int64, error) {
 		}
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*mult > float64(1<<62) {
+	rate := v * mult
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || rate > float64(1<<62) {
 		return 0, errors.New("invalid --bwlimit")
 	}
-	return int64(v * mult), nil
+	nonzero := v != 0
+	if !nonzero {
+		// ParseFloat may silently underflow. Exponent digits do not make an
+		// otherwise zero literal nonzero; hex mantissas use P, not E.
+		mantissa, exponent := s, byte('E')
+		if strings.HasPrefix(strings.TrimLeft(s, "+-"), "0X") {
+			exponent = 'P'
+		}
+		if i := strings.IndexByte(mantissa, exponent); i >= 0 {
+			mantissa = mantissa[:i]
+		}
+		nonzero = strings.ContainsAny(mantissa, "123456789ABCDEF")
+	}
+	if nonzero && rate < 1 {
+		return 0, errors.New("--bwlimit must be zero or at least 1 B/s")
+	}
+	return int64(rate), nil
 }
 
 func Handles(args []string) bool {
@@ -269,8 +286,12 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if p.FilesFrom != "" && !filepath.IsAbs(p.FilesFrom) {
-		p.FilesFrom = filepath.Join(cwd, p.FilesFrom)
+	if p.FilesFrom != "" {
+		p.FilesFrom, err = ResolveLocalPath(cwd, p.FilesFrom)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 	}
 	logWriter := stderr
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -288,9 +309,10 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 			}
 			return 1
 		}
-		logPath := p.LogFile
-		if !filepath.IsAbs(logPath) {
-			logPath = filepath.Join(cwd, logPath)
+		logPath, err := ResolveLocalPath(cwd, p.LogFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
 		logFile, err = openLogFile(logPath)
 		if err != nil {
@@ -494,6 +516,9 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 	}
 	switch cmd {
 	case "mkdir":
+		if err := ValidateDestination(src); err != nil {
+			return err
+		}
 		if p.DryRun {
 			return logAction(p.Options, "would-mkdir", src.Root)
 		}

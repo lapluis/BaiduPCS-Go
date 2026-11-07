@@ -41,7 +41,9 @@ func TestMoveToWindowsAliasRetainsOnlyCopy(t *testing.T) {
 				t.Fatal("fixture does not alias source")
 			}
 			for _, move := range []bool{false, true} {
-				if _, err = FilePlan(context.Background(), src, dst, move, opts()); err == nil || !strings.Contains(err.Error(), "overlap") {
+				// Full target-name validation can reject the aliased parent before
+				// the filesystem overlap check. Both diagnoses must preserve source.
+				if _, err = FilePlan(context.Background(), src, dst, move, opts()); err == nil || (!strings.Contains(err.Error(), "overlap") && !strings.Contains(err.Error(), "unsupported Windows filename")) {
 					t.Fatal("alias accepted", err)
 				}
 			}
@@ -92,9 +94,13 @@ func TestMoveHardLinkProtection(t *testing.T) {
 			t.Skip("hard links unavailable:", err)
 		}
 		if afterPlanning {
-			_, err = Execute(context.Background(), plan, opts())
-			if err == nil || !strings.Contains(err.Error(), "same file") {
+			result, err := Execute(context.Background(), plan, opts())
+			if err == nil || !strings.Contains(err.Error(), "changed after planning") || result != (Result{Failed: 1}) {
 				t.Fatal("late alias not rejected before removal", err)
+			}
+			// The earlier skip guard must not replace the final removal guard.
+			if err := verifyAndRemove(context.Background(), src, dst, plan.Actions[0], opts()); err == nil || !strings.Contains(err.Error(), "same file") {
+				t.Fatal("final verification accepted a source alias", err)
 			}
 		} else {
 			if _, err = FilePlan(context.Background(), src, dst, true, opts()); err == nil {

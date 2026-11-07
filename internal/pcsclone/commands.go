@@ -568,6 +568,9 @@ func runMkdir(c *commandContext) (resultErr error) {
 	if err != nil {
 		return operationError(err)
 	}
+	if err = rc.ValidateDestination(endpoint); err != nil {
+		return operationError(err)
+	}
 	if o.DryRun {
 		sink.Emit("would-mkdir", endpoint.Root)
 		return nil

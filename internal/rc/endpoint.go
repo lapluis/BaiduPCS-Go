@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -65,18 +66,40 @@ func IsRemote(s string) bool {
 	i := strings.IndexByte(s, ':')
 	return i > 1 && !strings.ContainsAny(s[:i], `/\`)
 }
+
+// ResolveLocalPath resolves relative paths against cwd. On Windows a leading
+// separator anchors to cwd's volume root, rather than its current subdirectory.
+// Drive-relative paths depend on per-drive process state and remain unsupported.
+func ResolveLocalPath(cwd, p string) (string, error) {
+	if p == "" {
+		return "", errors.New("empty path")
+	}
+	if filepath.VolumeName(p) != "" && !filepath.IsAbs(p) {
+		return "", errors.New("drive-relative paths are ambiguous; use an absolute path")
+	}
+	if !filepath.IsAbs(p) {
+		if runtime.GOOS == "windows" && os.IsPathSeparator(p[0]) {
+			if !filepath.IsAbs(cwd) {
+				return "", errors.New("root-relative path requires an absolute working directory")
+			}
+			p = filepath.VolumeName(cwd) + p
+		} else {
+			p = filepath.Join(cwd, p)
+		}
+	}
+	return filepath.Clean(p), nil
+}
+
 func (r *Resolver) Resolve(s string) (Endpoint, error) {
 	if s == "" {
 		return Endpoint{}, errors.New("empty path")
 	}
 	if !IsRemote(s) {
-		if filepath.VolumeName(s) != "" && !filepath.IsAbs(s) {
-			return Endpoint{}, errors.New("drive-relative paths are ambiguous; use an absolute path")
+		var err error
+		s, err = ResolveLocalPath(r.CWD, s)
+		if err != nil {
+			return Endpoint{}, err
 		}
-		if !filepath.IsAbs(s) {
-			s = filepath.Join(r.CWD, s)
-		}
-		s = filepath.Clean(s)
 		if err := safeParents(s); err != nil {
 			return Endpoint{}, err
 		}

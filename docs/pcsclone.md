@@ -129,6 +129,7 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 - 本地：`D:\Backup`、`.\Backup`、`\\server\share`
 - 网盘：`bd:/Backup`、`bd:`（账号根）
 - 相对本地路径以**启动命令时所在目录**为基准。
+- Windows 中，`\Backup` 或 `/Backup` 从启动目录所在的卷根解析：在 `D:\work` 启动时均指向 `D:\Backup`；端点、`--files-from` 和 `--log-file` 使用同一规则。`D:Backup` 这类盘符相对路径会报错，请写成 `D:\Backup`。
 
 没有隐式的当前账号、网盘工作目录或 `rc` 前缀。
 
@@ -152,6 +153,10 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 ```
 
 `copy`/`move`/`sync` 对目录操作时复制目录**内容**，尾斜线不改变含义。`sync` 只有在扫描、比较和传输都成功后才删除目标端多余文件，并在删除前重新检查源清单。
+
+比较完成后及执行跳过前，也会复核源和目标的身份、大小与修改时间。发现变化会报错，`sync` 不会进入删除阶段；重新运行命令可建立新计划。
+
+`move --delete-empty-src-dirs` 只清理原计划中身份未变的源子目录，保留移动期间新出现的目录；移动单个文件时跳过目录清理。`sync`、`purge` 和空目录删除也会在删除目录前复核其身份，发现同名替换目录时停止。
 
 ### 4.3 列表与信息
 
@@ -211,7 +216,11 @@ pcsclone 的账号、别名和 `rc-state/` 都写在自己的目录。正常命�
 & .\build\pcsclone.exe copy bd:/Backup D:\Downloads -P --transfers 4 --download-threads 4 --max-connections 16
 ```
 
-`--transfers` 是同时传输的文件数（默认 4）；`--download-threads` 是每个文件的 Range 并发上限（默认 4，范围 1–32）；`--max-connections` 是文件传输连接预算（默认 16，范围 1–256，不能小于 `--transfers`）。实际每文件并发不超过 `floor(max-connections / transfers)`，小文件可能使用更少连接。服务端忽略 Range 时自动使用单流；预算不包含账号、目录、直链等控制接口请求。增加并发能否提速需要用实际账号和线路验证。
+`--transfers` 是同时传输的文件数上限（默认 4）；`--download-threads` 是每个文件的 Range 并发上限（默认 4，范围 1–32）；`--max-connections` 是文件传输连接预算（默认 16，范围 1–256，不能小于 `--transfers`）。本次计划中需要复制或移动内容校验的文件数较少时，按这些文件分配带宽和连接额度，纯元数据跳过不占内容传输额度。单文件可使用完整的 `--bwlimit` 额度及最多 `min(download-threads, max-connections)` 个 Range 线程；文件数充足时，每文件线程数仍不超过 `floor(max-connections / transfers)`。小文件可能使用更少连接。服务端忽略 Range 时自动使用单流；预算不包含账号、目录、直链等控制接口请求。增加并发能否提速需要用实际账号和线路验证。
+
+目录计划中的比较并发由 `--checkers` 控制，还受连接预算和待比较文件数限制。远端哈希下载同样使用 `--download-threads`，各比较槽位共同遵守 `--max-connections`；并行比较按槽位分摊带宽，单文件比较使用完整的 `--bwlimit` 额度。串行 `check` 按一个比较槽位分配默认下载资源，移动删除源前的远端哈希校验也遵守传输线程预算。
+
+带宽以整数 B/s 分配；极低的正值 `--bwlimit` 会进一步减少内容任务并发，避免每任务最低 1 B/s 的配额合计超过设置值。换算单位后不足 1 B/s 的正值会报错，`--bwlimit 0` 表示不限速。
 
 返回弱 ETag（`W/"…"`）的资源使用完整单流下载，不复用分片断点；初始探测若只返回文件前缀，会关闭该响应并重新请求完整文件。[RFC 9110 §13.1.5](https://httpwg.org/specs/rfc9110#field.if-range) 禁止把弱 ETag 用于 `If-Range`，它也不能证明不同分片具有逐字节一致的版本。
 

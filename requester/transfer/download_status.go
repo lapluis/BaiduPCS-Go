@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio/speeds"
 	"sync"
@@ -72,10 +73,23 @@ func (ds *DownloadStatus) AddTotalSize(size int64) {
 
 // AddSpeedsDownloaded 增加已下载数据量, 用于统计速度
 func (ds *DownloadStatus) AddSpeedsDownloaded(d int64) {
+	_ = ds.AddSpeedsDownloadedWithContext(context.Background(), d)
+}
+
+// HasRateLimit reports whether a positive limiter was configured before use.
+func (ds *DownloadStatus) HasRateLimit() bool {
+	return ds.rateLimit != nil && ds.rateLimit.MaxRate > 0
+}
+
+// AddSpeedsDownloadedWithContext permits request resets to interrupt quota waits.
+func (ds *DownloadStatus) AddSpeedsDownloadedWithContext(ctx context.Context, d int64) error {
 	if ds.rateLimit != nil {
-		ds.rateLimit.Add(d)
+		if err := ds.rateLimit.AddWithContext(ctx, d); err != nil {
+			return err
+		}
 	}
 	ds.speedsStat.Add(d)
+	return ctx.Err()
 }
 
 // SetMaxSpeeds 设置最大速度, 原子操作

@@ -121,7 +121,11 @@ func (muer *MultiUploader) upload() (uperr error) {
 					return
 				}
 				wer.attempts++
-				checksum, terr := muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
+				checksum, terr := func() (string, error) {
+					reader := newUploadAttemptReader(ctx, wer.splitUnit)
+					defer reader.finish()
+					return muer.multiUpload.TmpFile(reader.ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, reader)
+				}()
 				if muer.isAborted() {
 					return
 				}

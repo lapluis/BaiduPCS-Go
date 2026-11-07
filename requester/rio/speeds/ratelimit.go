@@ -1,22 +1,25 @@
 package speeds
 
 import (
+	"context"
 	"sync"
 	"time"
 )
 
-// RateLimit limits accounted bytes per interval. MaxRate must be configured
-// before use; non-positive values disable limiting. Stop permanently releases
-// waiters and is safe to call more than once.
+// RateLimit limits accounted bytes per interval. One block may overshoot the
+// allowance, but its excess remains debt across intervals. MaxRate must be
+// configured before use; non-positive values disable limiting. Stop permanently
+// releases waiters and is safe to call more than once.
 type RateLimit struct {
-	MaxRate   int64
-	mu        sync.Mutex
-	count     int64
-	interval  time.Duration
-	ticker    *time.Ticker
-	muChan    chan struct{}
-	closeChan chan struct{}
-	stopped   bool
+	MaxRate    int64
+	mu         sync.Mutex
+	count      uint64
+	lastRefill time.Time
+	interval   time.Duration
+	ticker     *time.Ticker
+	muChan     chan struct{}
+	closeChan  chan struct{}
+	stopped    bool
 }
 
 func NewRateLimit(maxRate int64) *RateLimit { return &RateLimit{MaxRate: maxRate} }
@@ -27,10 +30,13 @@ func (rl *RateLimit) SetInterval(i time.Duration) {
 	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	rl.interval = i
 	if rl.ticker != nil && !rl.stopped {
+		now := time.Now()
+		rl.refillLocked(now)
+		rl.lastRefill = now
 		rl.ticker.Reset(i)
 	}
+	rl.interval = i
 }
 
 func (rl *RateLimit) Stop() {
@@ -54,6 +60,7 @@ func (rl *RateLimit) startLocked() {
 	if rl.interval <= 0 {
 		rl.interval = time.Second
 	}
+	rl.lastRefill = time.Now()
 	rl.ticker = time.NewTicker(rl.interval)
 	rl.closeChan = make(chan struct{})
 	rl.muChan = make(chan struct{})
@@ -67,9 +74,7 @@ func (rl *RateLimit) startLocked() {
 					rl.mu.Unlock()
 					return
 				}
-				rl.count = 0
-				close(rl.muChan)
-				rl.muChan = make(chan struct{})
+				rl.refillLocked(time.Now())
 				rl.mu.Unlock()
 			case <-done:
 				return
@@ -78,32 +83,63 @@ func (rl *RateLimit) startLocked() {
 	}()
 }
 
-func (rl *RateLimit) Add(count int64) {
-	if count <= 0 {
+// refillLocked accounts for all elapsed intervals, including dropped ticker
+// notifications. Admission bounds count below MaxRate + one int64-sized block.
+func (rl *RateLimit) refillLocked(now time.Time) {
+	elapsed := now.Sub(rl.lastRefill)
+	if elapsed < rl.interval {
 		return
+	}
+	periods := uint64(elapsed / rl.interval)
+	if rl.MaxRate <= 0 || periods > rl.count/uint64(rl.MaxRate) {
+		rl.count = 0
+	} else {
+		rl.count -= periods * uint64(rl.MaxRate)
+	}
+	rl.lastRefill = rl.lastRefill.Add(time.Duration(periods) * rl.interval)
+	close(rl.muChan)
+	rl.muChan = make(chan struct{})
+}
+
+func (rl *RateLimit) Add(count int64) {
+	_ = rl.AddWithContext(context.Background(), count)
+}
+
+// AddWithContext admits a block or cancels its wait without stopping the shared
+// limiter. A canceled waiter is not charged; existing debt remains intact.
+func (rl *RateLimit) AddWithContext(ctx context.Context, count int64) error {
+	if count <= 0 {
+		return ctx.Err()
 	}
 	for {
 		rl.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			rl.mu.Unlock()
+			return err
+		}
 		if rl.stopped || rl.MaxRate <= 0 {
 			rl.mu.Unlock()
-			return
+			return nil
 		}
 		if rl.ticker == nil {
 			rl.startLocked()
 		}
-		if rl.count < rl.MaxRate {
+		rl.refillLocked(time.Now())
+		if rl.count < uint64(rl.MaxRate) {
 			// Preserve block accounting: the block that reaches the limit proceeds;
-			// subsequent blocks wait for the next interval.
-			rl.count += count
+			// subsequent blocks wait until the accumulated debt permits admission.
+			rl.count += uint64(count)
 			rl.mu.Unlock()
-			return
+			return nil
 		}
 		next, done := rl.muChan, rl.closeChan
 		rl.mu.Unlock()
 		select {
 		case <-next:
 		case <-done:
-			return
+			return ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }

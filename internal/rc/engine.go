@@ -43,6 +43,8 @@ type Result struct {
 	Bytes                            int64
 }
 
+type comparisonParallelKey struct{}
+
 func snapshot(ctx context.Context, e Endpoint) (map[string]Entry, error) {
 	root, err := e.FS.Stat(ctx, e.Root)
 	if err != nil {
@@ -87,6 +89,9 @@ func sortedKeys(m map[string]Entry) []string {
 	return keys
 }
 func validatePair(a, b Endpoint) error {
+	if err := ValidateDestination(b); err != nil {
+		return err
+	}
 	if a.FS.Identity() != b.FS.Identity() {
 		return nil
 	}
@@ -133,22 +138,60 @@ func validateLocalOverlap(a, b string) error {
 	}
 	return nil
 }
+
+// ValidateDestination checks local target names before previewing or executing
+// a write. Remote paths retain their backend's naming rules.
+func ValidateDestination(e Endpoint) error {
+	if _, local := e.FS.(*Local); local {
+		return validLocalPath(e.Root)
+	}
+	return nil
+}
+
+// Validate components after the volume separately: drive and UNC prefixes are
+// path syntax, while every directory and filename must be representable.
+func validLocalPath(p string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	p = filepath.Clean(p)
+	p = strings.TrimLeft(p[len(filepath.VolumeName(p)):], `/\`)
+	if p == "" || p == "." {
+		return nil
+	}
+	return validLocalName(filepath.ToSlash(p))
+}
+
 func validLocalName(p string) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
 	for _, n := range strings.Split(p, "/") {
-		if strings.ContainsAny(n, `<>:"\|?*`) || strings.TrimRight(n, ". ") != n {
+		if strings.ContainsAny(n, `<>:"\|?*`) || strings.TrimRight(n, ". ") != n || strings.ContainsFunc(n, func(r rune) bool { return r < 32 }) {
 			return fmt.Errorf("unsupported Windows filename %q", n)
 		}
-		base := strings.ToUpper(strings.SplitN(n, ".", 2)[0])
-		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || (len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
+		// Device aliases also apply before an extension and after trimming base
+		// spaces. Let the Windows path library cover console names and superscript
+		// port digits; an empty base is valid for ordinary dotfiles.
+		base := strings.TrimRight(strings.SplitN(n, ".", 2)[0], " ")
+		if base != "" && !filepath.IsLocal(base) {
 			return fmt.Errorf("reserved Windows filename %q", n)
 		}
 	}
 	return nil
 }
-func same(ctx context.Context, src, dst Endpoint, p string, a, b Entry, o Options) (bool, error) {
+func same(ctx context.Context, src, dst Endpoint, p string, a, b Entry, o Options) (equal bool, compareErr error) {
+	defer func() {
+		if compareErr == nil {
+			compareErr = unchanged(ctx, src, p, &a)
+		}
+		if compareErr == nil {
+			compareErr = unchanged(ctx, dst, p, &b)
+		}
+		if compareErr != nil {
+			equal = false
+		}
+	}()
 	if a.Size != b.Size {
 		return false, nil
 	}
@@ -164,15 +207,8 @@ func same(ctx context.Context, src, dst Endpoint, p string, a, b Entry, o Option
 			}
 		}
 	}
-	n := o.Checkers
-	if n < 1 {
-		n = 1
-	}
-	rate := o.BWLimit / int64(n)
-	if o.BWLimit > 0 && rate < 1 {
-		rate = 1
-	}
-	ctx = context.WithValue(ctx, hashRateKey{}, rate)
+	parallel, _ := ctx.Value(comparisonParallelKey{}).(int)
+	ctx = hashContext(ctx, o, parallel)
 	x, err := src.FS.Hash(ctx, src.At(p))
 	if err != nil {
 		return false, err
@@ -248,10 +284,22 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		candidates = append(candidates, a)
 	}
 	// Bounded parallel comparison. No mutations occur until every comparison succeeds.
-	n := o.Checkers
-	if n < 1 {
-		n = 1
+	comparisons := 0
+	for _, a := range candidates {
+		if a.Kind == "copy" && a.Destination != nil {
+			comparisons++
+		}
 	}
+	budget := o.MaxConnections
+	if budget < 1 {
+		budget = 16
+	}
+	n := min(max(1, o.Checkers), budget, max(1, comparisons))
+	// Every active content worker needs at least one byte/s of integer quota.
+	if !o.SizeOnly && o.BWLimit > 0 && o.BWLimit < int64(n) {
+		n = int(o.BWLimit)
+	}
+	compareCtx := context.WithValue(ctx, comparisonParallelKey{}, n)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -261,11 +309,14 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
 				a := &candidates[i]
 				if a.Kind != "copy" || a.Destination == nil {
 					continue
 				}
-				equal, e := same(ctx, src, dst, a.Path, *a.Source, *a.Destination, o)
+				equal, e := same(compareCtx, src, dst, a.Path, *a.Source, *a.Destination, o)
 				if e != nil {
 					mu.Lock()
 					compareErr = errors.Join(compareErr, fmt.Errorf("compare %s: %w", a.Path, e))
@@ -277,11 +328,22 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 			}
 		}()
 	}
+dispatchComparisons:
 	for i := range candidates {
-		jobs <- i
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			break dispatchComparisons
+		}
 	}
 	close(jobs)
 	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, errors.Join(compareErr, ctx.Err())
+	}
 	if compareErr != nil {
 		return nil, compareErr
 	}
@@ -369,6 +431,22 @@ func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {
 	}
 	return nil
 }
+
+// Removing planned children legitimately changes a directory's size and mtime.
+// Its identity must still match before removing the directory itself.
+func unchangedDirectory(ctx context.Context, e Endpoint, p string, old *Entry) error {
+	if old == nil || !old.IsDir {
+		return fmt.Errorf("missing planned directory identity: %s", p)
+	}
+	current, err := e.FS.Stat(ctx, e.At(p))
+	if err != nil {
+		return err
+	}
+	if !current.IsDir || !sameIdentity(current, *old) {
+		return fmt.Errorf("directory changed after planning: %s", p)
+	}
+	return nil
+}
 func actionPath(p *Plan, a Action) string {
 	if a.Path != "" {
 		return a.Path
@@ -440,19 +518,28 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 			}
 		}
 	}
-	n := o.Transfers
-	if n < 1 {
-		n = 1
+	progress := newProgress(p)
+	budget := o.MaxConnections
+	if budget < 1 {
+		budget = 16
 	}
-	if o.MaxConnections > 0 {
-		n = min(n, o.MaxConnections)
+	n := min(max(1, o.Transfers), budget, max(1, progress.totalFiles))
+	contentJobs := 0
+	for _, a := range p.Actions {
+		if a.Kind == "copy" || p.Move && a.Kind == "skip" && a.Reason == "identical" {
+			contentJobs++
+		}
 	}
+	if o.BWLimit > 0 && o.BWLimit < int64(min(n, contentJobs)) {
+		n = int(o.BWLimit)
+	}
+	// Metadata-only skips do not consume download or bandwidth shares.
+	o.Transfers = min(n, max(1, contentJobs))
 	jobs := make(chan Action)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs error
 	active := 0
-	progress := newProgress(p)
 	if o.ShowProgress {
 		done := make(chan struct{})
 		joined := make(chan struct{})
@@ -500,7 +587,11 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 				actionCtx = context.WithValue(actionCtx, progressKey{}, func(v transferProgress) { mu.Lock(); progress.update(a.Path, v); mu.Unlock() })
 				var err error
 				if a.Kind == "skip" {
-					if p.Move && a.Reason == "identical" {
+					err = unchanged(ctx, p.Source, a.Path, a.Source)
+					if err == nil {
+						err = unchanged(ctx, p.Destination, a.Path, a.Destination)
+					}
+					if err == nil && p.Move && a.Reason == "identical" {
 						err = verifyAndRemove(ctx, p.Source, p.Destination, a, o)
 					}
 					if err == nil {
@@ -613,6 +704,11 @@ dispatch:
 	}
 	// All deletion candidates are rechecked before the first delete.
 	for _, a := range p.Actions {
+		if a.Kind == "rmdir" {
+			if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
+				return result, err
+			}
+		}
 		if a.Kind == "delete" {
 			if err := unchanged(ctx, p.Destination, a.Path, a.Destination); err != nil {
 				return result, err
@@ -638,11 +734,17 @@ dispatch:
 	}
 	for _, a := range p.Actions {
 		if a.Kind == "rmdir" {
+			if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
+				return result, err
+			}
 			children, err := p.Destination.FS.List(ctx, p.Destination.At(a.Path))
 			if err != nil {
 				return result, err
 			}
 			if len(children) == 0 {
+				if err := unchangedDirectory(ctx, p.Destination, a.Path, a.Destination); err != nil {
+					return result, err
+				}
 				if err = p.Destination.FS.Remove(ctx, p.Destination.At(a.Path), true); err != nil {
 					return result, err
 				}
@@ -652,15 +754,15 @@ dispatch:
 			}
 		}
 	}
-	if p.Move && o.DeleteEmptyDirs {
-		if err := removeEmpty(ctx, p.Source, false, o); err != nil {
+	if p.Move && o.DeleteEmptyDirs && p.SourceSnapshot != nil {
+		if err := removeEmptyPlanned(ctx, p.Source, false, o, p.SourceSnapshot); err != nil {
 			return result, err
 		}
 	}
 	return result, nil
 }
 func verifyAndRemove(ctx context.Context, src, dst Endpoint, a Action, o Options) error {
-	ctx = context.WithValue(ctx, hashRateKey{}, perTransferRate(o))
+	ctx = hashContext(ctx, o, o.Transfers)
 	if err := unchanged(ctx, src, a.Path, a.Source); err != nil {
 		return err
 	}
@@ -896,6 +998,12 @@ func perTransferRate(o Options) int64 {
 	return v
 }
 
+func hashContext(ctx context.Context, o Options, parallel int) context.Context {
+	o.Transfers = max(1, parallel)
+	ctx = context.WithValue(ctx, hashRateKey{}, perTransferRate(o))
+	return context.WithValue(ctx, transferSettingsKey{}, workerSettings{Threads: downloadThreads(o)})
+}
+
 type localCopyOutput interface {
 	io.Writer
 	Sync() error
@@ -955,8 +1063,20 @@ func copyLocal(ctx context.Context, src, dst string, rate int64) (resultErr erro
 	}
 	return out.Sync()
 }
-func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) (removeErr error) {
+func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) error {
+	return removeEmptyPlanned(ctx, e, includeRoot, o, nil)
+}
+
+func removeEmptyPlanned(ctx context.Context, e Endpoint, includeRoot bool, o Options, planned map[string]Entry) (removeErr error) {
 	defer func() { removeErr = preserveContextError(ctx, removeErr) }()
+	var root Entry
+	if includeRoot {
+		var err error
+		root, err = e.FS.Stat(ctx, e.Root)
+		if err != nil {
+			return err
+		}
+	}
 	m, err := snapshot(ctx, e)
 	if err != nil {
 		return err
@@ -975,6 +1095,17 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) (
 		}
 		if k != "" && o.Filter.excluded(k) {
 			continue
+		}
+		old := m[k]
+		if k == "" {
+			old = root
+		}
+		if planned != nil && k != "" {
+			var ok bool
+			old, ok = planned[k]
+			if !ok || !old.IsDir {
+				continue
+			}
 		}
 		empty := true
 		prefix := k + "/"
@@ -995,6 +1126,9 @@ func removeEmpty(ctx context.Context, e Endpoint, includeRoot bool, o Options) (
 				return err
 			}
 		} else {
+			if err = unchangedDirectory(ctx, e, k, &old); err != nil {
+				return err
+			}
 			if err = e.FS.Remove(ctx, e.At(k), true); err != nil {
 				return err
 			}

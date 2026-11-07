@@ -473,7 +473,19 @@ func (wer *Worker) Execute() {
 
 				// 更新速度统计
 				if wer.downloadStatus != nil {
-					wer.downloadStatus.AddSpeedsDownloaded(nn64) // 限速在这里阻塞
+					if wer.downloadStatus.HasRateLimit() {
+						wer.status.SetStatusCode(StatusCodeRateLimited)
+					}
+					if err := wer.downloadStatus.AddSpeedsDownloadedWithContext(resetCtx, nn64); err != nil {
+						wer.status.SetStatusCode(StatusCodeReseted)
+						wer.err = nil
+						if canceled := workerCancelCtx.Err(); canceled != nil {
+							wer.err = canceled
+							wer.status.SetStatusCode(StatusCodeCanceled)
+						}
+						return
+					}
+					wer.status.SetStatusCode(StatusCodeDownloading)
 				}
 				wer.speedsStat.Add(nn64)
 				n += nn

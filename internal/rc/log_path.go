@@ -12,11 +12,9 @@ import (
 )
 
 func localLogPath(cwd, path string) (string, error) {
-	if filepath.VolumeName(path) != "" && !filepath.IsAbs(path) {
-		return "", fmt.Errorf("drive-relative path is not supported: %s", path)
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
+	path, err := ResolveLocalPath(cwd, path)
+	if err != nil {
+		return "", err
 	}
 	return filepath.Abs(path)
 }

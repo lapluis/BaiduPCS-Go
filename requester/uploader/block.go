@@ -2,6 +2,8 @@ package uploader
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio/speeds"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/transfer"
@@ -26,6 +28,7 @@ type (
 		readerAt      io.ReaderAt
 		speedsStatRef *speeds.Speeds
 		rateLimit     *speeds.RateLimit
+		readCtx       context.Context
 		mu            sync.Mutex
 	}
 
@@ -107,13 +110,25 @@ func (fb *fileBlock) Read(b []byte) (n int, err error) {
 		err = fmt.Errorf("%w at offset %d: %w", ErrSourceRead, offset, err)
 	}
 	fb.readed.Add(n64)
-	if fb.rateLimit != nil {
-		fb.rateLimit.Add(n64) // 限速阻塞
+	if fb.rateLimit != nil && !errors.Is(err, ErrSourceRead) {
+		ctx := fb.readCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if limitErr := fb.rateLimit.AddWithContext(ctx, n64); limitErr != nil {
+			return 0, limitErr
+		}
 	}
 	if fb.speedsStatRef != nil {
 		fb.speedsStatRef.Add(n64)
 	}
 	return
+}
+
+func (fb *fileBlock) setContext(ctx context.Context) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.readCtx = ctx
 }
 
 func (fb *fileBlock) Seek(offset int64, whence int) (int64, error) {

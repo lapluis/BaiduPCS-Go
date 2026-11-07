@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,8 +257,9 @@ func newLogSink(c *commandContext) (*logSink, error) {
 		if err := rc.ValidateCommandLogPath(ctx, c.app.CWD, path, c.app.ConfigFile, c.flags.String("files-from"), c.args...); err != nil {
 			return nil, err
 		}
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(c.app.CWD, path)
+		path, err := rc.ResolveLocalPath(c.app.CWD, path)
+		if err != nil {
+			return nil, err
 		}
 		f, err := openLogFile(path)
 		if err != nil {
@@ -374,8 +374,12 @@ func (s *logSink) finish(operationErr error) error {
 // filter reads only the selection flags shared by list-style commands.
 func (c *commandContext) filter() (rc.Filter, error) {
 	filesFrom := c.flags.String("files-from")
-	if filesFrom != "" && !filepath.IsAbs(filesFrom) {
-		filesFrom = filepath.Join(c.app.CWD, filesFrom)
+	if filesFrom != "" {
+		var err error
+		filesFrom, err = rc.ResolveLocalPath(c.app.CWD, filesFrom)
+		if err != nil {
+			return rc.Filter{}, usageErrorf("%s", err)
+		}
 	}
 	f, err := rc.NewFilter(c.flags.List("include"), c.flags.List("exclude"), filesFrom)
 	if err != nil {
