@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
@@ -30,10 +29,12 @@ type (
 		onErrorEvent        requester.EventOnError //上传出错事件
 		onUploadStatusEvent UploadStatusFunc       //上传状态事件
 
-		instanceState *InstanceState
-		stateMu       sync.RWMutex
-		finishOnce    sync.Once
-		statusWG      sync.WaitGroup
+		instanceState  *InstanceState
+		stateMu        sync.RWMutex
+		finishOnce     sync.Once
+		statusWG       sync.WaitGroup
+		progressFailed chan struct{}
+		progressErr    error // Published by closing progressFailed; joined by statusWG.
 
 		multiUpload MultiUpload       // 上传体接口
 		file        rio.ReaderAtLen64 // 上传
@@ -75,6 +76,7 @@ func NewMultiUploader(multiUpload MultiUpload, file rio.ReaderAtLen64, config *M
 		canceled:                make(chan struct{}),
 		stopped:                 make(chan struct{}),
 		updateInstanceStateChan: make(chan struct{}, 1),
+		progressFailed:          make(chan struct{}),
 	}
 }
 
@@ -103,6 +105,9 @@ func (muer *MultiUploader) lazyInit() {
 	if muer.updateInstanceStateChan == nil {
 		muer.updateInstanceStateChan = make(chan struct{}, 1)
 	}
+	if muer.progressFailed == nil {
+		muer.progressFailed = make(chan struct{})
+	}
 	if muer.config == nil {
 		muer.config = &MultiUploaderConfig{}
 	}
@@ -128,6 +133,12 @@ func (muer *MultiUploader) check() {
 
 // Execute 执行上传
 func (muer *MultiUploader) Execute() {
+	_ = muer.ExecuteWithError()
+}
+
+// ExecuteWithError returns transfer and callback errors after all final events.
+// Execute retains the event-based API for existing callers.
+func (muer *MultiUploader) ExecuteWithError() error {
 	muer.check()
 	muer.lazyInit()
 	// 初始化限速
@@ -139,12 +150,10 @@ func (muer *MultiUploader) Execute() {
 	// 分配任务
 	muer.fileSize = muer.file.Len()
 	if err := muer.validateSource(); err != nil {
-		muer.finish(err)
-		return
+		return muer.finish(err)
 	}
 	if err := validateUploadState(muer.instanceState, muer.fileSize); err != nil {
-		muer.finish(err)
-		return
+		return muer.finish(err)
 	}
 	var workers workerList
 	if muer.instanceState != nil && len(muer.instanceState.BlockList) > 0 {
@@ -163,12 +172,16 @@ func (muer *MultiUploader) Execute() {
 
 	// 开始上传
 	muer.executeTime = time.Now()
-	pcsutil.TriggerOnSync(muer.onExecuteEvent)
+	if err := runUploadEvent("execute", muer.onExecuteEvent); err != nil {
+		if muer.isCanceled() || muer.isStopped() {
+			err = errors.Join(err, context.Canceled)
+		}
+		return muer.finish(err)
+	}
 
 	muer.uploadStatusEvent()
 
-	err := muer.upload()
-	muer.finish(err)
+	return muer.finish(muer.upload())
 }
 
 func (muer *MultiUploader) validateSource() error {
@@ -188,22 +201,67 @@ func (muer *MultiUploader) validateSource() error {
 	return nil
 }
 
-func (muer *MultiUploader) finish(err error) {
+func (muer *MultiUploader) finish(err error) error {
 	// 完成
 	muer.finishOnce.Do(func() { close(muer.finished) })
 	muer.statusWG.Wait()
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			if muer.onCancelEvent != nil {
-				muer.onCancelEvent()
-			}
-		} else if muer.onErrorEvent != nil {
-			muer.onErrorEvent(err)
+	progressErr := muer.progressFailure()
+	if progressErr != nil && !errors.Is(err, progressErr) {
+		err = errors.Join(err, progressErr)
+	}
+	// Notify the error observer at most once, even if it or the final event
+	// also fails. The returned error remains available when notification fails.
+	notified := false
+	notifyError := func() {
+		if notified || muer.onErrorEvent == nil {
+			return
+		}
+		notified = true
+		if eventErr := runUploadEvent("error", func() { muer.onErrorEvent(err) }); eventErr != nil {
+			err = errors.Join(err, eventErr)
+		}
+	}
+	if err == nil {
+		if eventErr := runUploadEvent("success", muer.onSuccessEvent); eventErr != nil {
+			err = eventErr
+			notifyError()
+		}
+	} else if errors.Is(err, context.Canceled) && progressErr == nil && !errors.Is(err, ErrEventCallback) {
+		if eventErr := runUploadEvent("cancel", muer.onCancelEvent); eventErr != nil {
+			err = errors.Join(err, eventErr)
+			notifyError()
 		}
 	} else {
-		pcsutil.TriggerOnSync(muer.onSuccessEvent)
+		notifyError()
 	}
-	pcsutil.TriggerOnSync(muer.onFinishEvent)
+	if eventErr := runUploadEvent("finish", muer.onFinishEvent); eventErr != nil {
+		err = errors.Join(err, eventErr)
+		notifyError()
+	}
+	return err
+}
+
+func (muer *MultiUploader) progressFailure() error {
+	select {
+	case <-muer.progressFailed:
+		return muer.progressErr
+	default:
+		return nil
+	}
+}
+
+func (muer *MultiUploader) isAborted() bool {
+	return muer.isCanceled() || muer.progressFailure() != nil
+}
+
+func (muer *MultiUploader) abortError() error {
+	if err := muer.progressFailure(); err != nil {
+		if muer.isCanceled() {
+			return errors.Join(context.Canceled, err)
+		}
+		return err
+	}
+	return context.Canceled
 }
 
 // InstanceState 返回断点续传信息

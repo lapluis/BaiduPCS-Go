@@ -566,14 +566,24 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	der.executeTime = time.Now()
 	der.monitor.prepareCompletion()
 	pcsutil.TriggerOnSync(der.onExecuteEvent)
-	progressDone := der.downloadStatusEvent()
-	der.monitor.Execute(moniterCtx)
-	if progressDone != nil {
-		<-progressDone
+	progress := der.downloadStatusEvent()
+	var progressFailed <-chan struct{}
+	if progress != nil {
+		progressFailed = progress.failed
+	}
+	der.monitor.execute(moniterCtx, progressFailed)
+	var progressErr error
+	if progress != nil {
+		<-progress.done
+		if progress.err != nil {
+			// Workers and the callback have both stopped. This also handles a
+			// callback that panics after the network transfer already completed.
+			progressErr = errors.Join(progress.err, der.monitor.saveCheckpoint())
+		}
 	}
 
 	// 检查错误
-	err = der.monitor.Err()
+	err = errors.Join(der.monitor.Err(), progressErr)
 	if err == nil && single && der.firstInfo.ContentLength >= 0 && status.Downloaded() != der.firstInfo.ContentLength {
 		err = io.ErrUnexpectedEOF
 	}
@@ -607,8 +617,13 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) error {
 	return err
 }
 
+type downloadProgressEvent struct {
+	done, failed chan struct{}
+	err          error // Read only after done closes.
+}
+
 // downloadStatusEvent 执行状态处理事件
-func (der *Downloader) downloadStatusEvent() <-chan struct{} {
+func (der *Downloader) downloadStatusEvent() *downloadProgressEvent {
 	callback := der.onDownloadStatusEvent
 	if callback == nil {
 		return nil
@@ -617,9 +632,19 @@ func (der *Downloader) downloadStatusEvent() <-chan struct{} {
 	monitor := der.monitor
 	status := monitor.Status()
 	completed := monitor.CompletedChan()
-	done := make(chan struct{})
+	progress := &downloadProgressEvent{done: make(chan struct{}), failed: make(chan struct{})}
 	go func() {
-		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				cause, ok := r.(error)
+				if !ok {
+					cause = fmt.Errorf("%v", r)
+				}
+				progress.err = fmt.Errorf("download progress callback panic: %w", cause)
+				close(progress.failed)
+			}
+			close(progress.done)
+		}()
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -637,7 +662,7 @@ func (der *Downloader) downloadStatusEvent() <-chan struct{} {
 			}
 		}
 	}()
-	return done
+	return progress
 }
 
 // Pause 暂停

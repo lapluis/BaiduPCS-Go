@@ -40,8 +40,8 @@ func (werl *workerList) Readed() int64 {
 }
 
 func (muer *MultiUploader) upload() (uperr error) {
-	if muer.isCanceled() || muer.isStopped() {
-		return context.Canceled
+	if muer.isAborted() || muer.isStopped() {
+		return muer.abortError()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	watchDone := make(chan struct{})
@@ -49,17 +49,19 @@ func (muer *MultiUploader) upload() (uperr error) {
 		defer close(watchDone)
 		select {
 		case <-muer.canceled:
-			cancel()
-			if muer.rateLimit != nil {
-				muer.rateLimit.Stop()
-			}
+		case <-muer.progressFailed:
 		case <-ctx.Done():
+			return
+		}
+		cancel()
+		if muer.rateLimit != nil {
+			muer.rateLimit.Stop()
 		}
 	}()
 	defer func() { cancel(); <-watchDone }()
 	originPCSHost, err := muer.multiUpload.Precreate(ctx)
-	if muer.isCanceled() || ctx.Err() != nil {
-		return context.Canceled
+	if muer.isAborted() || ctx.Err() != nil {
+		return muer.abortError()
 	}
 	if err != nil {
 		return err
@@ -99,7 +101,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 	for {
 		wg := waitgroup.NewWaitGroup(muer.config.Parallel)
 		for {
-			if muer.isStopped() || muer.isCanceled() { // 不再派发新分片
+			if muer.isStopped() || muer.isAborted() { // 不再派发新分片
 				break
 			}
 
@@ -110,13 +112,13 @@ func (muer *MultiUploader) upload() (uperr error) {
 
 			wer := e.(*worker)
 			wg.AddDelta()
-			if muer.isStopped() || muer.isCanceled() {
+			if muer.isStopped() || muer.isAborted() {
 				wg.Done()
 				break
 			}
 			go func() {
 				defer wg.Done()
-				if muer.isCanceled() {
+				if muer.isAborted() {
 					return
 				}
 				if err := muer.validateSource(); err != nil {
@@ -124,7 +126,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 					return
 				}
 				checksum, terr := muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
-				if muer.isCanceled() {
+				if muer.isAborted() {
 					return
 				}
 				if err := muer.validateSource(); err != nil {
@@ -172,7 +174,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 		}
 		wg.Wait()
 
-		if muer.isStopped() || muer.isCanceled() {
+		if muer.isStopped() || muer.isAborted() {
 			break
 		}
 
@@ -182,13 +184,11 @@ func (muer *MultiUploader) upload() (uperr error) {
 		}
 	}
 
-	select {
-	case <-muer.canceled:
+	if muer.isAborted() {
 		if uperr != nil {
 			return uperr
 		}
-		return context.Canceled
-	default:
+		return muer.abortError()
 	}
 
 	if muer.isStopped() { // 优雅停止: 文件未完整上传, 不合并 superfile, 交由断点续传处理
@@ -198,12 +198,12 @@ func (muer *MultiUploader) upload() (uperr error) {
 	if err := muer.validateSource(); err != nil {
 		return err
 	}
-	if muer.isCanceled() || muer.isStopped() || ctx.Err() != nil {
-		return context.Canceled
+	if muer.isAborted() || muer.isStopped() || ctx.Err() != nil {
+		return muer.abortError()
 	}
 	cerr := muer.multiUpload.CreateSuperFile(ctx, originPCSHost, muer.config.Policy, muer.instanceState.Uploadid, muer.fileSize, checksumMap)
-	if muer.isCanceled() || ctx.Err() != nil {
-		return context.Canceled
+	if muer.isAborted() || ctx.Err() != nil {
+		return muer.abortError()
 	}
 	if cerr != nil {
 		return cerr

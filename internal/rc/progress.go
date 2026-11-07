@@ -21,6 +21,7 @@ type transferProgress struct {
 	ETag, Modified    string
 	Reset             bool
 	CheckpointFailed  bool
+	ProtocolFailed    bool
 }
 
 func reportProgress(ctx context.Context, v transferProgress) {

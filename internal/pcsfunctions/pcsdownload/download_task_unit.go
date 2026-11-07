@@ -107,6 +107,31 @@ func (dtu *DownloadTaskUnit) verboseInfof(format string, a ...interface{}) {
 
 // download 执行下载
 func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTPClient) (err error) {
+	var (
+		writer                 downloader.Writer
+		file                   *os.File
+		created                bool
+		outputPath, checkpoint string
+	)
+	// All modes share the same panic boundary. Retain the transfer failure
+	// as well as typed panic causes so callers can still classify the result.
+	defer func() {
+		if r := recover(); r != nil {
+			cause, ok := r.(error)
+			if !ok {
+				cause = fmt.Errorf("%v", r)
+			}
+			err = errors.Join(err, fmt.Errorf("%s: panic: %w", StrDownloadFailed, cause))
+		}
+		if file != nil {
+			if err != nil && created {
+				if cleanupErr := removeOwnedEmptyDownload(file, outputPath, checkpoint); cleanupErr != nil {
+					dtu.verboseInfof("retain failed download output %s: %s\n", outputPath, cleanupErr)
+				}
+			}
+			file.Close()
+		}
+	}()
 	if dtu.ProbeOnly {
 		ctx := dtu.Context
 		if ctx == nil {
@@ -130,29 +155,9 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 		}
 		return nil
 	}
-	var (
-		writer downloader.Writer
-		file   *os.File
-	)
-
 	if !dtu.Cfg.IsTest {
-		var created bool
-		var outputPath, checkpoint string
 		// Keep the original handle and paths through recovery. Callback changes
 		// to task settings must not redirect cleanup to another user's file.
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("%s: panic: %v", StrDownloadFailed, r)
-			}
-			if file != nil {
-				if err != nil && created {
-					if cleanupErr := removeOwnedEmptyDownload(file, outputPath, checkpoint); cleanupErr != nil {
-						dtu.verboseInfof("retain failed download output %s: %s\n", outputPath, cleanupErr)
-					}
-				}
-				file.Close()
-			}
-		}()
 		outputPath, err = filepath.Abs(dtu.SavePath)
 		if err != nil {
 			return err
@@ -192,8 +197,18 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	der.SetDURLCheckFuncWithContext(func(ctx context.Context, client *requester.HTTPClient, url string) (int64, *http.Response, error) {
-		size, resp, err := BaiduPCSURLCheckFuncWithContext(ctx, client, url)
+	der.SetDURLCheckFuncWithContext(func(ctx context.Context, client *requester.HTTPClient, url string) (size int64, resp *http.Response, err error) {
+		size, resp, err = BaiduPCSURLCheckFuncWithContext(ctx, client, url)
+		// A panicking probe callback never returns the response to Execute,
+		// so that caller cannot install its normal response-close defer.
+		defer func() {
+			if r := recover(); r != nil {
+				if resp != nil && resp.Body != nil {
+					resp.Body.Close()
+				}
+				panic(r)
+			}
+		}()
 		// Error documents have their own validators (or none). They cannot
 		// establish that the file changed or replace the saved file identity.
 		if err == nil && resp != nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {

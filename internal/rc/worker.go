@@ -2,7 +2,6 @@ package rc
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -14,7 +13,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -56,9 +54,38 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 		return err
 	}
 	defer input.Close()
-	cmd.Cancel = func() error { _, _ = fmt.Fprintln(input, "cancel"); return nil }
+	var cancelOnce sync.Once
+	cmd.Cancel = func() error {
+		cancelOnce.Do(func() { _, _ = fmt.Fprintln(input, "cancel") })
+		return nil
+	}
 	cmd.WaitDelay = 5 * time.Second
+	var failureStop *time.Timer // Published before the output-copy goroutine exits.
+	var stopOnce sync.Once
+	output.stop = func() {
+		stopOnce.Do(func() {
+			// Local output failure is not user cancellation. Allow checkpoint
+			// cleanup before bounding an unresponsive child.
+			failureStop = time.AfterFunc(cmd.WaitDelay, func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+			})
+			_ = cmd.Cancel()
+		})
+	}
 	err = cmd.Run()
+	output.finish()
+	if failureStop != nil {
+		failureStop.Stop()
+	}
+	if output.callbackErr != nil || output.protocolErr != nil {
+		var checkpointErr error
+		if output.checkpointFailed {
+			checkpointErr = ErrCheckpointSave
+		}
+		return errors.Join(ctx.Err(), output.callbackErr, output.protocolErr, checkpointErr)
+	}
 	if output.checkpointFailed {
 		return errors.Join(ctx.Err(), ErrCheckpointSave)
 	}
@@ -75,7 +102,7 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 }
 
 // RunWorker receives paths and an account ID only, never credential arguments.
-func RunWorker(args []string) error {
+func RunWorker(args []string) (err error) {
 	if len(args) != 5 && len(args) != 6 {
 		return errors.New("invalid worker arguments")
 	}
@@ -116,13 +143,13 @@ func RunWorker(args []string) error {
 	}
 	os.Stdout = quiet
 	defer func() { os.Stdout = progressOut; quiet.Close() }()
-	var progressMu sync.Mutex
-	report := func(v transferProgress) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		b, _ := json.Marshal(v)
-		fmt.Fprintf(progressOut, "@pcsclone %s\n", b)
-	}
+	reporter := newWorkerReporter(progressOut, cancel)
+	defer func() {
+		if reportErr := reporter.Err(); reportErr != nil {
+			err = errors.Join(err, fmt.Errorf("worker progress report: %w", reportErr))
+		}
+	}()
+	report := reporter.Report
 	onProgress := func(done, total, rate int64) { report(transferProgress{Done: done, Total: total, Rate: rate}) }
 	user, err := pcsconfig.Config.SwitchUser(&pcsconfig.BaiduBase{UID: uid})
 	if err != nil {
@@ -216,37 +243,3 @@ func workerDownloadInfo(ctx context.Context, pcs *baidupcs.BaiduPCS, remote stri
 
 // Injectable transfer boundary for account-isolation regression tests.
 var runTransferWorker = worker
-
-// Worker stdout contains only this bounded, numeric progress protocol. Legacy
-// output and request URLs are never forwarded to the parent terminal.
-type workerOutput struct {
-	ctx              context.Context
-	pending          []byte
-	reset            bool
-	checkpointFailed bool
-}
-
-func (w *workerOutput) Write(p []byte) (int, error) {
-	n := len(p)
-	w.pending = append(w.pending, p...)
-	for {
-		i := bytes.IndexByte(w.pending, '\n')
-		if i < 0 {
-			break
-		}
-		line := string(w.pending[:i])
-		w.pending = w.pending[i+1:]
-		if strings.HasPrefix(line, "@pcsclone ") {
-			var v transferProgress
-			if json.Unmarshal([]byte(strings.TrimPrefix(line, "@pcsclone ")), &v) == nil {
-				w.reset = w.reset || v.Reset
-				w.checkpointFailed = w.checkpointFailed || v.CheckpointFailed
-				reportProgress(w.ctx, v)
-			}
-		}
-	}
-	if len(w.pending) > 64*1024 {
-		w.pending = nil
-	}
-	return n, nil
-}

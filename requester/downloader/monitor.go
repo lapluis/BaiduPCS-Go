@@ -445,6 +445,12 @@ func (mt *Monitor) prepareCompletion() {
 
 // Execute 执行任务
 func (mt *Monitor) Execute(cancelCtx context.Context) {
+	mt.execute(cancelCtx, nil)
+}
+
+// A progress failure stops workers without turning a callback error into user
+// cancellation. The caller joins the callback and persists its final snapshot.
+func (mt *Monitor) execute(cancelCtx context.Context, progressFailed <-chan struct{}) {
 	mt.prepareCompletion()
 	mt.scheduleMu.Lock()
 	mt.stopped = false
@@ -516,6 +522,8 @@ func (mt *Monitor) Execute(cancelCtx context.Context) {
 			return
 		}
 		select {
+		case <-progressFailed:
+			return
 		case <-cancelCtx.Done():
 			mt.err = cancelCtx.Err()
 			return

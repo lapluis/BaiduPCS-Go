@@ -5,6 +5,12 @@ import "errors"
 // ErrSourceRead identifies failures reading upload data, rather than sending it.
 var ErrSourceRead = errors.New("upload source read failed")
 
+// ErrProgressCallback identifies a failed asynchronous upload status callback.
+var ErrProgressCallback = errors.New("upload progress callback failed")
+
+// ErrEventCallback identifies a failed synchronous upload lifecycle callback.
+var ErrEventCallback = errors.New("upload event callback failed")
+
 type (
 	// MultiError 多线程上传的错误
 	MultiError struct {

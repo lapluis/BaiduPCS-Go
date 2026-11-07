@@ -71,9 +71,20 @@ const (
 	DefaultContentSize = 4 * converter.KB
 )
 
-func (utu *UploadTaskUnit) saveCheckpoint() error {
-	err := utu.UploadingDatabase.Save()
+func (utu *UploadTaskUnit) saveCheckpoint() (err error) {
+	err = utu.UploadingDatabase.Save()
 	if err != nil && utu.OnTransferError != nil {
+		// A diagnostic callback must not replace the persistence failure or
+		// escape a final/cancellation callback after the uploader has joined.
+		defer func() {
+			if r := recover(); r != nil {
+				cause, ok := r.(error)
+				if !ok {
+					cause = fmt.Errorf("%v", r)
+				}
+				err = errors.Join(err, fmt.Errorf("upload checkpoint error callback panic: %w", cause))
+			}
+		}()
 		utu.OnTransferError(err)
 	}
 	return err
@@ -425,11 +436,21 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 	muer.OnCancel(func() {
 		fmt.Printf("\n")
 		fmt.Printf("[%s] 上传已取消, 保存上传进度...\n", utu.taskInfo.Id())
-		if err := errors.Join(checkpointErr, saveProgress()); err != nil {
-			result.ResultMessage, result.Err = "保存上传进度失败", err
+		saveErr := errors.Join(checkpointErr, saveProgress())
+		var cancelErr error
+		if utu.Context != nil {
+			cancelErr = utu.Context.Err()
+		}
+		if saveErr != nil {
+			// Checkpoint failure may internally stop the uploader. Only add
+			// cancellation when the task's actual context was canceled.
+			result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(cancelErr, saveErr)
 			return
 		}
-		result.ResultMessage = "用户取消上传"
+		if cancelErr == nil {
+			cancelErr = context.Canceled
+		}
+		result.ResultMessage, result.Err = "用户取消上传", cancelErr
 	})
 	muer.OnSuccess(func() {
 		if checkpointErr != nil {
@@ -451,12 +472,18 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 			result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, checkpointErr)
 			return
 		}
-		if errors.Is(err, uploader.ErrSourceRead) {
+		if errors.Is(err, uploader.ErrSourceRead) || errors.Is(err, uploader.ErrProgressCallback) || errors.Is(err, uploader.ErrEventCallback) {
 			if saveErr := saveProgress(); saveErr != nil {
 				result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, saveErr)
 				return
 			}
 			result.ResultMessage, result.Err = "读取上传源文件失败", err
+			if errors.Is(err, uploader.ErrProgressCallback) {
+				result.ResultMessage = "上传进度回调失败"
+			}
+			if errors.Is(err, uploader.ErrEventCallback) {
+				result.ResultMessage = "上传事件回调失败"
+			}
 			return
 		}
 		pcsError, ok := err.(pcserror.Error)
@@ -537,7 +564,12 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 		}
 		return
 	})
-	muer.Execute()
+	if executeErr := muer.ExecuteWithError(); errors.Is(executeErr, uploader.ErrEventCallback) {
+		result.Succeed, result.NeedRetry = false, false
+		if !errors.Is(result.Err, executeErr) {
+			result.Err = errors.Join(result.Err, executeErr)
+		}
+	}
 
 	return
 }

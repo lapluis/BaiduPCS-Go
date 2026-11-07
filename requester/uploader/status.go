@@ -1,6 +1,7 @@
 package uploader
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -95,6 +96,16 @@ func (muer *MultiUploader) uploadStatusEvent() {
 	muer.statusWG.Add(1)
 	go func() {
 		defer muer.statusWG.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				cause, ok := r.(error)
+				if !ok {
+					cause = fmt.Errorf("%v", r)
+				}
+				muer.progressErr = fmt.Errorf("%w: %w", ErrProgressCallback, cause)
+				close(muer.progressFailed)
+			}
+		}()
 		ticker := time.NewTicker(3 * time.Second) // 每3秒统计
 		//ticker := time.NewTicker(990 * time.Millisecond) // 每秒统计
 		defer ticker.Stop()

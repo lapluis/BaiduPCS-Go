@@ -167,11 +167,15 @@ func (a *App) run(raw []string) (code int) {
 
 func (a *App) reportCancellation(err error) int {
 	checkpointFailure := errors.Is(err, rc.ErrCheckpointSave)
+	protocolFailure := errors.Is(err, rc.ErrWorkerProtocol)
 	if checkpointFailure {
 		fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrCheckpointSave)
 	}
+	if protocolFailure {
+		fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrWorkerProtocol)
+	}
 	var logErr *logOutputError
-	if err != nil && !errors.Is(err, context.Canceled) && !checkpointFailure {
+	if err != nil && !errors.Is(err, context.Canceled) && !checkpointFailure && !protocolFailure {
 		fmt.Fprintln(a.Stderr, "pcsclone:", err)
 	} else if errors.As(err, &logErr) {
 		fmt.Fprintln(a.Stderr, "pcsclone:", logErr)
