@@ -96,11 +96,15 @@ func validatePair(a, b Endpoint) error {
 		return nil
 	}
 	x, y := strings.TrimRight(filepath.ToSlash(a.Root), "/"), strings.TrimRight(filepath.ToSlash(b.Root), "/")
-	if a.FS.Identity() == "local" && runtime.GOOS == "windows" {
-		x = strings.ToLower(x)
-		y = strings.ToLower(y)
+	overlap := x == y || strings.HasPrefix(x, y+"/") || strings.HasPrefix(y, x+"/")
+	if a.FS.Identity() == "local" {
+		var err error
+		overlap, err = localPathsOverlap(x, y)
+		if err != nil {
+			return err
+		}
 	}
-	if x == y || strings.HasPrefix(x, y+"/") || strings.HasPrefix(y, x+"/") {
+	if overlap {
 		return errors.New("source and destination overlap")
 	}
 	if _, local := a.FS.(*Local); local {
@@ -374,42 +378,6 @@ dispatchComparisons:
 		}
 	}
 	return p, nil
-}
-
-// Validate only selected paths and the parents needed to create them. Existing
-// destination names still participate even when excluded: a selected write
-// must not alias an excluded destination on a case-insensitive filesystem.
-func validateSelectedLocalPaths(source, destination map[string]Entry, o Options) error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-	selected := map[string]Entry{}
-	for name, entry := range source {
-		if !o.Filter.Match(name) || (entry.IsDir && !o.CreateEmptyDirs) {
-			continue
-		}
-		for p := name; p != "."; p = path.Dir(p) {
-			selected[p] = Entry{}
-		}
-	}
-	names := map[string][]string{}
-	for name := range destination {
-		folded := strings.ToLower(name)
-		names[folded] = append(names[folded], name)
-	}
-	for _, name := range sortedKeys(selected) {
-		if err := validLocalName(name); err != nil {
-			return err
-		}
-		folded := strings.ToLower(name)
-		for _, prior := range names[folded] {
-			if prior != name {
-				return fmt.Errorf("case collision: %s and %s", prior, name)
-			}
-		}
-		names[folded] = append(names[folded], name)
-	}
-	return nil
 }
 
 func unchanged(ctx context.Context, e Endpoint, p string, old *Entry) error {

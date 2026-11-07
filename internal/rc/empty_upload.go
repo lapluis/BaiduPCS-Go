@@ -11,7 +11,8 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/multipartreader"
 )
 
-func uploadEmptyFile(ctx context.Context, pcs *baidupcs.BaiduPCS, target string, client *requester.HTTPClient) error {
+func uploadEmptyFile(ctx context.Context, pcs *baidupcs.BaiduPCS, target string, client *requester.HTTPClient) (uploadErr error) {
+	defer func() { uploadErr = preserveContextError(ctx, uploadErr) }()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

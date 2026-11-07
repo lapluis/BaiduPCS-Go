@@ -3,6 +3,7 @@ package baidupcs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,14 +38,20 @@ func handleRespClose(resp *http.Response) error {
 func handleRespStatusError(operation string, resp *http.Response) pcserror.Error {
 	if resp == nil || resp.Body == nil {
 		errInfo := pcserror.NewPCSErrorInfo(operation)
-		errInfo.SetNetError(fmt.Errorf("upload returned incomplete HTTP response"))
+		errInfo.SetNetError(fmt.Errorf("incomplete HTTP response"))
 		return errInfo
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 	defer resp.Body.Close()
-	decoded := pcserror.DecodePCSJSONError(operation, resp.Body)
+	// Both PCS and web endpoints use this boundary. Preserve either error
+	// envelope while preventing a zero-code JSON body from hiding HTTP failure.
+	var captured bytes.Buffer
+	decoded := pcserror.DecodePCSJSONError(operation, io.TeeReader(resp.Body, &captured))
+	if decoded == nil {
+		decoded = pcserror.DecodePanJSONError(operation, bytes.NewReader(captured.Bytes()))
+	}
 	if decoded != nil && decoded.GetErrType() == pcserror.ErrTypeRemoteError {
 		return decoded
 	}
@@ -85,8 +92,25 @@ func (pcs *BaiduPCS) sendReqReturnRespContext(ctx context.Context, rt reqType, o
 	if err == nil {
 		resp, err = pcs.client.ReqWithContext(ctx, method, urlStr, post, header)
 	}
+	if err == nil {
+		statusErr := handleRespStatusError(op, resp)
+		if statusErr != nil {
+			// The status check already closed this response body.
+			resp = nil
+			if canceled := ctx.Err(); canceled != nil {
+				err = errors.Join(canceled, statusErr)
+			} else {
+				return nil, statusErr
+			}
+		} else {
+			err = ctx.Err()
+		}
+	}
 	if err != nil {
 		handleRespClose(resp)
+		if canceled := ctx.Err(); canceled != nil && !errors.Is(err, canceled) {
+			err = errors.Join(err, canceled)
+		}
 		switch rt {
 		case reqTypePCS:
 			return nil, &pcserror.PCSErrInfo{

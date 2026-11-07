@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -413,7 +414,12 @@ func runBaiduLink(c *commandContext) error {
 		if located == nil || len(located.URLs) == 0 {
 			return operationError(errors.New("locate API returned no download information"))
 		}
-		for _, item := range located.URLs {
+		for index, item := range located.URLs {
+			parsed, err := url.Parse(item.URL)
+			if err != nil || parsed.Opaque != "" || parsed.Hostname() == "" || parsed.User != nil ||
+				(parsed.Scheme != "" && parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return operationError(fmt.Errorf("locate API returned an invalid download URL at index %d", index))
+			}
 			output.URLs = append(output.URLs, linkView{URL: item.URL, Encrypt: item.Encrypt})
 		}
 	}

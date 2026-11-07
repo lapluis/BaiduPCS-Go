@@ -95,11 +95,20 @@ func humanBytes(n int64) string {
 	}
 	return fmt.Sprintf("%.1f %s", v, units[i])
 }
-func (p ProgressSnapshot) String() string {
-	percent := float64(0)
+func (p ProgressSnapshot) percentage() float64 {
 	if p.Total > 0 {
-		percent = 100 * float64(p.Done) / float64(p.Total)
+		return 100 * float64(p.Done) / float64(p.Total)
 	}
+	if p.Count > 0 {
+		return 100 * float64(p.Completed) / float64(p.Count)
+	}
+	if p.Final && p.Active == 0 && p.Pending == 0 && p.Failed == 0 && p.Canceled == 0 {
+		return 100
+	}
+	return 0
+}
+func (p ProgressSnapshot) String() string {
+	percent := p.percentage()
 	eta := "--"
 	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()
@@ -107,10 +116,7 @@ func (p ProgressSnapshot) String() string {
 	return fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d canceled=%d pending=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed, p.Canceled, p.Pending)
 }
 func (p ProgressSnapshot) Lines() []string {
-	percent := float64(0)
-	if p.Total > 0 {
-		percent = 100 * float64(p.Done) / float64(p.Total)
-	}
+	percent := p.percentage()
 	eta := "--"
 	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()

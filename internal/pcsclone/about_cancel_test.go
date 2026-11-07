@@ -70,7 +70,7 @@ func TestAboutCancellation(t *testing.T) {
 }
 
 func TestAboutOutputAndMalformedResponse(t *testing.T) {
-	for _, mode := range []string{"normal", "zero", "missing"} {
+	for _, mode := range []string{"normal", "zero", "missing", "negative-total", "negative-used", "over-quota", "maximum"} {
 		for _, jsonOutput := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/json=%v", mode, jsonOutput), func(t *testing.T) {
 				payload := `{"quota":9007199254740993,"used":25}`
@@ -82,13 +82,27 @@ func TestAboutOutputAndMalformedResponse(t *testing.T) {
 				if mode == "missing" {
 					payload = `{}`
 				}
+				if mode == "negative-total" {
+					payload = `{"quota":-1,"used":0}`
+				}
+				if mode == "negative-used" {
+					payload = `{"quota":0,"used":-9223372036854775808}`
+				}
+				if mode == "over-quota" {
+					payload = `{"quota":100,"used":125}`
+					total, used = 100, 125
+				}
+				if mode == "maximum" {
+					payload = `{"quota":9223372036854775807,"used":0}`
+					total, used = 9223372036854775807, 0
+				}
 				var flags []string
 				if jsonOutput {
 					flags = append(flags, "--json")
 				}
 				c, out := commandFixture(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, payload) }, buildCommands(), "about", []string{"bd:"}, flags)
 				err := c.cmd.Run(c)
-				if mode == "missing" {
+				if mode == "missing" || mode == "negative-total" || mode == "negative-used" {
 					if err == nil || out.Len() != 0 {
 						t.Fatalf("missing quota reported success: err=%v output=%q", err, out.String())
 					}

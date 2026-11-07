@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -14,8 +15,75 @@ import (
 	"time"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
+	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
 )
+
+type emptyUploadCancelResultBody struct {
+	io.Reader
+	cancel context.CancelFunc
+	closes int
+}
+
+func (b *emptyUploadCancelResultBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return n, err
+}
+
+func (b *emptyUploadCancelResultBody) Close() error { b.closes++; return nil }
+
+func TestEmptyUploadPreservesCancellationDuringResponseDecoding(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		status        int
+	}{
+		{"success", `{"error_code":0}`, 200},
+		{"remote-error", `{"error_code":31066}`, 200},
+		{"truncated-json", `{`, 200},
+		{"http-remote-error", `{"error_code":31066}`, 403},
+		{"http-success-shaped-error", `{"error_code":0}`, 500},
+	} {
+		for _, canceled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancel=%t", tc.name, canceled), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				body := &emptyUploadCancelResultBody{Reader: strings.NewReader(tc.payload)}
+				if canceled {
+					body.cancel = cancel
+				}
+				calls := 0
+				client := requester.NewHTTPClient()
+				client.Client.Transport = fakeTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					defer r.Body.Close()
+					return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: body, Request: r}, nil
+				})
+				err := uploadEmptyFile(ctx, &baidupcs.BaiduPCS{}, "/fixture", client)
+				if errors.Is(err, context.Canceled) != canceled || calls != 1 || body.closes != 1 {
+					t.Fatalf("decoding cancellation lost or ownership changed: calls=%d closes=%d err=%v", calls, body.closes, err)
+				}
+				if tc.name == "success" && !canceled && err != nil {
+					t.Fatal("healthy upload changed", err)
+				}
+				if strings.Contains(tc.name, "remote-error") {
+					var remote pcserror.Error
+					if !errors.As(err, &remote) || remote.GetRemoteErrCode() != 31066 {
+						t.Fatalf("remote error lost: %v", err)
+					}
+				}
+				if tc.name == "truncated-json" && !errors.Is(err, io.ErrUnexpectedEOF) {
+					t.Fatalf("JSON error lost: %v", err)
+				}
+				if tc.status == 500 && (err == nil || !strings.Contains(err.Error(), "500")) {
+					t.Fatalf("HTTP failure lost: %v", err)
+				}
+			})
+		}
+	}
+}
 
 type emptyUploadWaitBody struct {
 	ctx              context.Context

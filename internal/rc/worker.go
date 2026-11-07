@@ -161,11 +161,17 @@ func RunWorker(args []string) (err error) {
 	executor := &taskframework.TaskExecutor{IsFailedDeque: true}
 	executor.SetParallel(1)
 	if kind == "upload" {
-		info, err := os.Stat(args[2])
+		if err := safeParents(args[2]); err != nil {
+			return err
+		}
+		info, err := (&Local{}).Stat(ctx, args[2])
 		if err != nil {
 			return err
 		}
-		if info.Size() == 0 {
+		if info.IsDir {
+			return errors.New("upload worker expects a regular file")
+		}
+		if info.Size == 0 {
 			return uploadEmptyFile(ctx, pcs, args[3], pcsconfig.Config.PCSHTTPClient())
 		}
 		// Each target has a separate resume database, preventing workers from
@@ -188,11 +194,19 @@ func RunWorker(args []string) (err error) {
 			}
 		}, IgnoreCachedMatch: true, LocalFileChecksum: checksum.NewLocalFileChecksum(args[2], int(baidupcs.SliceMD5Size)), SavePath: args[3], PCS: pcs, UploadingDatabase: db, Parallel: 1, PrintFormat: pcsupload.DefaultPrintFormat, UploadStatistic: statistic, Policy: baidupcs.OverWritePolicy}, 0)
 	} else if kind == "download" || kind == "probe" {
+		if kind == "download" {
+			if err := validateWorkerDownloadTarget(ctx, args[3]); err != nil {
+				return err
+			}
+		}
 		info, e := workerDownloadInfo(ctx, pcs, args[2])
 		if e != nil {
 			return e
 		}
 		if kind == "download" {
+			if err := validateWorkerDownloadTarget(ctx, args[3]); err != nil {
+				return err
+			}
 			if err = os.MkdirAll(filepath.Dir(args[3]), 0755); err != nil {
 				return err
 			}
@@ -225,6 +239,33 @@ func RunWorker(args []string) (err error) {
 		return errors.New("transfer failed")
 	}
 	return nil
+}
+
+func validateWorkerDownloadTarget(ctx context.Context, target string) error {
+	if target == "" {
+		return errors.New("download worker requires a target filename")
+	}
+	if err := validLocalPath(target); err != nil {
+		return err
+	}
+	if err := safeParents(target); err != nil {
+		return err
+	}
+	local := &Local{}
+	if err := ValidateMkdirTarget(ctx, Endpoint{FS: local, Root: filepath.Dir(target)}); err != nil {
+		return err
+	}
+	item, err := local.Stat(ctx, target)
+	if errors.Is(err, os.ErrNotExist) {
+		return ctx.Err()
+	}
+	if err != nil {
+		return err
+	}
+	if item.IsDir {
+		return errors.New("download worker expects a file target")
+	}
+	return ctx.Err()
 }
 
 func workerDownloadInfo(ctx context.Context, pcs *baidupcs.BaiduPCS, remote string) (*baidupcs.FileDirectory, error) {

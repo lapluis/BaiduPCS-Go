@@ -202,3 +202,69 @@ func TestBaiduLinkAlreadyCanceled(t *testing.T) {
 		})
 	}
 }
+
+func TestBaiduLinkRejectsMalformedLocateURLs(t *testing.T) {
+	for _, list := range []string{
+		`[]`, `[null]`, `[{}]`, `[{"url":""}]`,
+		`[{"url":"/relative"}]`, `[{"url":"http://:80/file"}]`,
+		`[{"url":"ftp://fixture.invalid/file"}]`,
+		`[{"url":"http://user:synthetic@fixture.invalid/file"}]`,
+		`[{"url":"http://fixture.invalid/%zz"}]`,
+		`[{"url":"http://fixture.invalid/good"},{"url":""}]`,
+		`[{"url":""},{"url":"http://fixture.invalid/good"}]`,
+	} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%t", list, jsonOutput), func(t *testing.T) {
+				calls := 0
+				c, out := linkCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if r.URL.Query().Get("method") == "meta" {
+						linkFixtureResponse(w, r, false)
+						return
+					}
+					fmt.Fprintf(w, `{"error_code":0,"urls":%s}`, list)
+				}, false, jsonOutput)
+				if err := c.cmd.Run(c); err == nil || out.Len() != 0 || calls != 2 {
+					t.Fatalf("malformed locate list reported success or partial output: calls=%d output=%q err=%v", calls, out.String(), err)
+				}
+			})
+		}
+	}
+}
+
+func TestBaiduLinkPreservesLocatedURLDetails(t *testing.T) {
+	want := linkResult{URLs: []linkView{
+		{URL: "http://fixture.invalid:8080/a%2Fb?token=synthetic%2Bvalue&x=1&x=2"},
+		{URL: "https://fixture.invalid/encrypted", Encrypt: 1},
+		{URL: "//fixture.invalid/relative-scheme?sign=synthetic"},
+	}}
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
+			c, out := linkCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("method") == "meta" {
+					linkFixtureResponse(w, r, false)
+					return
+				}
+				if err := json.NewEncoder(w).Encode(want); err != nil {
+					t.Error(err)
+				}
+			}, false, jsonOutput)
+			if err := c.cmd.Run(c); err != nil {
+				t.Fatal(err)
+			}
+			if jsonOutput {
+				var got linkResult
+				if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got.URLs) != len(want.URLs) {
+					t.Fatalf("invalid link output: %q %v", out.String(), err)
+				}
+				for i := range want.URLs {
+					if got.URLs[i] != want.URLs[i] {
+						t.Fatalf("link details changed: got=%+v want=%+v", got, want)
+					}
+				}
+			} else if out.String() != want.URLs[0].URL+"\n"+want.URLs[1].URL+"\n"+want.URLs[2].URL+"\n" {
+				t.Fatalf("link order or signed query changed: %q", out.String())
+			}
+		})
+	}
+}

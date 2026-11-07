@@ -77,7 +77,7 @@ func TestEmptyWorkerRespectsDownloadOwnership(t *testing.T) {
 
 func TestEmptyWorkerProcessFixture(t *testing.T) {
 	path := os.Getenv("PCS_EMPTY_WORKER_OUTPUT")
-	if path == "" {
+	if path == "" && os.Getenv("PCS_EMPTY_WORKER_PHASE") != "invalid-target" {
 		return
 	}
 	cfg := pcsconfig.NewConfig(filepath.Join(t.TempDir(), "config.json"))
@@ -89,9 +89,9 @@ func TestEmptyWorkerProcessFixture(t *testing.T) {
 	requester.SetGlobalProxy(os.Getenv("PCS_EMPTY_WORKER_PROXY"))
 	requester.SetProxyHostnameRules("")
 	err := RunWorker([]string{"download", "7", "/empty", path, "0"})
-	if os.Getenv("PCS_EMPTY_WORKER_PHASE") == "busy" {
+	if phase := os.Getenv("PCS_EMPTY_WORKER_PHASE"); phase == "busy" || phase == "invalid-target" {
 		if err == nil {
-			t.Fatal("empty worker bypassed active checkpoint")
+			t.Fatal("empty worker accepted a protected or invalid target")
 		}
 	} else if err != nil {
 		t.Fatal(err)

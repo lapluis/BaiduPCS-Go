@@ -44,6 +44,11 @@ func (pcs *BaiduPCS) QuotaInfoWithContext(ctx context.Context) (quota, used int6
 		quotaInfo.Err = errors.New("quota response is missing quota or used")
 		return 0, 0, quotaInfo.PCSErrInfo
 	}
+	if *quotaInfo.Quota < 0 || *quotaInfo.Used < 0 {
+		quotaInfo.ErrType = pcserror.ErrTypeOthers
+		quotaInfo.Err = errors.New("quota response contains negative quota or used")
+		return 0, 0, quotaInfo.PCSErrInfo
+	}
 	return *quotaInfo.Quota, *quotaInfo.Used, nil
 }
 

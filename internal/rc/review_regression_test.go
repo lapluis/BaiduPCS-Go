@@ -95,6 +95,14 @@ func TestRetryAfterChecksumError(t *testing.T) {
 				o := opts()
 				o.Checksum = true
 				o.Retries = 1
+				var final ProgressSnapshot
+				finals := 0
+				o.ShowProgress = true
+				o.Progress = func(p ProgressSnapshot) {
+					if p.Final {
+						final, finals = p, finals+1
+					}
+				}
 				p, err := BuildPlan(context.Background(), s, d, mode, o)
 				if err != nil {
 					t.Fatal(err)
@@ -106,6 +114,9 @@ func TestRetryAfterChecksumError(t *testing.T) {
 				}
 				if backend.failures != 1 {
 					t.Fatal("verification failure not exercised")
+				}
+				if result.Bytes != 4 || finals != 1 || final.Done != 4 || final.Total != 4 || final.Completed != 1 || final.Count != 1 || final.Active != 0 || final.Failed != 0 || final.Canceled != 0 || final.Pending != 0 {
+					t.Errorf("retry duplicated or lost final progress: result=%+v finals=%d progress=%+v", result, finals, final)
 				}
 				got, err := os.ReadFile(d.At("file"))
 				if err != nil || string(got) != "data" {
@@ -132,15 +143,26 @@ func TestRetryPreservesDestinationChangedAfterWrite(t *testing.T) {
 	o := opts()
 	o.Checksum = true
 	o.Retries = 1
+	var final ProgressSnapshot
+	finals := 0
+	o.ShowProgress = true
+	o.Progress = func(p ProgressSnapshot) {
+		if p.Final {
+			final, finals = p, finals+1
+		}
+	}
 	p, err := BuildPlan(context.Background(), s, d, "move", o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	backend.failNext = true
 	backend.beforeFailure = func() { write(t, d, "file", "external replacement") }
-	_, err = Execute(context.Background(), p, o)
+	result, err := Execute(context.Background(), p, o)
 	if err == nil || !strings.Contains(err.Error(), "changed after planning") {
 		t.Fatal(err)
+	}
+	if result.Copied != 0 || result.Bytes != 0 || result.Failed != 1 || finals != 1 || final.Done != 4 || final.Total != 4 || final.Completed != 0 || final.Count != 1 || final.Active != 0 || final.Failed != 1 || final.Canceled != 0 || final.Pending != 0 {
+		t.Errorf("failed retry counted completed data: result=%+v finals=%d progress=%+v", result, finals, final)
 	}
 	got, err := os.ReadFile(d.At("file"))
 	if err != nil || string(got) != "external replacement" {

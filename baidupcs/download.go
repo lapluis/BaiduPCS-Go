@@ -201,6 +201,11 @@ func (pcs *BaiduPCS) LocatePanAPIDownload(fidList ...int64) (dlinkInfoList APIDo
 			jsonData.Err = fmt.Errorf("invalid download link list: null entry at index %d", index)
 			return nil, jsonData.PanErrorInfo
 		}
+		if parseDownloadURL(link.Dlink, pcs.isHTTPS) == nil {
+			jsonData.ErrType = pcserror.ErrTypeOthers
+			jsonData.Err = fmt.Errorf("invalid download link list: unusable URL at index %d", index)
+			return nil, jsonData.PanErrorInfo
+		}
 	}
 	return jsonData.DlinkList, nil
 }

@@ -1,6 +1,7 @@
 package baidupcs
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,6 +9,53 @@ import (
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
+
+func TestPanAPIDownloadRejectsUnusableLinksAndRecovers(t *testing.T) {
+	const item = `{"fs_id":"7","dlink":"https://download.fixture.invalid/file"}`
+	for _, raw := range []string{"", "/relative", "http://:80/file", "ftp://fixture.invalid/file", "http://user:synthetic@fixture.invalid/file", "http://fixture.invalid/%zz"} {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := `{"fs_id":"7","dlink":` + string(encoded) + `}`
+		for _, list := range []string{`[` + bad + `]`, `[` + item + `,` + bad + `]`, `[` + bad + `,` + item + `]`} {
+			t.Run(list, func(t *testing.T) {
+				pcs, calls := panDownloadListFixture(t, func(attempt int) string {
+					if attempt == 1 {
+						return `{"errno":0,"dlink":` + list + `}`
+					}
+					return `{"errno":0,"dlink":[` + item + `]}`
+				})
+				links, err := pcs.LocatePanAPIDownload(7)
+				if err == nil || err.GetErrType() != pcserror.ErrTypeOthers || links != nil {
+					t.Fatalf("unusable list returned as success or partial result: links=%v err=%v", links, err)
+				}
+				links, err = pcs.LocatePanAPIDownload(7)
+				if err != nil || len(links) != 1 || links[0].Dlink != "https://download.fixture.invalid/file" || calls.pages != 1 || calls.downloads != 2 {
+					t.Fatalf("healthy retry or signature cache damaged: links=%v err=%v pages=%d downloads=%d", links, err, calls.pages, calls.downloads)
+				}
+			})
+		}
+	}
+}
+
+func TestPanAPIDownloadPreservesLinkRepresentation(t *testing.T) {
+	for _, raw := range []string{"http://fixture.invalid:8080/a%2Fb?token=synthetic%2Bvalue&x=1&x=2", "https://fixture.invalid/file", "//fixture.invalid/file?sign=synthetic"} {
+		t.Run(raw, func(t *testing.T) {
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pcs, _ := panDownloadListFixture(t, func(int) string {
+				return `{"errno":0,"dlink":[{"fs_id":"7","dlink":` + string(encoded) + `}]}`
+			})
+			links, err := pcs.LocatePanAPIDownload(7)
+			if err != nil || len(links) != 1 || links[0].Dlink != raw || links[0].FsID != "7" {
+				t.Fatalf("valid URL representation changed: links=%v err=%v", links, err)
+			}
+		})
+	}
+}
 
 type panDownloadListCalls struct {
 	pages, downloads int
