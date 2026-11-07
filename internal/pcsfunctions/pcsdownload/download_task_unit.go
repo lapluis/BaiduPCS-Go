@@ -107,6 +107,10 @@ func (dtu *DownloadTaskUnit) verboseInfof(format string, a ...interface{}) {
 
 // download 执行下载
 func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTPClient) (err error) {
+	ctx := dtu.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var (
 		writer                 downloader.Writer
 		file                   *os.File
@@ -123,6 +127,9 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			}
 			err = errors.Join(err, fmt.Errorf("%s: panic: %w", StrDownloadFailed, cause))
 		}
+		if canceled := ctx.Err(); canceled != nil && !errors.Is(err, canceled) {
+			err = errors.Join(err, canceled)
+		}
 		if file != nil {
 			if err != nil && created {
 				if cleanupErr := removeOwnedEmptyDownload(file, outputPath, checkpoint); cleanupErr != nil {
@@ -132,17 +139,16 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 			file.Close()
 		}
 	}()
+	if canceled := ctx.Err(); canceled != nil {
+		return canceled
+	}
 	if dtu.ProbeOnly {
-		ctx := dtu.Context
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		size, resp, err := BaiduPCSURLCheckFuncWithContext(ctx, client, downloadURL)
+		size, resp, probeErr := BaiduPCSURLCheckFuncWithContext(ctx, client, downloadURL)
 		if resp != nil {
 			defer resp.Body.Close()
 		}
-		if err != nil {
-			return err
+		if probeErr != nil {
+			return probeErr
 		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 			return fmt.Errorf("download probe status %d", resp.StatusCode)
@@ -193,10 +199,6 @@ func (dtu *DownloadTaskUnit) download(downloadURL string, client *requester.HTTP
 
 	der := downloader.NewDownloader(downloadURL, writer, dtu.Cfg)
 	der.SetClient(client)
-	ctx := dtu.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	der.SetDURLCheckFuncWithContext(func(ctx context.Context, client *requester.HTTPClient, url string) (size int64, resp *http.Response, err error) {
 		size, resp, err = BaiduPCSURLCheckFuncWithContext(ctx, client, url)
 		// A panicking probe callback never returns the response to Execute,
@@ -414,11 +416,14 @@ func (dtu *DownloadTaskUnit) locateDownload(result *taskframework.TaskUnitRunRes
 
 	// 更新链接的协议
 	// 跳过nb.cache这种还没有证书的
-	if len(rawDlinks) < dtu.DlinkPrefer+1 {
+	if dtu.DlinkPrefer < 0 {
+		dtu.DlinkPrefer = 0
+	}
+	if dtu.DlinkPrefer >= len(rawDlinks) {
 		dtu.DlinkPrefer = len(rawDlinks) - 1
 	}
 	raw_dlink := rawDlinks[dtu.DlinkPrefer]
-	if strings.HasPrefix(raw_dlink.Host, "nb.cache") && len(rawDlinks) > dtu.DlinkPrefer+1 {
+	if strings.HasPrefix(raw_dlink.Host, "nb.cache") && dtu.DlinkPrefer < len(rawDlinks)-1 {
 		raw_dlink = rawDlinks[dtu.DlinkPrefer+1]
 	}
 	FixHTTPLinkURL(raw_dlink)
@@ -459,6 +464,23 @@ func (dtu *DownloadTaskUnit) pcsOrStreamingDownload(mode DownloadMode, result *t
 
 // checkFileValid 检测文件有效性
 func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunResult) (ok bool) {
+	ctx := dtu.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer func() {
+		if err := ctx.Err(); err != nil {
+			ok = false
+			if !errors.Is(result.Err, err) {
+				result.Err = errors.Join(result.Err, err)
+			}
+			result.ResultMessage = "文件校验已中断"
+			result.NeedRetry, result.NeedNextdindex = false, false
+		}
+	}()
+	if ctx.Err() != nil {
+		return
+	}
 	if dtu.Cfg.IsTest {
 		fmt.Printf("[%s] 跳过文件有效性检验\n", dtu.taskInfo.Id())
 		return true
@@ -495,7 +517,7 @@ func (dtu *DownloadTaskUnit) checkFileValid(result *taskframework.TaskUnitRunRes
 	}
 
 	// 就在这里处理校验出错
-	err = CheckFileValid(dtu.SavePath, dtu.FileInfo)
+	err = CheckFileValidWithContext(ctx, dtu.SavePath, dtu.FileInfo)
 	if err != nil {
 		result.ResultMessage = StrDownloadChecksumFailed
 		result.Err = err
@@ -556,7 +578,7 @@ func (dtu *DownloadTaskUnit) RetryWait() time.Duration {
 	return pcsfunctions.RetryWait(dtu.taskInfo.Retry())
 }
 
-func createEmptyDownloadFile(filename string, overwrite bool) (err error) {
+func createEmptyDownloadFile(filename string, overwrite bool, mtime *time.Time) (err error) {
 	if err := os.MkdirAll(filepath.Dir(filename), 0777); err != nil {
 		return err
 	}
@@ -591,6 +613,13 @@ func createEmptyDownloadFile(filename string, overwrite bool) (err error) {
 	}
 	if err := errors.Join(file.Sync(), file.Close()); err != nil {
 		return err
+	}
+	// Keep the checkpoint lease through metadata changes too. Skipped existing
+	// files return above, so their timestamps and saved ranges stay untouched.
+	if mtime != nil {
+		if err := os.Chtimes(filename, *mtime, *mtime); err != nil {
+			return err
+		}
 	}
 	// The old ranges no longer describe the now-empty output. Retain the
 	// independent lease through cleanup, as the HTTP downloader does.
@@ -674,7 +703,12 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	if dtu.FileInfo.Size == 0 && !dtu.ProbeOnly {
 		if !dtu.Cfg.IsTest {
-			if err := createEmptyDownloadFile(dtu.SavePath, dtu.IsOverwrite); err != nil {
+			var mtime *time.Time
+			if dtu.ModifyMTime {
+				requested := time.Unix(dtu.FileInfo.Mtime, 0)
+				mtime = &requested
+			}
+			if err := createEmptyDownloadFile(dtu.SavePath, dtu.IsOverwrite, mtime); err != nil {
 				result.ResultMessage = StrDownloadInitError
 				result.Err = err
 				dtu.handleError(result)
@@ -687,10 +721,19 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 
 	fmt.Printf("[%s] 准备下载: %s\n", dtu.taskInfo.Id(), dtu.PcsPath)
 
-	if !dtu.ProbeOnly && !dtu.Cfg.IsTest && !dtu.IsOverwrite && FileExist(dtu.SavePath) {
-		fmt.Printf("[%s] 文件已经存在: %s, 跳过...\n", dtu.taskInfo.Id(), dtu.SavePath)
-		result.Succeed = true // 执行成功
-		return
+	if !dtu.ProbeOnly && !dtu.Cfg.IsTest && !dtu.IsOverwrite {
+		exists, err := FileExistWithError(dtu.SavePath)
+		if err != nil {
+			result.ResultMessage = StrDownloadInitError
+			result.Err = err
+			dtu.handleError(result)
+			return
+		}
+		if exists {
+			fmt.Printf("[%s] 文件已经存在: %s, 跳过...\n", dtu.taskInfo.Id(), dtu.SavePath)
+			result.Succeed = true
+			return
+		}
 	}
 
 	if !dtu.Cfg.IsTest {
@@ -724,14 +767,30 @@ func (dtu *DownloadTaskUnit) Run() (result *taskframework.TaskUnitRunResult) {
 		}
 		// 校验不成功, 返回结果
 		return result
-	} else {
-		if dtu.ModifyMTime {
-			os.Chtimes(dtu.SavePath, time.Unix(dtu.FileInfo.Mtime, 0), time.Unix(dtu.FileInfo.Mtime, 0))
+	}
+	dtu.completeDownload(result)
+	return
+}
+
+// completeDownload publishes success only after requested metadata is applied.
+func (dtu *DownloadTaskUnit) completeDownload(result *taskframework.TaskUnitRunResult) {
+	if dtu.Context != nil && dtu.Context.Err() != nil {
+		result.ResultMessage = "下载已中断"
+		result.Err = errors.Join(result.Err, dtu.Context.Err())
+		dtu.handleError(result)
+		return
+	}
+	if !dtu.Cfg.IsTest && dtu.ModifyMTime {
+		mtime := time.Unix(dtu.FileInfo.Mtime, 0)
+		if err := os.Chtimes(dtu.SavePath, mtime, mtime); err != nil {
+			result.ResultMessage = "更新下载文件时间失败"
+			result.Err = err
+			dtu.handleError(result)
+			return
 		}
 	}
 	// 统计下载
 	dtu.DownloadStatistic.AddTotalSize(dtu.FileInfo.Size)
 	// 下载成功
 	result.Succeed = true
-	return
 }

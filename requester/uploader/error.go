@@ -11,6 +11,9 @@ var ErrProgressCallback = errors.New("upload progress callback failed")
 // ErrEventCallback identifies a failed synchronous upload lifecycle callback.
 var ErrEventCallback = errors.New("upload event callback failed")
 
+// ErrPartRetryExhausted identifies a part that failed all bounded attempts.
+var ErrPartRetryExhausted = errors.New("upload part retry limit reached")
+
 type (
 	// MultiError 多线程上传的错误
 	MultiError struct {

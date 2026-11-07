@@ -107,6 +107,10 @@ func (h *HTTPClient) ReqWithContext(ctx context.Context, method string, urlStr s
 	}
 	req, err = http.NewRequestWithContext(ctx, method, urlStr, obody)
 	if err != nil {
+		// Client.Do only takes ownership after request construction succeeds.
+		if body, ok := obody.(io.Closer); ok {
+			body.Close()
+		}
 		return nil, err
 	}
 

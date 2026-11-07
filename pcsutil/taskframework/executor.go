@@ -1,9 +1,9 @@
 package taskframework
 
 import (
+	"container/heap"
 	"github.com/GeertJohan/go.incremental"
 	"github.com/oleiade/lane"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -50,7 +50,7 @@ func (te *TaskExecutor) SetParallel(parallel int) {
 	te.parallel = parallel
 }
 
-//Append 将任务加到任务队列末尾
+// Append 将任务加到任务队列末尾
 func (te *TaskExecutor) Append(unit TaskUnit, maxRetry int) *TaskInfo {
 	te.lazyInit()
 	taskInfo := &TaskInfo{
@@ -65,12 +65,12 @@ func (te *TaskExecutor) Append(unit TaskUnit, maxRetry int) *TaskInfo {
 	return taskInfo
 }
 
-//AppendNoRetry 将任务加到任务队列末尾, 不重试
+// AppendNoRetry 将任务加到任务队列末尾, 不重试
 func (te *TaskExecutor) AppendNoRetry(unit TaskUnit) {
 	te.Append(unit, 0)
 }
 
-//Count 返回任务数量
+// Count 返回任务数量
 func (te *TaskExecutor) Count() int {
 	if te.deque == nil {
 		return 0
@@ -78,109 +78,80 @@ func (te *TaskExecutor) Count() int {
 	return te.deque.Size()
 }
 
-//Execute 执行任务
+// Execute 执行任务
 func (te *TaskExecutor) Execute() {
 	te.lazyInit()
-
+	completed := make(chan *delayedTask)
+	var running sync.WaitGroup
+	defer running.Wait()
+	var pending delayedTaskQueue
+	active := 0
 	for {
-		wg := waitgroup.NewWaitGroup(te.parallel)
-		for {
-			if te.Stopped() { // 已停止, 不再派发新任务
-				break
+		stopped := te.Stopped()
+		if stopped {
+			// Preserve delayed retries without waiting for their deadlines.
+			for pending.Len() != 0 {
+				te.deque.Append(heap.Pop(&pending).(*delayedTask).task)
 			}
-
-			e := te.deque.Shift()
-			if e == nil { // 任务为空
-				break
+		} else {
+			now := time.Now()
+			for pending.Len() != 0 && !pending[0].ready.After(now) {
+				te.deque.Append(heap.Pop(&pending).(*delayedTask).task)
 			}
-
-			// 获取任务
-			task := e.(*TaskInfoItem)
-			wg.AddDelta()
-			// Acquiring a parallel slot may have blocked while Stop was called.
-			if te.Stopped() {
-				te.deque.Prepend(task)
-				wg.Done()
-				break
+			for active < te.parallel && !te.Stopped() {
+				e := te.deque.Shift()
+				if e == nil {
+					break
+				}
+				task := e.(*TaskInfoItem)
+				if te.Stopped() {
+					te.deque.Prepend(task)
+					break
+				}
+				active++
+				running.Add(1)
+				go func() {
+					defer running.Done()
+					var retry *delayedTask
+					defer func() { completed <- retry }()
+					retry = te.executeTask(task)
+				}()
 			}
-
-			go func(task *TaskInfoItem) {
-				defer wg.Done()
-
-				result := task.Unit.Run()
-
-				// 返回结果为空
-				if result == nil {
-					task.Unit.OnComplete(result)
-					return
-				}
-
-				if result.Succeed {
-					task.Unit.OnSuccess(result)
-					task.Unit.OnComplete(result)
-					return
-				}
-
-				// 需要进行重试
-				if result.NeedRetry {
-					if te.Stopped() { // 已停止, 失败任务不再重试
-						task.Unit.OnComplete(result)
-						return
-					}
-					// 重试次数超出限制
-					// 执行失败
-					if task.Info.IsExceedRetry() {
-						task.Unit.OnFailed(result)
-						if te.IsFailedDeque {
-							// 加入失败队列
-							te.failedDeque.Append(task)
-						}
-						task.Unit.OnComplete(result)
-						return
-					}
-					task.Info.retry++         // 增加重试次数
-					task.Unit.OnRetry(result) // 调用重试
-					task.Unit.OnComplete(result)
-
-					timer := time.NewTimer(task.Unit.RetryWait())
-					select {
-					case <-timer.C:
-					case <-te.stopSignal():
-					}
-					timer.Stop()
-					te.deque.Append(task) // 重新加入队列末尾
-					return
-				}
-
-				// 执行失败
-				task.Unit.OnFailed(result)
-				if te.IsFailedDeque && result.Extra != "skip" {
-					// 加入失败队列
-					te.failedDeque.Append(task)
-				}
-				task.Unit.OnComplete(result)
-			}(task)
 		}
-
-		wg.Wait()
-
-		if te.Stopped() { // 已停止, 不再继续执行
-			break
+		if active == 0 && pending.Len() == 0 && (stopped || te.deque.Size() == 0) {
+			return
 		}
-
-		// 没有任务了
-		if te.deque.Size() == 0 {
-			break
+		var timer *time.Timer
+		var ready <-chan time.Time
+		if pending.Len() != 0 {
+			timer = time.NewTimer(time.Until(pending[0].ready))
+			ready = timer.C
+		}
+		var stop <-chan struct{}
+		if !stopped {
+			stop = te.stopSignal()
+		}
+		select {
+		case retry := <-completed:
+			active--
+			if retry != nil {
+				heap.Push(&pending, retry)
+			}
+		case <-ready:
+		case <-stop:
+		}
+		if timer != nil {
+			timer.Stop()
 		}
 	}
 }
 
-//FailedDeque 获取失败队列
+// FailedDeque 获取失败队列
 func (te *TaskExecutor) FailedDeque() *lane.Deque {
 	return te.failedDeque
 }
 
-//Stop 停止执行: 不再派发新任务, 已在执行的任务继续运行直至完成
+// Stop 停止执行: 不再派发新任务, 已在执行的任务继续运行直至完成
 func (te *TaskExecutor) Stop() {
 	atomic.StoreInt32(&te.stopped, 1)
 	te.stopClose.Do(func() { close(te.stopSignal()) })
@@ -191,16 +162,16 @@ func (te *TaskExecutor) stopSignal() chan struct{} {
 	return te.stopChan
 }
 
-//Stopped 返回是否已请求停止
+// Stopped 返回是否已请求停止
 func (te *TaskExecutor) Stopped() bool {
 	return atomic.LoadInt32(&te.stopped) == 1
 }
 
-//Pause 暂停执行
+// Pause 暂停执行
 func (te *TaskExecutor) Pause() {
 
 }
 
-//Resume 恢复执行
+// Resume 恢复执行
 func (te *TaskExecutor) Resume() {
 }

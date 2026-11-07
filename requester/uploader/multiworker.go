@@ -3,12 +3,16 @@ package uploader
 import (
 	"context"
 	"errors"
-	"github.com/oleiade/lane"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/waitgroup"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester/rio"
 	"os"
 	"sync"
+	"time"
 )
+
+// Ordinary part failures receive two retries, with 1s and 2s backoff.
+const maxPartAttempts = 3
 
 type (
 	worker struct {
@@ -16,6 +20,7 @@ type (
 		partOffset int64
 		splitUnit  SplitUnit
 		checksum   string
+		attempts   int
 	}
 
 	workerList []*worker
@@ -70,10 +75,6 @@ func (muer *MultiUploader) upload() (uperr error) {
 		return err
 	}
 	var (
-		uploadDeque = lane.NewDeque()
-	)
-
-	var (
 		checksumMap = make(map[int]string) // key: wer.id, value: checksum
 		mu          sync.Mutex
 	)
@@ -89,35 +90,29 @@ func (muer *MultiUploader) upload() (uperr error) {
 		muer.Cancel()
 	}
 
-	// 加入队列
+	// Retain completed checksums; each remaining part owns its retry loop.
 	for _, wer := range muer.workers {
-		if wer.checksum == "" {
-			uploadDeque.Append(wer)
-		} else {
+		if wer.checksum != "" {
 			checksumMap[wer.id] = wer.checksum
 		}
 	}
 
-	for {
-		wg := waitgroup.NewWaitGroup(muer.config.Parallel)
-		for {
-			if muer.isStopped() || muer.isAborted() { // 不再派发新分片
-				break
-			}
-
-			e := uploadDeque.Shift()
-			if e == nil { // 任务为空
-				break
-			}
-
-			wer := e.(*worker)
-			wg.AddDelta()
-			if muer.isStopped() || muer.isAborted() {
-				wg.Done()
-				break
-			}
-			go func() {
-				defer wg.Done()
+	wg := waitgroup.NewWaitGroup(muer.config.Parallel)
+	for _, wer := range muer.workers {
+		if wer.checksum != "" {
+			continue
+		}
+		if muer.isStopped() || muer.isAborted() { // 不再派发新分片
+			break
+		}
+		wg.AddDelta()
+		if muer.isStopped() || muer.isAborted() {
+			wg.Done()
+			break
+		}
+		go func() {
+			defer wg.Done()
+			for {
 				if muer.isAborted() {
 					return
 				}
@@ -125,6 +120,7 @@ func (muer *MultiUploader) upload() (uperr error) {
 					terminate(err)
 					return
 				}
+				wer.attempts++
 				checksum, terr := muer.multiUpload.TmpFile(ctx, muer.instanceState.Uploadid, muer.targetPath, wer.id, wer.partOffset, wer.splitUnit)
 				if muer.isAborted() {
 					return
@@ -154,9 +150,18 @@ func (muer *MultiUploader) upload() (uperr error) {
 					if muer.isStopped() { // 优雅停止: 失败的分片不再重试
 						return
 					}
-					wer.splitUnit.Seek(0, os.SEEK_SET)
-					uploadDeque.Append(wer)
-					return
+					if wer.attempts >= maxPartAttempts {
+						terminate(fmt.Errorf("%w (part %d, %d attempts): %w", ErrPartRetryExhausted, wer.id, wer.attempts, terr))
+						return
+					}
+					if !muer.waitPartRetry(ctx, wer.attempts) {
+						return
+					}
+					if _, err := wer.splitUnit.Seek(0, os.SEEK_SET); err != nil {
+						terminate(fmt.Errorf("%w rewinding part %d: %w", ErrSourceRead, wer.id, err))
+						return
+					}
+					continue
 				}
 				muer.stateMu.Lock()
 				wer.checksum = checksum
@@ -170,19 +175,11 @@ func (muer *MultiUploader) upload() (uperr error) {
 				case muer.updateInstanceStateChan <- struct{}{}:
 				default:
 				}
-			}()
-		}
-		wg.Wait()
-
-		if muer.isStopped() || muer.isAborted() {
-			break
-		}
-
-		// 没有任务了
-		if uploadDeque.Size() == 0 {
-			break
-		}
+				return
+			}
+		}()
 	}
+	wg.Wait()
 
 	if muer.isAborted() {
 		if uperr != nil {
@@ -210,4 +207,18 @@ func (muer *MultiUploader) upload() (uperr error) {
 	}
 
 	return muer.validateSource()
+}
+
+func (muer *MultiUploader) waitPartRetry(ctx context.Context, attempt int) bool {
+	timer := time.NewTimer(time.Second << (attempt - 1))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return !muer.isStopped() && !muer.isAborted()
+	case <-ctx.Done():
+	case <-muer.stopped:
+	case <-muer.canceled:
+	case <-muer.progressFailed:
+	}
+	return false
 }

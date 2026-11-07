@@ -59,11 +59,10 @@ func (ui *URLInfo) URLStrings(https bool) (urls []*url.URL) {
 	urls = make([]*url.URL, 0, len(ui.URLs))
 	for _, urlInfo := range ui.URLs {
 		if urlInfo.Encrypt == 0 { // 只使用非加密链接
-			u, err := url.Parse(urlInfo.URL)
-			if err != nil {
-				continue // 如果解析失败，跳过当前 URL
+			u := parseDownloadURL(urlInfo.URL, https)
+			if u == nil {
+				continue
 			}
-			u.Scheme = GetHTTPScheme(https)
 			urls = append(urls, u)
 		}
 	}
@@ -78,25 +77,37 @@ func (ui *URLInfo) SingleURL(https bool) *url.URL {
 
 	for _, urlInfo := range ui.URLs {
 		if urlInfo.Encrypt == 0 { // 假设 Encrypt 是 int 类型
-			u, err := url.Parse(urlInfo.URL)
-			if err != nil {
-				continue // 如果解析失败，跳过当前 URL
+			u := parseDownloadURL(urlInfo.URL, https)
+			if u == nil {
+				continue
 			}
-			u.Scheme = GetHTTPScheme(https)
 			return u
 		}
 	}
 	return nil
 }
 
-// LastURL 返回最后一条下载链接
+// LastURL 返回最后一条有效的非加密下载链接
 func (ui *URLInfo) LastURL(https bool) *url.URL {
-	if len(ui.URLs) < 1 {
+	for i := len(ui.URLs) - 1; i >= 0; i-- {
+		if ui.URLs[i].Encrypt != 0 {
+			continue
+		}
+		if u := parseDownloadURL(ui.URLs[i].URL, https); u != nil {
+			return u
+		}
+	}
+	return nil
+}
+
+func parseDownloadURL(raw string, https bool) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || u.Hostname() == "" || u.User != nil {
 		return nil
 	}
-
-	u, err := url.Parse(ui.URLs[len(ui.URLs)-1].URL)
-	if err != nil {
+	// Scheme-relative CDN links are supported; other protocols must not be
+	// turned into HTTP links just by replacing their scheme.
+	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
 		return nil
 	}
 	u.Scheme = GetHTTPScheme(https)

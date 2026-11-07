@@ -1,7 +1,10 @@
 package pcsdownload
 
 import (
+	"bytes"
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -16,6 +19,14 @@ import (
 
 // CheckFileValid 检测文件有效性
 func CheckFileValid(filePath string, fileInfo *baidupcs.FileDirectory) error {
+	return CheckFileValidWithContext(context.Background(), filePath, fileInfo)
+}
+
+// CheckFileValidWithContext allows cancellation while hashing downloaded data.
+func CheckFileValidWithContext(ctx context.Context, filePath string, fileInfo *baidupcs.FileDirectory) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(fileInfo.BlockList) != 1 {
 		return ErrDownloadNotSupportChecksum
 	}
@@ -27,15 +38,20 @@ func CheckFileValid(filePath string, fileInfo *baidupcs.FileDirectory) error {
 	}
 	defer f.Close()
 
-	err = f.Sum(checksum.CHECKSUM_MD5)
+	err = f.SumWithContext(ctx, checksum.CHECKSUM_MD5)
 	if err != nil {
 		return err
 	}
-	md5Str := hex.EncodeToString(f.MD5)
-
-	if md5Str != fileInfo.MD5 { // md5不一致
+	var expectedMD5 []byte
+	validMD5 := len(fileInfo.MD5) == hex.EncodedLen(len(f.MD5))
+	if validMD5 {
+		var decodeErr error
+		expectedMD5, decodeErr = hex.DecodeString(fileInfo.MD5)
+		validMD5 = decodeErr == nil
+	}
+	if !validMD5 || !bytes.Equal(f.MD5, expectedMD5) {
 		// 检测是否为违规文件
-		if IsSkipMd5Checksum(f.Length, md5Str) {
+		if IsSkipMd5Checksum(f.Length, hex.EncodeToString(f.MD5)) {
 			return ErrDownloadFileBanned
 		}
 		return ErrDownloadChecksumFailed
@@ -43,19 +59,40 @@ func CheckFileValid(filePath string, fileInfo *baidupcs.FileDirectory) error {
 	return nil
 }
 
-// FileExist 检查文件是否存在,
-// 只有当文件存在, 文件大小不为0或断点续传文件不存在时, 才判断为存在
+// FileExist reports a nonempty regular output without a checkpoint.
+// Inspection errors are available through FileExistWithError.
 func FileExist(path string) bool {
-	if info, err := os.Stat(path); err == nil {
-		if info.Size() == 0 {
-			return false
-		}
-		if _, err = os.Stat(path + DownloadSuffix); err != nil {
-			return true
-		}
-	}
+	exists, err := FileExistWithError(path)
+	return exists && err == nil
+}
 
-	return false
+// FileExistWithError distinguishes an absent checkpoint from a failed inspection.
+func FileExistWithError(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, &os.PathError{Op: "inspect", Path: path, Err: errors.New("download output is not a regular file")}
+	}
+	if info.Size() == 0 {
+		return false, nil
+	}
+	checkpoint := path + DownloadSuffix
+	state, err := os.Stat(checkpoint)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !state.Mode().IsRegular() {
+		return false, &os.PathError{Op: "inspect", Path: checkpoint, Err: errors.New("download checkpoint is not a regular file")}
+	}
+	return false, nil
 }
 
 // FixHTTPLinkURL 通过配置, 确定链接使用的协议(http,https)

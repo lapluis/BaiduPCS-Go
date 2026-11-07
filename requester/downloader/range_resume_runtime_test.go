@@ -205,6 +205,8 @@ func TestRangeHTTPFailuresKeepEntityAndProgress(t *testing.T) {
 		status int
 		want   StatusCode
 	}{
+		{400, StatusCodeInternalError}, {401, StatusCodeInternalError},
+		{405, StatusCodeInternalError}, {410, StatusCodeInternalError},
 		{403, StatusCodeInternalError}, {404, StatusCodeInternalError},
 		{429, StatusCodeTooManyConnections}, {509, StatusCodeTooManyConnections},
 		{500, StatusCodeNetError},

@@ -50,7 +50,7 @@ func (u *callbackUnit) Run() *taskframework.TaskUnitRunResult {
 	return &taskframework.TaskUnitRunResult{Succeed: true}
 }
 
-func TestStopWhileWaitingForParallelSlot(t *testing.T) {
+func TestStopWithAllParallelSlotsBusy(t *testing.T) {
 	executor := taskframework.NewTaskExecutor()
 	executor.SetParallel(1)
 	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -63,13 +63,10 @@ func TestStopWhileWaitingForParallelSlot(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first task did not start")
 	}
-	deadline := time.Now().Add(time.Second)
-	for executor.Count() != 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if executor.Count() != 0 {
+	// The scheduler leaves work queued until a slot is available.
+	if executor.Count() != 1 {
 		close(release)
-		t.Fatal("executor did not reach slot wait")
+		t.Fatal("executor dequeued a task without an available slot")
 	}
 	executor.Stop()
 	close(release)

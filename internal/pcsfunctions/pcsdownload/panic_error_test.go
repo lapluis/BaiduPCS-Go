@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/taskframework"
 	"github.com/qjfoidnh/BaiduPCS-Go/requester"
@@ -115,5 +116,120 @@ func TestDownloadProbePanicClosesResponseInEveryMode(t *testing.T) {
 				t.Errorf("probe panic left empty output: %v", err)
 			}
 		})
+	}
+}
+
+func TestDownloadCallbackPanicRetainsConcurrentTaskCancellation(t *testing.T) {
+	for _, mode := range []string{"download", "test", "probe"} {
+		for _, callback := range []string{"probe", "error"} {
+			if mode == "probe" && callback == "error" {
+				continue
+			}
+			for _, existing := range []bool{false, true} {
+				for _, typed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/%s/existing=%v/typed=%v", mode, callback, existing, typed), func(t *testing.T) {
+						name := filepath.Join(t.TempDir(), "nested", "output")
+						if existing {
+							if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(name, []byte("keep original data"), 0600); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(name+DownloadSuffix, []byte("keep original ranges"), 0600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						unit := emptyTask(name, true, mode == "test")
+						unit.FileInfo.Size = 8
+						unit.ProbeOnly = mode == "probe"
+						ctx, cancel := context.WithCancel(context.Background())
+						defer cancel()
+						unit.Context = ctx
+						panicCause := errors.New("synthetic canceled callback panic")
+						networkCause := errors.New("synthetic request failure")
+						calls := 0
+						fail := func() {
+							calls++
+							cancel()
+							if typed {
+								panic(panicCause)
+							}
+							panic(panicCause.Error())
+						}
+						if callback == "probe" {
+							unit.OnProbe = func(string, string) { fail() }
+						} else {
+							unit.OnTransferError = func(error) { fail() }
+						}
+						body := &probeBody{}
+						client := requester.NewHTTPClient()
+						client.Client.Transport = downloadRoundTrip(func(req *http.Request) (*http.Response, error) {
+							if callback == "error" {
+								return nil, networkCause
+							}
+							return &http.Response{StatusCode: 200, ContentLength: 8, Header: http.Header{}, Body: body, Request: req}, nil
+						})
+						err, escaped := invokeDownloadWithPanicCapture(unit, client)
+						if escaped != nil || calls != 1 || !errors.Is(err, context.Canceled) || err == nil || !strings.Contains(err.Error(), panicCause.Error()) || errors.Is(err, panicCause) != typed {
+							t.Fatalf("concurrent cancellation/callback cause lost: escaped=%v calls=%d err=%v", escaped, calls, err)
+						}
+						if callback == "error" && !errors.Is(err, networkCause) {
+							t.Fatalf("original transfer error lost: %v", err)
+						}
+						if callback == "probe" && (!body.closed || body.read) {
+							t.Fatalf("callback leaked or consumed response: %+v", body)
+						}
+						if existing {
+							for path, want := range map[string]string{name: "keep original data", name + DownloadSuffix: "keep original ranges"} {
+								if got, err := os.ReadFile(path); err != nil || string(got) != want {
+									t.Fatalf("callback changed existing data: %q %v", got, err)
+								}
+							}
+						} else if _, err := os.Stat(name); !os.IsNotExist(err) {
+							t.Fatalf("callback left output file: %v", err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestPreCanceledDownloadDoesNotPrepareLocalOutput(t *testing.T) {
+	for _, mode := range []string{"download", "test", "probe"} {
+		for _, expired := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/expired=%v", mode, expired), func(t *testing.T) {
+				name := filepath.Join(t.TempDir(), "missing", "output")
+				unit := emptyTask(name, true, mode == "test")
+				unit.ProbeOnly = mode == "probe"
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var want error = context.Canceled
+				if expired {
+					ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+					defer cancel()
+					want = context.DeadlineExceeded
+				} else {
+					cancel()
+				}
+				unit.Context = ctx
+				requests, callbacks := 0, 0
+				unit.OnProbe = func(string, string) { callbacks++ }
+				unit.OnTransferError = func(error) { callbacks++ }
+				client := requester.NewHTTPClient()
+				client.Client.Transport = downloadRoundTrip(func(*http.Request) (*http.Response, error) {
+					requests++
+					return nil, errors.New("unexpected request after cancellation")
+				})
+				err := unit.download("https://fixture.invalid/file", client)
+				if !errors.Is(err, want) || requests != 0 || callbacks != 0 {
+					t.Fatalf("pre-canceled download did work: err=%v requests=%d callbacks=%d", err, requests, callbacks)
+				}
+				if _, err := os.Stat(filepath.Dir(name)); !os.IsNotExist(err) {
+					t.Fatalf("pre-canceled download created directory: %v", err)
+				}
+			})
+		}
 	}
 }

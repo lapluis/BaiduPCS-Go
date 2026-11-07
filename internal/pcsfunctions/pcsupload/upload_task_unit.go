@@ -472,7 +472,7 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 			result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, checkpointErr)
 			return
 		}
-		if errors.Is(err, uploader.ErrSourceRead) || errors.Is(err, uploader.ErrProgressCallback) || errors.Is(err, uploader.ErrEventCallback) {
+		if errors.Is(err, uploader.ErrSourceRead) || errors.Is(err, uploader.ErrProgressCallback) || errors.Is(err, uploader.ErrEventCallback) || errors.Is(err, uploader.ErrPartRetryExhausted) {
 			if saveErr := saveProgress(); saveErr != nil {
 				result.ResultMessage, result.Err = "保存上传进度失败", errors.Join(err, saveErr)
 				return
@@ -483,6 +483,9 @@ func (utu *UploadTaskUnit) executeUploader(muer *uploader.MultiUploader) (result
 			}
 			if errors.Is(err, uploader.ErrEventCallback) {
 				result.ResultMessage = "上传事件回调失败"
+			}
+			if errors.Is(err, uploader.ErrPartRetryExhausted) {
+				result.ResultMessage = "上传分片重试次数已耗尽，已保存进度"
 			}
 			return
 		}

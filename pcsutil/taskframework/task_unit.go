@@ -36,5 +36,5 @@ type (
 
 var (
 	// TaskUnitRunResultSuccess 任务执行成功
-	TaskUnitRunResultSuccess = &TaskUnitRunResult{}
+	TaskUnitRunResultSuccess = &TaskUnitRunResult{Succeed: true}
 )

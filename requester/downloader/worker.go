@@ -371,13 +371,13 @@ func (wer *Worker) Execute() {
 	switch resp.StatusCode {
 	case 200, 206:
 		// do nothing, continue
-	case 416: //Requested Range Not Satisfiable
-		fallthrough
-	case 403: // Forbidden
-		fallthrough
-	case 404: // file block not exists
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
+		http.StatusRequestedRangeNotSatisfiable:
+		// Repeating the same request cannot repair invalid parameters,
+		// missing credentials, a rejected method, or a removed resource.
 		wer.status.SetStatusCode(StatusCodeInternalError)
-		wer.err = errors.New(resp.Status)
+		wer.err = fmt.Errorf("download rejected: HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 		return
 	case 406: // Not Acceptable
 		wer.status.SetStatusCode(StatusCodeNetError)
