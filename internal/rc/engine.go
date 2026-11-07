@@ -558,6 +558,11 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 			for {
 				select {
 				case <-done:
+					mu.Lock()
+					snapshot := progress.snapshot(result, active)
+					mu.Unlock()
+					snapshot.Final = true
+					progressErr = runProgressCallback(o, snapshot)
 					return
 				case <-ticker.C:
 					mu.Lock()

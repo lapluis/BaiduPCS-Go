@@ -3,6 +3,7 @@ package baidupcs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"net/http"
@@ -194,5 +195,12 @@ func (pcs *BaiduPCS) LocatePanAPIDownload(fidList ...int64) (dlinkInfoList APIDo
 		return
 	}
 
+	for index, link := range jsonData.DlinkList {
+		if link == nil {
+			jsonData.ErrType = pcserror.ErrTypeOthers
+			jsonData.Err = fmt.Errorf("invalid download link list: null entry at index %d", index)
+			return nil, jsonData.PanErrorInfo
+		}
+	}
 	return jsonData.DlinkList, nil
 }

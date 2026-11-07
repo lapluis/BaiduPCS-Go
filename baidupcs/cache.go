@@ -6,6 +6,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/expires"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	pathpkg "path"
+	"slices"
 	"strings"
 	"time"
 )
@@ -61,8 +62,11 @@ func (pcs *BaiduPCS) CacheFilesDirectoriesListWithContext(ctx context.Context, p
 	if options == nil {
 		options = DefaultOrderOptions
 	}
-	data, err := pcs.cacheOpMap.CacheOperationWithContext(ctx, OperationFilesDirectoriesList, directoryCacheKey{path, options.By, options.Order}, func() (expires.DataExpires, error) {
-		fdl, pcsError = pcs.FilesDirectoriesListWithContext(ctx, path, options)
+	// Keep the request consistent with its key even if the input is changed
+	// while this call is waiting for another cache fill.
+	order := *options
+	data, err := pcs.cacheOpMap.CacheOperationWithContext(ctx, OperationFilesDirectoriesList, directoryCacheKey{path, order.By, order.Order}, func() (expires.DataExpires, error) {
+		fdl, pcsError = pcs.FilesDirectoriesListWithContext(ctx, path, &order)
 		if pcsError != nil {
 			return nil, pcsError
 		}
@@ -71,7 +75,22 @@ func (pcs *BaiduPCS) CacheFilesDirectoriesListWithContext(ctx context.Context, p
 	if err != nil {
 		return nil, cacheOperationError(OperationFilesDirectoriesList, err)
 	}
-	return data.Data().(FileDirectoryList), nil
+	listing := data.Data().(FileDirectoryList)
+	if listing == nil {
+		return nil, nil
+	}
+	// Network listings are flat. Keep their entries and block arrays private
+	// so callers can edit or decorate their result without changing the cache.
+	fdl = make(FileDirectoryList, len(listing))
+	for i, entry := range listing {
+		if entry == nil {
+			continue
+		}
+		file := *entry
+		file.BlockList = slices.Clone(entry.BlockList)
+		fdl[i] = &file
+	}
+	return fdl, nil
 }
 
 // CacheUK 缓存获取

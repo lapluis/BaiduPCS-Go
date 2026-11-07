@@ -114,12 +114,7 @@ func (pcs *BaiduPCS) RapidUpload(targetPath, policy, uploadid, contentMD5, slice
 
 // RapidUploadWithContext keeps rapid-upload requests and decoding cancellable.
 func (pcs *BaiduPCS) RapidUploadWithContext(ctx context.Context, targetPath, policy, uploadid, contentMD5, sliceMD5, dataContent, crc32 string, offset, length, totalSize, dataTime int64, blockListMD5 []string) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
-	defer func() {
-		if pcsError == nil {
-			// 更新缓存
-			pcs.deleteCache([]string{path.Dir(targetPath)})
-		}
-	}()
+	defer pcs.deleteCache([]string{path.Dir(targetPath)})
 	pcsError, jsonData = pcs.rapidUploadV2(ctx, targetPath, policy, uploadid, strings.ToLower(contentMD5), strings.ToLower(sliceMD5), dataContent, crc32, offset, length, totalSize, dataTime, blockListMD5)
 	return
 }
@@ -131,12 +126,7 @@ func (pcs *BaiduPCS) FakeRapidUpload(targetPath, policy string, length int64) (p
 
 // FakeRapidUploadWithContext keeps the full no-rapid handshake cancellable.
 func (pcs *BaiduPCS) FakeRapidUploadWithContext(ctx context.Context, targetPath, policy string, length int64) (pcsError pcserror.Error, jsonData uploadPrecreateJSON) {
-	defer func() {
-		if pcsError == nil {
-			// 更新缓存
-			pcs.deleteCache([]string{path.Dir(targetPath)})
-		}
-	}()
+	defer pcs.deleteCache([]string{path.Dir(targetPath)})
 	if length <= MinUploadBlockSize {
 		pcsError, jsonData = pcs.fakeRapidUploadV2(ctx, targetPath, policy, length, time.Now().Unix(), fakeBlockListMD5[0:1])
 		return
@@ -204,6 +194,8 @@ func (info *uploadPrecreateJSON) validate(existingSession string, allowRapid boo
 
 // RapidUploadNoCheckDir 秒传文件, 不进行目录检查, 会覆盖掉同名的目录!
 func (pcs *BaiduPCS) RapidUploadNoCheckDir(targetPath, contentMD5, sliceMD5, crc32 string, length int64) (pcsError pcserror.Error) {
+	// This API can replace a directory, so invalidate its cached subtree too.
+	defer pcs.deleteCache([]string{path.Dir(targetPath)}, targetPath)
 	dataReadCloser, pcsError := pcs.prepareRapidUpload(targetPath, contentMD5, sliceMD5, crc32, length)
 	if pcsError != nil {
 		return
@@ -265,6 +257,8 @@ func (pcs *BaiduPCS) UploadCreateSuperFile(uploadid, policy string, fileSize int
 
 // UploadCreateSuperFileWithContext merges uploaded parts using the caller's context.
 func (pcs *BaiduPCS) UploadCreateSuperFileWithContext(ctx context.Context, uploadid, policy string, fileSize int64, targetPath string, checksumMap map[int]string) (panError pcserror.Error) {
+	// A lost response does not prove that the server skipped the mutation.
+	defer pcs.deleteCache([]string{path.Dir(targetPath)})
 	blockList := sortBlockList(checksumMap)
 	rtype := pcs.policyTortype(policy)
 	dataReadCloser, pcsError := pcs.PrepareUploadCreateSuperFileWithContext(ctx, uploadid, rtype, fileSize, targetPath, blockList)
@@ -284,8 +278,6 @@ func (pcs *BaiduPCS) UploadCreateSuperFileWithContext(ctx context.Context, uploa
 		return errInfo
 	}
 
-	// 更新缓存, targetPath取了dir所以不受重命名策略影响
-	pcs.deleteCache([]string{path.Dir(targetPath)})
 	return nil
 }
 
@@ -323,15 +315,19 @@ func (pcs *BaiduPCS) GetRandomPCSHostWithContext(ctx context.Context) (pcsError 
 	pcsHostList := make([]string, 0)
 	if len(pcsInfo.Servers) > 0 {
 		for _, server := range pcsInfo.Servers {
+			if server == nil {
+				continue
+			}
 			if strings.Contains(server.ServerAddr, "-") {
 				parsedURL, err := url.Parse(server.ServerAddr)
-				if err != nil {
+				if err != nil || parsedURL.Hostname() == "" {
 					continue
 				}
 				pcsHostList = append(pcsHostList, parsedURL.Hostname())
 			}
 		}
-	} else if len(pcsInfo.Server) > 0 {
+	}
+	if len(pcsHostList) == 0 && len(pcsInfo.Server) > 0 {
 		pcsHostList = pcsInfo.Server
 	}
 	pcsHost = RandomElement(pcsHostList)

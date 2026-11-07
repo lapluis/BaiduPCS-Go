@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
@@ -195,10 +196,17 @@ func (pcs *BaiduPCS) ShareListWithContext(ctx context.Context, page int) (record
 		return nil, errInfo
 	}
 
+	for index, record := range jsonData.List {
+		if record == nil {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid share list: null entry at index %d", index)
+			return nil, errInfo
+		}
+	}
 	return ShareRecordInfoList(jsonData.List), nil
 }
 
-//ShareSURLInfo 获取分享的详细信息, 包含密码
+// ShareSURLInfo 获取分享的详细信息, 包含密码
 func (pcs *BaiduPCS) ShareSURLInfo(shareID int64) (info *ShareSURLInfo, pcsError pcserror.Error) {
 	return pcs.ShareSURLInfoWithContext(context.Background(), shareID)
 }

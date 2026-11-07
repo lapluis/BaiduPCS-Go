@@ -2,6 +2,7 @@ package panhome
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -49,6 +50,9 @@ func (ph *PanHome) getSignInfo() error {
 		return ErrUnknownLocation
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pan home returned HTTP status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err

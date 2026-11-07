@@ -290,7 +290,7 @@ func (s *logSink) clearProgress() {
 
 func (s *logSink) Progress(p rc.ProgressSnapshot) {
 	if !s.terminal {
-		s.Emit("progress", p.String())
+		s.emit("progress", p.String(), p.Final)
 		return
 	}
 	if s.level == "OFF" || s.level == "ERROR" {
@@ -311,6 +311,10 @@ func (s *logSink) Progress(p rc.ProgressSnapshot) {
 }
 
 func (s *logSink) Emit(kind, item string) {
+	s.emit(kind, item, false)
+}
+
+func (s *logSink) emit(kind, item string, force bool) {
 	if s == nil || s.level == "OFF" || (s.level == "ERROR" && kind != "error") {
 		return
 	}
@@ -320,7 +324,7 @@ func (s *logSink) Emit(kind, item string) {
 		return
 	}
 	if kind == "progress" && !s.terminal {
-		if time.Since(s.lastProgress) < 5*time.Second {
+		if !force && time.Since(s.lastProgress) < 5*time.Second {
 			return
 		}
 		s.lastProgress = time.Now()

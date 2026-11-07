@@ -2,6 +2,7 @@ package baidupcs
 
 import (
 	"context"
+	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 )
 
@@ -72,6 +73,13 @@ func (pcs *BaiduPCS) RecycleListWithContext(ctx context.Context, page int) (fdl 
 		return
 	}
 
+	for index, file := range jsonData.List {
+		if file == nil {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid recycle list: null entry at index %d", index)
+			return nil, errInfo
+		}
+	}
 	return jsonData.List, nil
 }
 
@@ -82,6 +90,12 @@ func (pcs *BaiduPCS) RecycleRestore(fidList ...int64) (sussFsIDList []*FsIDJSON,
 
 // RecycleRestoreWithContext cancels restoration requests and response decoding.
 func (pcs *BaiduPCS) RecycleRestoreWithContext(ctx context.Context, fidList ...int64) (sussFsIDList []*FsIDJSON, pcsError pcserror.Error) {
+	defer func() {
+		pcs.lazyInit()
+		// Restored IDs do not identify their parent directories. Invalidate all
+		// directory snapshots, including pending fills and uncertain outcomes.
+		pcs.cacheOpMap.InvalidateKeys(OperationFilesDirectoriesList, func(interface{}) bool { return true })
+	}()
 	dataReadCloser, pcsError := pcs.PrepareRecycleRestoreWithContext(ctx, fidList...)
 	if pcsError != nil {
 		return
@@ -98,6 +112,24 @@ func (pcs *BaiduPCS) RecycleRestoreWithContext(ctx context.Context, fidList ...i
 	if err := ctx.Err(); err != nil {
 		errInfo.SetNetError(err)
 		return nil, errInfo
+	}
+	if pcsError != nil {
+		// Remote failures may include successfully restored IDs. Retain those
+		// partial results, but never hand null pointers to callers displaying them.
+		valid := jsonData.Extra.List[:0]
+		for _, item := range jsonData.Extra.List {
+			if item != nil {
+				valid = append(valid, item)
+			}
+		}
+		return valid, pcsError
+	}
+	for index, item := range jsonData.Extra.List {
+		if item == nil {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid recycle restore result: null entry at index %d", index)
+			return nil, errInfo
+		}
 	}
 	return jsonData.Extra.List, pcsError
 }
@@ -147,6 +179,14 @@ func (pcs *BaiduPCS) RecycleClearWithContext(ctx context.Context) (sussNum int, 
 	pcsError = pcserror.HandleJSONParse(OperationRecycleClear, dataReadCloser, &jsonData)
 	if err := ctx.Err(); err != nil {
 		errInfo.SetNetError(err)
+		return 0, errInfo
+	}
+	if jsonData.Extra.SussNum < 0 {
+		if pcsError != nil {
+			return 0, pcsError
+		}
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = fmt.Errorf("invalid recycle clear result: negative success count %d", jsonData.Extra.SussNum)
 		return 0, errInfo
 	}
 	return jsonData.Extra.SussNum, pcsError

@@ -96,7 +96,7 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 		if output.reset {
 			return errResumeIdentity
 		}
-		return fmt.Errorf("%s transfer failed (account %d); source retained", kind, uid)
+		return fmt.Errorf("%s transfer failed (account %d); source retained: %w", kind, uid, err)
 	}
 	return nil
 }

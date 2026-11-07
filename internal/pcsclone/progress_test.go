@@ -56,3 +56,23 @@ func TestDownloadConcurrencyFlagsValidateBeforeTransfers(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalProgressBypassesLogThrottle(t *testing.T) {
+	for _, jsonLog := range []bool{false, true} {
+		var out bytes.Buffer
+		sink := &logSink{w: &out, level: "INFO", json: jsonLog}
+		sink.Progress(rc.ProgressSnapshot{Active: 1, Total: 100})
+		sink.Progress(rc.ProgressSnapshot{Active: 1, Done: 20, Total: 100})
+		sink.Progress(rc.ProgressSnapshot{Final: true, Canceled: 1, Pending: 2, Done: 40, Total: 100})
+		sink.Emit("summary", "finished")
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 3 || !strings.Contains(lines[1], "40.0%") || !strings.Contains(lines[1], "canceled=1 pending=2") {
+			t.Fatalf("final progress throttled or incorrect: %q", out.String())
+		}
+		for _, line := range lines {
+			if strings.Contains(line, "\x1b") || jsonLog && !json.Valid([]byte(line)) {
+				t.Fatalf("invalid redirected output: %q", line)
+			}
+		}
+	}
+}

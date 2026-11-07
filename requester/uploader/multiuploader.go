@@ -31,6 +31,7 @@ type (
 
 		instanceState  *InstanceState
 		stateMu        sync.RWMutex
+		stateFrozen    bool // Protected by stateMu; configuration ends at execution.
 		finishOnce     sync.Once
 		statusWG       sync.WaitGroup
 		progressFailed chan struct{}
@@ -54,7 +55,7 @@ type (
 		updateInstanceStateChan chan struct{}
 	}
 
-	// MultiUploaderConfig 多线程上传配置
+	// MultiUploaderConfig 多线程上传配置，在执行开始时复制。
 	MultiUploaderConfig struct {
 		Parallel       int          // 上传并发量
 		BlockSize      int64        // 上传分块
@@ -81,10 +82,28 @@ func NewMultiUploader(multiUpload MultiUpload, file rio.ReaderAtLen64, config *M
 }
 
 // SetInstanceState 设置InstanceState, 断点续传信息
+// State is copied. Calls after execution starts are ignored.
 func (muer *MultiUploader) SetInstanceState(is *InstanceState) {
 	muer.stateMu.Lock()
 	defer muer.stateMu.Unlock()
-	muer.instanceState = is
+	if muer.stateFrozen {
+		return
+	}
+	if is == nil {
+		muer.instanceState = nil
+		return
+	}
+	snapshot := &InstanceState{Uploadid: is.Uploadid}
+	if is.BlockList != nil {
+		snapshot.BlockList = make([]*BlockState, len(is.BlockList))
+		for i, block := range is.BlockList {
+			if block != nil {
+				copy := *block
+				snapshot.BlockList[i] = &copy
+			}
+		}
+	}
+	muer.instanceState = snapshot
 }
 
 func (muer *MultiUploader) lazyInit() {
@@ -92,6 +111,7 @@ func (muer *MultiUploader) lazyInit() {
 	if muer.instanceState == nil {
 		muer.instanceState = &InstanceState{}
 	}
+	muer.stateFrozen = true
 	muer.stateMu.Unlock()
 	if muer.finished == nil {
 		muer.finished = make(chan struct{}, 1)
@@ -110,6 +130,9 @@ func (muer *MultiUploader) lazyInit() {
 	}
 	if muer.config == nil {
 		muer.config = &MultiUploaderConfig{}
+	} else {
+		config := *muer.config
+		muer.config = &config
 	}
 	if muer.config.Parallel <= 0 {
 		muer.config.Parallel = 4

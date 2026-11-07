@@ -237,10 +237,15 @@ func (pcs *BaiduPCS) filesDirectoriesList(path string, options *OrderOptions, ma
 }
 
 func (pcs *BaiduPCS) filesDirectoriesListWithContext(ctx context.Context, path string, options *OrderOptions, maxPage int) (data FileDirectoryList, pcsError pcserror.Error) {
+	if options == nil {
+		options = DefaultOrderOptions
+	}
+	// A listing must use the same ordering for every page.
+	order := *options
 	seen := make(map[int64]struct{}, maxListNum)
 
 	for page := 1; page <= maxPage; page++ {
-		dataReadCloser, err := pcs.PrepareFilesDirectoriesListWithContext(ctx, path, options, maxListNum, page)
+		dataReadCloser, err := pcs.PrepareFilesDirectoriesListWithContext(ctx, path, &order, maxListNum, page)
 		if err != nil {
 			pcsError = err
 			return

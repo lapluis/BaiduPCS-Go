@@ -30,6 +30,23 @@ func NewHTTPClient() *HTTPClient {
 	return h
 }
 
+// Clone isolates client policy and standard transports. The cookie jar and
+// custom RoundTrippers remain shared; they retain their own concurrency rules.
+func (h *HTTPClient) Clone() *HTTPClient {
+	clone := *h
+	if h.transport != nil {
+		clone.transport = h.transport.Clone()
+	}
+	if transport, ok := h.Client.Transport.(*http.Transport); ok && transport != nil {
+		if transport == h.transport {
+			clone.Client.Transport = clone.transport
+		} else {
+			clone.Client.Transport = transport.Clone()
+		}
+	}
+	return &clone
+}
+
 func (h *HTTPClient) lazyInit() {
 	if h.transport == nil {
 		h.transport = &http.Transport{

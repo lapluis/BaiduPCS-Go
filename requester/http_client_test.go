@@ -71,3 +71,31 @@ func TestHTTPClientConfiguresProvidedHTTPTransport(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPClientCloneIsolatesStandardTransportPolicy(t *testing.T) {
+	for _, separateTransport := range []bool{false, true} {
+		client := NewHTTPClient()
+		client.SetResponseHeaderTimeout(7 * time.Second)
+		if separateTransport {
+			client.Client.Transport = &http.Transport{ResponseHeaderTimeout: 7 * time.Second}
+		}
+		original := client.Client.Transport.(*http.Transport)
+		tlsConfig := &tls.Config{ServerName: "fixture.invalid"}
+		original.TLSClientConfig = tlsConfig
+		clone := client.Clone()
+		clone.SetResponseHeaderTimeout(3 * time.Second)
+		clone.SetHTTPSecure(false)
+		transport := clone.Client.Transport.(*http.Transport)
+		if transport == original || clone.transport == client.transport || transport.ResponseHeaderTimeout != 3*time.Second || original.ResponseHeaderTimeout != 7*time.Second {
+			t.Fatal("cloned transport policy aliases caller transport")
+		}
+		if original.TLSClientConfig != tlsConfig || tlsConfig.InsecureSkipVerify || transport.TLSClientConfig == tlsConfig || !transport.TLSClientConfig.InsecureSkipVerify || transport.TLSClientConfig.ServerName != tlsConfig.ServerName {
+			t.Fatal("TLS configuration lost or modified on original transport")
+		}
+		clone.Client.Transport = nil
+		clone.SetResponseHeaderTimeout(9 * time.Second)
+		if client.transport.ResponseHeaderTimeout != 7*time.Second || clone.transport.ResponseHeaderTimeout != 9*time.Second {
+			t.Fatal("fallback transport policy remains shared")
+		}
+	}
+}

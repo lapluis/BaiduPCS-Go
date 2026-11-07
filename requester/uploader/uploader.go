@@ -59,6 +59,8 @@ func (u *Uploader) lazyInit() {
 	u.initSignals()
 	if u.client == nil {
 		u.client = requester.NewHTTPClient()
+	} else {
+		u.client = u.client.Clone()
 	}
 	u.client.SetTimeout(0)
 	u.client.SetResponseHeaderTimeout(10 * time.Second)
@@ -114,6 +116,11 @@ func (u *Uploader) begin() {
 
 func (u *Uploader) execute() (resp *http.Response, code int, err error) {
 	u.lazyInit()
+	if transport, ok := u.client.Client.Transport.(*http.Transport); ok {
+		// This upload owns its transport copy. Close connections when they
+		// become idle, including after the caller consumes the response body.
+		defer transport.CloseIdleConnections()
+	}
 	header := map[string]string{}
 	if u.contentType != "" {
 		header["Content-Type"] = u.contentType

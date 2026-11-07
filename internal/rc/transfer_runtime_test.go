@@ -48,9 +48,12 @@ func TestCancelStopsQueueWithoutReportingFailures(t *testing.T) {
 	defer cancel()
 	var result Result
 	var runErr error
+	var snapshots []ProgressSnapshot
 	done := make(chan struct{})
 	go func() {
-		result, runErr = Execute(ctx, p, Options{Transfers: 2, Emit: func(kind, item string) {
+		result, runErr = Execute(ctx, p, Options{Transfers: 2, ShowProgress: true, Progress: func(p ProgressSnapshot) {
+			snapshots = append(snapshots, p)
+		}, Emit: func(kind, item string) {
 			if kind == "error" {
 				t.Errorf("cancellation logged as failure: %s", item)
 			}
@@ -73,6 +76,13 @@ func TestCancelStopsQueueWithoutReportingFailures(t *testing.T) {
 	}
 	if !errors.Is(runErr, context.Canceled) || result.Failed != 0 || result.Canceled != 2 || result.Pending != 4 || calls.Load() != 2 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, runErr, calls.Load())
+	}
+	if len(snapshots) == 0 {
+		t.Fatal("missing final cancellation progress")
+	}
+	last := snapshots[len(snapshots)-1]
+	if !last.Final || last.Active != 0 || last.Canceled != 2 || last.Pending != 4 || last.Failed != 0 || len(last.Files) != 0 {
+		t.Fatalf("incorrect final cancellation progress: %+v", last)
 	}
 }
 

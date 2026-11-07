@@ -80,6 +80,8 @@ type ProgressSnapshot struct {
 	Files                            []FileProgress
 	Done, Total, Rate                int64
 	Completed, Count, Active, Failed int
+	Canceled, Pending                int
+	Final                            bool
 	Elapsed, ETA                     time.Duration
 }
 
@@ -102,7 +104,7 @@ func (p ProgressSnapshot) String() string {
 	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()
 	}
-	return fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed)
+	return fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d canceled=%d pending=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed, p.Canceled, p.Pending)
 }
 func (p ProgressSnapshot) Lines() []string {
 	percent := float64(0)
@@ -114,6 +116,9 @@ func (p ProgressSnapshot) Lines() []string {
 		eta = p.ETA.Round(time.Second).String()
 	}
 	lines := []string{fmt.Sprintf("%.1f%% | %s / %s | %s/s | ETA %s", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), eta), fmt.Sprintf("files %d/%d | active %d | failed %d | elapsed %s", p.Completed, p.Count, p.Active, p.Failed, p.Elapsed.Round(time.Second))}
+	if p.Canceled > 0 || p.Pending > 0 {
+		lines = append(lines, fmt.Sprintf("canceled %d | pending %d", p.Canceled, p.Pending))
+	}
 	for _, f := range p.Files {
 		name := strings.Map(func(r rune) rune {
 			if r < 32 || r == 127 {
@@ -175,12 +180,17 @@ func (s *progressState) update(path string, v transferProgress) {
 func (s *progressState) finish(a Action, success bool) {
 	if success && a.Source != nil {
 		s.finished += a.Source.Size
+	} else {
+		// Retain observed partial bytes without counting an interrupted file as
+		// copied or promising that its checkpoint was saved successfully.
+		s.finished += s.files[a.Path].Done
 	}
 	delete(s.files, a.Path)
 	delete(s.updated, a.Path)
 }
 func (s *progressState) snapshot(r Result, active int) ProgressSnapshot {
-	p := ProgressSnapshot{Done: s.finished, Total: s.total, Count: s.totalFiles, Completed: r.Copied + r.Skipped, Failed: r.Failed, Active: active, Elapsed: time.Since(s.started)}
+	p := ProgressSnapshot{Done: s.finished, Total: s.total, Count: s.totalFiles, Completed: r.Copied + r.Skipped, Failed: r.Failed, Canceled: r.Canceled, Active: active, Elapsed: time.Since(s.started)}
+	p.Pending = max(0, p.Count-p.Completed-p.Failed-p.Canceled-active)
 	for path, f := range s.files {
 		if time.Since(s.updated[path]) > 5*time.Second {
 			f.Rate = 0
