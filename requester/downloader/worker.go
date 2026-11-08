@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 type (
@@ -39,6 +40,7 @@ type (
 		pauseVersion       uint64
 		cancelVersion      uint64
 		pauseCancel        context.CancelFunc
+		retryAfter         time.Time // Protected by controlMu.
 
 		workerCancelFunc context.CancelFunc
 		resetFunc        context.CancelFunc
@@ -210,7 +212,7 @@ func (wer *Worker) Reset() {
 func (wer *Worker) tryReset() bool {
 	wer.controlMu.Lock()
 	defer wer.controlMu.Unlock()
-	if wer.paused || wer.Completed() {
+	if wer.paused || wer.Completed() || time.Now().Before(wer.retryAfter) {
 		return false
 	}
 	if wer.resetFunc == nil {
@@ -382,6 +384,14 @@ func (wer *Worker) Execute() {
 		}
 	}
 
+	if err := wer.waitRetryAfter(resetCtx); err != nil {
+		wer.setError(err)
+		wer.status.SetStatusCode(StatusCodeCanceled)
+		if workerCancelCtx.Err() == nil {
+			wer.status.SetStatusCode(StatusCodeReseted)
+		}
+		return
+	}
 	wer.status.SetStatusCode(StatusCodePending)
 
 	var resp *http.Response
@@ -409,6 +419,9 @@ func (wer *Worker) Execute() {
 	}
 
 	// 判断响应状态
+	if resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 509 {
+		wer.setRetryAfter(resp.Header.Get("Retry-After"))
+	}
 	switch resp.StatusCode {
 	case 200, 206:
 		// do nothing, continue

@@ -22,6 +22,13 @@ var createConfigTemp = func(dir string) (configTempFile, error) {
 var writeConfigData = func(w io.Writer, data []byte) (int, error) { return w.Write(data) }
 var replaceConfigFile = os.Rename
 
+// SaveConfigData publishes a serialized configuration snapshot using the same
+// permission checks, sync and atomic replacement as account configuration saves.
+// Callers are responsible for validating the destination's storage role.
+func SaveConfigData(path string, data []byte) error {
+	return saveConfigData(path, data)
+}
+
 // saveConfigData never changes the previous file until a complete snapshot has
 // been written, synced and closed. No configuration handle survives an I/O call.
 func saveConfigData(path string, data []byte) error {

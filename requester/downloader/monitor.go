@@ -342,7 +342,7 @@ func (mt *Monitor) TryAddNewWork() {
 func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
 	mt.scheduleMu.Lock()
 	defer mt.scheduleMu.Unlock()
-	if mt.stopped || mt.paused.Load() {
+	if mt.stopped || mt.paused.Load() || worker.retryBlocked() {
 		return
 	}
 	if !mt.resetController.CanReset() {
@@ -370,8 +370,14 @@ func (mt *Monitor) DynamicSplitWorker(worker *Worker) {
 
 	workerRange := worker.GetRange()
 
+	begin := workerRange.LoadBegin()
 	end := workerRange.LoadEnd()
-	middle := (workerRange.LoadBegin() + end) / 2
+	if begin < 0 || end <= begin {
+		return
+	}
+	// Both endpoints can be valid while their sum exceeds int64. The remaining
+	// length fits once the non-negative, ordered interval has been validated.
+	middle := begin + (end-begin)/2
 
 	if end-middle < MinParallelSize/5 { // 如果线程剩余的下载量太少, 不分配空闲线程
 		return

@@ -144,6 +144,11 @@ func (pcs *BaiduPCS) CloudDlAddTaskWithContext(ctx context.Context, sourceURL, s
 		return
 	}
 
+	if taskInfo.TaskID <= 0 {
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = errors.New("invalid offline task creation result: task ID must be positive")
+		return 0, errInfo
+	}
 	return taskInfo.TaskID, nil
 }
 
@@ -352,6 +357,11 @@ func (pcs *BaiduPCS) CloudDlClearTaskWithContext(ctx context.Context) (total int
 		return
 	}
 
+	if clearInfo.Total < 0 {
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = errors.New("invalid offline task clear result: negative total")
+		return 0, errInfo
+	}
 	return clearInfo.Total, nil
 }
 

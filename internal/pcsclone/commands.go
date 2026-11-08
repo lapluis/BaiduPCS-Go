@@ -479,12 +479,9 @@ func runSize(c *commandContext) error {
 	if err != nil {
 		return operationError(err)
 	}
-	var count, bytes int64
-	for _, entry := range items {
-		if !entry.IsDir {
-			count++
-			bytes += entry.Size
-		}
+	count, bytes, err := rc.InventorySize(items)
+	if err != nil {
+		return operationError(err)
 	}
 	if c.flags.Bool("json") {
 		return json.NewEncoder(c.app.Stdout).Encode(map[string]int64{"count": count, "bytes": bytes})

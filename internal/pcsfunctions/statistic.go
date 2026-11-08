@@ -18,7 +18,7 @@ func (s *Statistic) AddTotalSize(size int64) int64 {
 }
 
 func (s *Statistic) TotalSize() int64 {
-	return s.totalSize
+	return atomic.LoadInt64(&s.totalSize)
 }
 
 func (s *Statistic) StartTimer() {

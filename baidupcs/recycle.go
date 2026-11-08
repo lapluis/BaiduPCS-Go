@@ -73,12 +73,24 @@ func (pcs *BaiduPCS) RecycleListWithContext(ctx context.Context, page int) (fdl 
 		return
 	}
 
+	seen := make(map[int64]bool, len(jsonData.List))
 	for index, file := range jsonData.List {
 		if file == nil {
 			errInfo.ErrType = pcserror.ErrTypeOthers
 			errInfo.Err = fmt.Errorf("invalid recycle list: null entry at index %d", index)
 			return nil, errInfo
 		}
+		if file.FsID <= 0 || file.Size < 0 || (file.Isdir != 0 && file.Isdir != 1) {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid recycle list: invalid metadata at index %d", index)
+			return nil, errInfo
+		}
+		if seen[file.FsID] {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid recycle list: duplicate file identity at index %d", index)
+			return nil, errInfo
+		}
+		seen[file.FsID] = true
 	}
 	return jsonData.List, nil
 }
@@ -113,12 +125,14 @@ func (pcs *BaiduPCS) RecycleRestoreWithContext(ctx context.Context, fidList ...i
 		errInfo.SetNetError(err)
 		return nil, errInfo
 	}
+	seen := make(map[int64]bool, len(jsonData.Extra.List))
 	if pcsError != nil {
-		// Remote failures may include successfully restored IDs. Retain those
-		// partial results, but never hand null pointers to callers displaying them.
+		// Remote failures may include successfully restored IDs. Retain valid,
+		// unique partial results without replacing the original remote error.
 		valid := jsonData.Extra.List[:0]
 		for _, item := range jsonData.Extra.List {
-			if item != nil {
+			if item != nil && item.FsID > 0 && !seen[item.FsID] {
+				seen[item.FsID] = true
 				valid = append(valid, item)
 			}
 		}
@@ -130,6 +144,12 @@ func (pcs *BaiduPCS) RecycleRestoreWithContext(ctx context.Context, fidList ...i
 			errInfo.Err = fmt.Errorf("invalid recycle restore result: null entry at index %d", index)
 			return nil, errInfo
 		}
+		if item.FsID <= 0 || seen[item.FsID] {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid recycle restore result: invalid or duplicate file identity at index %d", index)
+			return nil, errInfo
+		}
+		seen[item.FsID] = true
 	}
 	return jsonData.Extra.List, pcsError
 }

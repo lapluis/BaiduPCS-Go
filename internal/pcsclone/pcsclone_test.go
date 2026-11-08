@@ -250,7 +250,7 @@ func TestHelpAndExitCodes(t *testing.T) {
 	requireCode(t, 1, config, "baidu", "link", "bd:/file")
 	requireCode(t, 2, config, "baidu", "link", "local-file")
 	requireCode(t, 2, config, "config", "create", "x")
-	requireCode(t, 2, config, "config", "create", "alice", "--cookies", "BDUSS=abc")
+	requireCode(t, 2, config, "config", "create", "alice", "--cookies", "BDUSS=;")
 	requireCode(t, 1, config, "config", "delete", "nope")
 	requireCode(t, 1, config, "config", "rename", "nope", "nope")
 }

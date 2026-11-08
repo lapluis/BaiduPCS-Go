@@ -44,23 +44,32 @@ func (r *Resolver) Save() error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(aliasesPath()), ".rc-remotes-")
+	target, err := pcsconfig.ResolveConfigDestination(aliasesPath())
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(b)
+	if pcsconfig.Config != nil && pcsconfig.Config.FilePath() != "" {
+		account, err := pcsconfig.ResolveConfigDestination(pcsconfig.Config.FilePath())
+		if err != nil {
+			return err
+		}
+		overlap, err := localPathsOverlap(filepath.ToSlash(target), filepath.ToSlash(account))
+		if err != nil {
+			return err
+		}
+		aliasInfo, aliasErr := os.Stat(target)
+		accountInfo, accountErr := os.Stat(account)
+		for _, err := range []error{aliasErr, accountErr} {
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		if overlap || aliasErr == nil && accountErr == nil && os.SameFile(aliasInfo, accountInfo) {
+			return errors.New("remote alias storage overlaps account configuration")
+		}
 	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return os.Rename(tmp, aliasesPath())
+	// Publish to the inspected physical target, preserving an alias symlink.
+	return pcsconfig.SaveConfigData(target, b)
 }
 func IsRemote(s string) bool {
 	i := strings.IndexByte(s, ':')

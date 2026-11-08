@@ -215,10 +215,9 @@ func powershellCompletion(cases map[string][]string) string {
 	b.WriteString("# PowerShell 7+ completion for pcsclone\n")
 	b.WriteString("Register-ArgumentCompleter -Native -CommandName pcsclone -ScriptBlock {\n")
 	b.WriteString("  param($wordToComplete, $commandAst, $cursorPosition)\n")
-	b.WriteString("  $elements = @($commandAst.CommandElements | Select-Object -Skip 1)\n")
-	b.WriteString("  if ($elements.Count -gt 0 -and $wordToComplete -ne '' -and $elements[-1].Value -eq $wordToComplete) {\n")
-	b.WriteString("    if ($elements.Count -eq 1) { $elements = @() } else { $elements = @($elements[0..($elements.Count - 2)]) }\n")
-	b.WriteString("  }\n")
+	// The AST includes words after the cursor. Only completed tokens before it
+	// may select the command or consume a flag value; the active token is excluded.
+	b.WriteString("  $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | Where-Object { $_.Extent.EndOffset -lt $cursorPosition })\n")
 	b.WriteString("  $path = ''\n")
 	fmt.Fprintf(&b, "  $commandPaths = %s\n", quoteWordsPowerShell(sortedCaseKeys(cases)))
 	fmt.Fprintf(&b, "  $valueFlags = %s\n", quoteWordsPowerShell(completionValueFlagWords()))

@@ -335,7 +335,7 @@ func parseGlobalOptions(args []string) (globalOptions, error) {
 				return g, usageErrorf("missing value for %s", arg)
 			}
 			g.config = args[i+1]
-			if strings.TrimSpace(g.config) == "" {
+			if strings.TrimSpace(g.config) == "" || (strings.HasPrefix(g.config, "-") && g.config != "-") {
 				return g, usageErrorf("missing value for %s", arg)
 			}
 			i++

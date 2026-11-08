@@ -287,6 +287,9 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		}
 		candidates = append(candidates, a)
 	}
+	if err := validatePlannedBytes(candidates); err != nil {
+		return nil, err
+	}
 	// Bounded parallel comparison. No mutations occur until every comparison succeeds.
 	comparisons := 0
 	for _, a := range candidates {
@@ -450,6 +453,11 @@ func preserveContextError(ctx context.Context, err error) error {
 func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr error) {
 	defer func(parent context.Context) { executeErr = preserveContextError(parent, executeErr) }(ctx)
 	result := Result{}
+	// Validate before dry-run logging, directory creation or worker dispatch, also
+	// for plans constructed directly rather than returned by BuildPlan.
+	if err := validatePlannedBytes(p.Actions); err != nil {
+		return result, err
+	}
 	if o.DryRun {
 		var removedFiles []string
 		removedDestination := make(map[string]bool)

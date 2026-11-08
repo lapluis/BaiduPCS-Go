@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrProgressCallback identifies a failure rendering overall transfer progress.
@@ -127,7 +128,7 @@ func (p ProgressSnapshot) Lines() []string {
 	}
 	for _, f := range p.Files {
 		name := strings.Map(func(r rune) rune {
-			if r < 32 || r == 127 {
+			if unicode.IsControl(r) {
 				return ' '
 			}
 			return r

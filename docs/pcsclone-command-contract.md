@@ -37,7 +37,7 @@ pcsclone [global options] <command> [arguments]
   - 只使用 `/` 分隔；不使用远端工作目录。
 - 每条命令通过路径参数显式选择账号；不存在“当前账号”或“当前工作目录”。
 - 列表输出中的 `Path` 是相对请求根目录的路径；`stat` 的 `Path` 对本地是绝对路径，对网盘保留用户输入的远端参数。
-- 以 `-` 开头的路径或参数需要放在 `--` 之后。
+- 以 `-` 开头的位置参数需要放在 `--` 之后；以 `-` 开头的字符串选项值使用 `--选项=值`（例如 `--exclude=-draft*`）。带值选项不能吞掉后续选项；缺失值时在初始化配置及执行操作之前返回用法错误。负整数仍可分开书写，例如 `--max-delete -1`。
 - 源和目标相同或互为子目录时拒绝执行。
 
 ## 3. 退出码
@@ -167,7 +167,9 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 
 `--dry-run`/`-n`、`--include`、`--exclude`、`--files-from`、`--checksum`、`--size-only`、`--ignore-existing`、`--update`、`--transfers N`、`--checkers N`、`--retries N`、`--bwlimit RATE`、`--max-delete N`、`--delete-excluded`、`--create-empty-src-dirs`、`--delete-empty-src-dirs`、`--progress`/`-P`。
 
-下载并发：`--download-threads N`（默认 4，1–32）、`--max-connections N`（默认 16，1–256）。每文件实际并发不超过连接预算除以 `--transfers` 的整数部分；`--transfers` 不能超过预算。预算不包含控制接口请求。
+下载并发：`--download-threads N`（默认 4，1–32）、`--max-connections N`（默认 16，1–256）。`--transfers` 是同时传输文件数的上限（默认 4），不能超过连接预算。按计划中需要复制或移动内容校验的文件数分配额度，纯元数据跳过不占内容传输额度。单文件最多使用 `min(download-threads, max-connections)` 个 Range 线程；文件数充足时，每文件实际并发不超过 `min(download-threads, floor(max-connections / transfers))`。小文件或不支持 Range 的服务端可能使用更少连接。预算不包含账号、目录和直链等控制接口请求。
+
+带宽：未指定 `--bwlimit` 或指定为 0 时不限速；旧配置的 `max_download_rate`/`max_upload_rate` 不用于 pcsclone 传输。计划只有一个内容任务时可使用完整带宽额度，多个内容任务按槽位分配；极低的正值进一步减少内容任务并发，避免整数 B/s 配额合计超过设置值。换算后不足 1 B/s 的正值返回用法错误。
 
 日志：`--log-level DEBUG|INFO|ERROR|OFF`、`--log-file FILE`、`--use-json-log`。日志写 stderr 或指定文件；列表和 JSON 数据写 stdout。`-P` 在终端原地刷新总进度、文件进度、速度和 ETA；日志输出最多每 5 秒一条进度，不写 ANSI 控制码。取消摘要区分 `failed`、`canceled`、`pending`，取消退出码 130。
 
@@ -184,7 +186,8 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 | `config import-pcsgo [--from PATH] [--dry-run] [--json]` | 从旧配置导入账号和别名；旧文件只读 |
 | `listremotes` | 每个别名一行，格式 `NAME:` |
 
-- `--cookies` 必须包含完整 `BDUSS=...;` 字段，不能与 `--bduss`/`--ptoken`/`--stoken` 同时使用。
+- `--cookies` 必须包含名称恰为 `BDUSS` 的非空字段，末尾分号可省略，不能与 `--bduss`/`--ptoken`/`--stoken` 同时使用。
+- 显式传入空或仅含空白的 `--bduss`/`--cookies` 返回用法错误。没有 `--bduss` 时，仅提供 `--ptoken`/`--stoken`（包括空值）也返回用法错误，不启动交互登录；有效 `--bduss` 搭配空的可选 token 保持兼容。
 - `config create` 拒绝为同一 UID 再创建一个别名，重复创建返回 1；导入时如果旧配置本来就有同一 UID 的多个别名，会保留这些别名。
 - `config show` 的 JSON 字段：`name`、`uid`、`username`、`bduss`、`stoken`、`cookies`、`access_token`、`broken`；除 `name`/`uid`/`username`/`broken` 外均为布尔值。存在指向缺失账号的别名时仍输出全部条目，但返回 1。
 - `config import-pcsgo`：
@@ -224,6 +227,10 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 规则：
 
 - 数字 ID 必须为正整数；无效 ID 返回 2。
+- 分享创建响应必须包含正分享 ID；分享列表中的 ID 必须为正数且当前页唯一。异常响应返回操作错误，不输出部分列表；同路径不同分享 ID 的记录保留。
+- 离线任务添加成功响应必须包含正任务 ID，清空任务响应的计数不得为负数；异常响应返回操作错误，不计为成功项。批量添加仍保留已确认成功的任务，不自动重试异常创建响应。
+- 回收站列表中的 ID 必须为正数且在当前页唯一，目录标记只能是 0/1，大小不得为负数；异常条目导致整页报错，不输出部分列表。同路径但 ID 不同的记录保留。
+- 回收站恢复成功响应中的 ID 必须为正数且唯一；异常结果返回操作错误。远端报告部分失败时，底层 API 保留有效且不重复的成功 ID 和原始错误码。
 - 多 ID 操作逐项执行；部分失败时已完成项保留，最终返回 1。
 - 批量离线任务在每次请求前检查取消状态；收到中断后不再提交后续任务请求。已发送的请求可能完成，不能回滚。
 - `baidu transfer` 的目标按目录处理并创建；提取码长度为 4。
@@ -234,6 +241,7 @@ pcsclone 没有独立的 `upload`/`download` 命令：本地与网盘之间的 `
 ## 7. 输出与日志约定
 
 - stdout 只放数据：列表、路径、JSON、命令结果摘要。
+- 终端操作日志和进度文件名将路径中的控制字符显示为空格；JSON 日志保留原始路径值，显示清理不改变实际文件名。
 - stderr 放事件日志（`copy:`、`delete:`、`error:` 等）、进度和错误。
 - 独立入口与传输 worker 禁用旧 `BAIDUPCS_GO_VERBOSE` 原始请求日志；日志行为由 pcsclone 自身选项控制。
 - `--use-json-log` 时事件日志为 JSON Lines。

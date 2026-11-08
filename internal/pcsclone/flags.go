@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
@@ -165,6 +166,9 @@ func parseCommandFlags(args []string, specs []flagSpec) ([]string, *flagValues, 
 				return nil, nil, usageErrorf("missing value for --%s", spec.Name)
 			}
 			value = args[i]
+			if spec.Kind != flagInt && strings.HasPrefix(value, "-") && value != "-" {
+				return nil, nil, usageErrorf("missing value for --%s; use --%s=VALUE for values beginning with '-'", spec.Name, spec.Name)
+			}
 		}
 		switch spec.Kind {
 		case flagString:
@@ -326,6 +330,14 @@ func (s *logSink) emit(kind, item string, force bool) {
 			"path":  item,
 		})
 		return
+	}
+	if s.terminal {
+		item = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, item)
 	}
 	fmt.Fprintf(s.writer(), "%s: %s\n", kind, item)
 }

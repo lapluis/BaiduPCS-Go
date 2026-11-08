@@ -127,6 +127,12 @@ func parse(args []string) (parsed, error) {
 				return p, fmt.Errorf("missing value for --%s", name)
 			}
 			val = args[i]
+			if strings.HasPrefix(val, "-") && val != "-" {
+				switch name {
+				case "include", "exclude", "files-from", "log-file", "log-level", "uid", "bwlimit":
+					return p, fmt.Errorf("missing value for --%s; use --%s=VALUE for values beginning with '-'", name, name)
+				}
+			}
 		}
 		switch name {
 		case "include":
@@ -556,15 +562,10 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 		if err != nil {
 			return err
 		}
-		var count, size int64
 		filtered := make([]Entry, 0, len(items))
 		for _, e := range items {
 			if cmd == "lsd" && (!e.IsDir || !p.Filter.MatchDirectory(e.Path)) {
 				continue
-			}
-			if !e.IsDir {
-				count++
-				size += e.Size
 			}
 			if (p.FilesOnly && e.IsDir) || ((p.DirsOnly || cmd == "lsd") && !e.IsDir) {
 				continue
@@ -575,6 +576,10 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			return json.NewEncoder(out).Encode(filtered)
 		}
 		if cmd == "size" {
+			count, size, err := InventorySize(items)
+			if err != nil {
+				return err
+			}
 			return json.NewEncoder(out).Encode(map[string]int64{"count": count, "bytes": size})
 		}
 		for _, e := range filtered {

@@ -112,8 +112,6 @@ type loginInput struct {
 	password string
 }
 
-var cookieBDUSS = regexp.MustCompile(`BDUSS=[^;]+;`)
-
 func (c *commandContext) loginInput() (loginInput, error) {
 	in := loginInput{
 		bduss:    strings.TrimSpace(c.flags.String("bduss")),
@@ -123,14 +121,27 @@ func (c *commandContext) loginInput() (loginInput, error) {
 		username: strings.TrimSpace(c.flags.String("username")),
 		password: c.flags.String("password"),
 	}
+	if c.flags.Has("bduss") && in.bduss == "" {
+		return in, usageErrorf("missing value for --bduss")
+	}
+	if c.flags.Has("cookies") && in.cookies == "" {
+		return in, usageErrorf("missing value for --cookies")
+	}
 	if in.cookies != "" && (in.bduss != "" || in.stoken != "" || in.ptoken != "") {
 		return in, usageErrorf("--cookies cannot be combined with --bduss, --ptoken or --stoken")
 	}
-	if in.cookies != "" && !cookieBDUSS.MatchString(in.cookies) {
-		return in, usageErrorf("--cookies must contain a complete 'BDUSS=...;' field")
+	if in.cookies != "" {
+		// Use the same field parser as account setup and config import. A final
+		// cookie needs no semicolon, and a substring in another field is not BDUSS.
+		req := &http.Request{Header: make(http.Header)}
+		req.Header.Set("Cookie", in.cookies)
+		cookie, err := req.Cookie("BDUSS")
+		if err != nil || cookie.Value == "" {
+			return in, usageErrorf("--cookies must contain a non-empty BDUSS field")
+		}
 	}
 	if in.bduss == "" && in.cookies == "" {
-		if in.ptoken != "" || in.stoken != "" {
+		if c.flags.Has("ptoken") || c.flags.Has("stoken") {
 			return in, usageErrorf("--ptoken/--stoken require --bduss")
 		}
 		bduss, ptoken, stoken, cookies, err := pcscommand.RunLogin(in.username, in.password)

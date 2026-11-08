@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Stop before packaging stale output or removing files after a failed command.
+set -e
+
 name="BaiduPCS-Go"
 version=$1
 
@@ -71,17 +74,20 @@ IOSBuild() {
 }
 
 # zip 打包
-Pack() {
+Pack() (
   cp README.md "$output/$1"
 
   cd $output
-  zip -q -r "$1.zip" "$1"
+  # Build a fresh archive beside the destination. Updating an existing zip keeps
+  # obsolete entries; replacing only after success also preserves the last release.
+  archive=$(mktemp "./.$1.zip.XXXXXX")
+  trap 'rm -f "$archive"' 0
+  zip -q -r - "$1" > "$archive"
+  mv -f "$archive" "$1.zip"
 
   # 删除
   rm -rf "$1"
-
-  cd ..
-}
+)
 
 # rice 打包静态资源
 RicePack() {

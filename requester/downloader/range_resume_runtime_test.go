@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,11 +30,15 @@ func TestContextCancelPersistsRangesAndResumesExactBytes(t *testing.T) {
 func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked bool) {
 	t.Helper()
 	data := bytes.Repeat([]byte("range-fixture-"), 150000)
-	var stall atomic.Bool
-	stall.Store(true)
 	var resumedBytes atomic.Int64
+	var requestsMu sync.Mutex
+	var resumedRequests []transfer.Range
 	started := make(chan struct{}, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A canceled request can reach the server after the second execution
+		// starts. Identify its execution from the immutable request URL, rather
+		// than counting late first-execution requests as resumed network bytes.
+		resuming := r.URL.Query().Get("phase") == "resume"
 		begin, end := int64(0), int64(len(data)-1)
 		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &begin, &end); err != nil {
 			t.Errorf("invalid fixture range: %q", r.Header.Get("Range"))
@@ -54,7 +59,7 @@ func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked b
 		if chunked {
 			w.(http.Flusher).Flush()
 		}
-		if stall.Load() && !(begin == 0 && end == 32767) {
+		if !resuming && !(begin == 0 && end == 32767) {
 			last := min(end+1, begin+16384)
 			_, _ = w.Write(data[begin:last])
 			w.(http.Flusher).Flush()
@@ -65,16 +70,19 @@ func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked b
 			<-r.Context().Done()
 			return
 		}
-		if !stall.Load() {
+		if resuming {
 			resumedBytes.Add(end - begin + 1)
+			requestsMu.Lock()
+			resumedRequests = append(resumedRequests, transfer.Range{Begin: begin, End: end + 1})
+			requestsMu.Unlock()
 		}
 		_, _ = w.Write(data[begin : end+1])
 	}))
 	defer server.Close()
 	filename := filepath.Join(t.TempDir(), "data")
 	state := filename + ".state"
-	makeDownload := func(ctx context.Context, f *os.File) *Downloader {
-		d := NewDownloader(server.URL, f, &Config{Mode: transfer.RangeGenMode_BlockSize, MaxParallel: 4, CacheSize: 8192, BlockSize: 128 * 1024, InstanceStatePath: state})
+	makeDownload := func(ctx context.Context, f *os.File, phase string) *Downloader {
+		d := NewDownloader(server.URL+"?phase="+phase, f, &Config{Mode: transfer.RangeGenMode_BlockSize, MaxParallel: 4, CacheSize: 8192, BlockSize: 128 * 1024, InstanceStatePath: state})
 		d.SetDURLCheckFunc(func(c *requester.HTTPClient, url string) (int64, *http.Response, error) {
 			resp, err := c.ReqWithContext(ctx, http.MethodGet, url, nil, map[string]string{"Range": "bytes=0-32767"})
 			if chunked && resp != nil && resp.ContentLength != -1 {
@@ -90,7 +98,7 @@ func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked b
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	d := makeDownload(ctx, f)
+	d := makeDownload(ctx, f, "initial")
 	done := make(chan error, 1)
 	go func() { done <- d.ExecuteWithContext(ctx) }()
 	select {
@@ -125,14 +133,17 @@ func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked b
 	if _, err := os.Stat(state); err != nil {
 		t.Fatal("canceled task lost resume state", err)
 	}
-	stall.Store(false)
+	savedCheckpoint, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f, err = os.OpenFile(filename, os.O_RDWR, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx2, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
-	err = makeDownload(ctx2, f).ExecuteWithContext(ctx2)
+	err = makeDownload(ctx2, f, "resume").ExecuteWithContext(ctx2)
 	f.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +153,9 @@ func testContextCancelPersistsRangesAndResumesExactBytes(t *testing.T, chunked b
 		t.Fatal("resumed payload differs", err)
 	}
 	if resumedBytes.Load() >= int64(len(data)+32768) {
-		t.Fatalf("completed bytes were downloaded again: %d", resumedBytes.Load())
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		t.Fatalf("completed bytes were downloaded again: %d; checkpoint=%s requests=%v", resumedBytes.Load(), savedCheckpoint, resumedRequests)
 	}
 	if _, err := os.Stat(state); !os.IsNotExist(err) {
 		t.Fatal("completed task retained state")

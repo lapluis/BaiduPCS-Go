@@ -134,6 +134,11 @@ func (pcs *BaiduPCS) ShareSetWithContext(ctx context.Context, paths []string, op
 		errInfo.Err = ErrShareLinkNotFound
 		return nil, errInfo
 	}
+	if jsonData.ShareID <= 0 {
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = errors.New("invalid share creation result: share ID must be positive")
+		return nil, errInfo
+	}
 	jsonData.Pwd = option.Password
 
 	return jsonData.Shared, nil
@@ -196,12 +201,19 @@ func (pcs *BaiduPCS) ShareListWithContext(ctx context.Context, page int) (record
 		return nil, errInfo
 	}
 
+	seen := make(map[int64]bool, len(jsonData.List))
 	for index, record := range jsonData.List {
 		if record == nil {
 			errInfo.ErrType = pcserror.ErrTypeOthers
 			errInfo.Err = fmt.Errorf("invalid share list: null entry at index %d", index)
 			return nil, errInfo
 		}
+		if record.ShareID <= 0 || seen[record.ShareID] {
+			errInfo.ErrType = pcserror.ErrTypeOthers
+			errInfo.Err = fmt.Errorf("invalid share list: invalid or duplicate share ID at index %d", index)
+			return nil, errInfo
+		}
+		seen[record.ShareID] = true
 	}
 	return ShareRecordInfoList(jsonData.List), nil
 }
