@@ -36,10 +36,9 @@ func (cm *CacheOpMap) InvalidateKeys(op string, match func(interface{}) bool) {
 func (cm *CacheOpMap) ClearInvalidate() {
 	cm.cachePool.Range(func(_, cacheItf interface{}) bool {
 		cache := cacheItf.(CacheUnit)
-		cache.Range(func(key interface{}, exp expires.DataExpires) bool {
-			if exp.IsExpires() {
-				cache.Delete(key)
-			}
+		// Range already removes expired entries by their captured identity.
+		// A second expiry check followed by Delete could remove a replacement.
+		cache.Range(func(_ interface{}, _ expires.DataExpires) bool {
 			return true
 		})
 		return true

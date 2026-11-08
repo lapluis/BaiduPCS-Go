@@ -3,6 +3,7 @@ package baidupcs
 import (
 	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
+	"slices"
 )
 
 // Rename 重命名文件/目录
@@ -39,6 +40,14 @@ func (pcs *BaiduPCS) MoveWithContext(ctx context.Context, cpmvJSON ...*CpMvJSON)
 }
 
 func (pcs *BaiduPCS) cpmvOp(ctx context.Context, op string, cpmvJSON ...*CpMvJSON) (pcsError pcserror.Error) {
+	// Copy entries too, so deferred invalidation uses the values sent on wire.
+	cpmvJSON = slices.Clone(cpmvJSON)
+	for i, entry := range cpmvJSON {
+		if entry != nil {
+			snapshot := *entry
+			cpmvJSON[i] = &snapshot
+		}
+	}
 	dataReadCloser, err := pcs.prepareCpMvOp(ctx, op, cpmvJSON...)
 	defer pcs.invalidateCpMvCache(op, cpmvJSON)
 	if err != nil {

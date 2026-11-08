@@ -2,6 +2,7 @@ package expires
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 	_ "unsafe" // for go:linkname
 )
@@ -16,7 +17,7 @@ type (
 
 	expires struct {
 		expiresAt time.Time
-		abort     bool
+		abort     atomic.Bool
 	}
 )
 
@@ -48,13 +49,13 @@ func (ep *expires) GetExpires() time.Time {
 }
 
 func (ep *expires) SetExpires(e bool) {
-	ep.abort = e
+	ep.abort.Store(e)
 }
 
 func (ep *expires) IsExpires() bool {
-	return ep.abort || time.Now().After(ep.expiresAt)
+	return ep.abort.Load() || time.Now().After(ep.expiresAt)
 }
 
 func (ep *expires) String() string {
-	return fmt.Sprintf("expires at: %s, abort: %t", ep.expiresAt, ep.abort)
+	return fmt.Sprintf("expires at: %s, abort: %t", ep.expiresAt, ep.abort.Load())
 }

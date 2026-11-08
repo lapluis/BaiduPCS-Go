@@ -1,9 +1,10 @@
 package pcsutil
 
 import (
+	"errors"
+	"fmt"
 	"github.com/kardianos/osext"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsverbose"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -81,39 +82,62 @@ func ExecutablePathJoin(subPath string) string {
 // WalkDir 获取指定目录及所有子目录下的所有文件，可以匹配后缀过滤。
 // 支持 Linux/macOS 软链接
 func WalkDir(dirPth, suffix string) (files []string, err error) {
+	return walkDir(dirPth, suffix, os.Stat, os.ReadDir)
+}
+
+func walkDir(dirPth, suffix string, stat func(string) (os.FileInfo, error), readDir func(string) ([]os.DirEntry, error)) (files []string, err error) {
 	files = make([]string, 0, 32)
 	suffix = strings.ToUpper(suffix) //忽略后缀匹配的大小写
 
-	var walkFunc fs.WalkDirFunc
-	walkFunc = func(filename string, fi fs.DirEntry, err error) error { //遍历目录
-		if err != nil {
-			return err
-		}
-		if fi.IsDir() { // 忽略目录和空文件
-			return nil
-		}
-		fileInfo, err := fi.Info()
-		if err != nil || fileInfo.Size() == 0 {
-			return nil
-		}
-		if fileInfo.Mode()&os.ModeSymlink != 0 { // 读取 symbol link
-			targetFileInfo, statErr := os.Stat(filename)
-			if statErr != nil { // 断开的软链接, 跳过
-				return nil
+	// Only ancestors are active: independent aliases of a directory must each
+	// retain their logical upload paths, while a link back to an ancestor fails.
+	var ancestors []os.FileInfo
+	var walk func(string, os.FileInfo) error
+	walk = func(filename string, info os.FileInfo) error {
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, statErr := stat(filename)
+			if statErr != nil {
+				if errors.Is(statErr, os.ErrNotExist) { // Preserve skipping broken links.
+					return nil
+				}
+				return statErr
 			}
-			if targetFileInfo.IsDir() {
-				err = filepath.WalkDir(filename+string(os.PathSeparator), walkFunc)
+			info = target
+		}
+		if info.IsDir() {
+			for _, ancestor := range ancestors {
+				if os.SameFile(ancestor, info) {
+					return &os.PathError{Op: "walk", Path: filename, Err: fmt.Errorf("directory link cycle")}
+				}
+			}
+			ancestors = append(ancestors, info)
+			defer func() { ancestors = ancestors[:len(ancestors)-1] }()
+			entries, err := readDir(filename)
+			if err != nil {
 				return err
 			}
+			for _, entry := range entries {
+				childInfo, err := entry.Info()
+				if err != nil {
+					return err
+				}
+				if err := walk(filepath.Join(filename, entry.Name()), childInfo); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-
-		if strings.HasSuffix(strings.ToUpper(fi.Name()), suffix) {
+		if info.Size() != 0 && strings.HasSuffix(strings.ToUpper(filepath.Base(filename)), suffix) {
 			files = append(files, path.Clean(filename))
 		}
 		return nil
 	}
 
-	err = filepath.WalkDir(dirPth, walkFunc)
+	info, err := os.Lstat(dirPth)
+	if err != nil {
+		return files, err
+	}
+	err = walk(dirPth, info)
 	return files, err
 }
 

@@ -103,11 +103,20 @@ func (pcs *BaiduPCS) ShareSet(paths []string, option *ShareOption) (s *Shared, p
 
 // ShareSetWithContext cancels creation requests and response decoding.
 func (pcs *BaiduPCS) ShareSetWithContext(ctx context.Context, paths []string, option *ShareOption) (s *Shared, pcsError pcserror.Error) {
-	if option.Password == "" || len(option.Password) != 4 {
-		option = &ShareOption{CreatePasswd(), option.Period, option.IsCombined}
+	if option == nil {
+		errInfo := pcserror.NewPanErrorInfo(OperationShareSet)
+		errInfo.ErrType = pcserror.ErrTypeOthers
+		errInfo.Err = errors.New("share options must not be nil")
+		return nil, errInfo
+	}
+	// The returned password must describe this request, even if the caller
+	// reuses the options while the response is received or decoded.
+	settings := *option
+	if len(settings.Password) != 4 {
+		settings.Password = CreatePasswd()
 	}
 
-	dataReadCloser, pcsError := pcs.PrepareSharePSetWithContext(ctx, paths, option.Password, option.Period)
+	dataReadCloser, pcsError := pcs.PrepareSharePSetWithContext(ctx, paths, settings.Password, settings.Period)
 	if pcsError != nil {
 		return
 	}
@@ -139,7 +148,7 @@ func (pcs *BaiduPCS) ShareSetWithContext(ctx context.Context, paths []string, op
 		errInfo.Err = errors.New("invalid share creation result: share ID must be positive")
 		return nil, errInfo
 	}
-	jsonData.Pwd = option.Password
+	jsonData.Pwd = settings.Password
 
 	return jsonData.Shared, nil
 }

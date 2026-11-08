@@ -29,17 +29,20 @@ func (pcs *BaiduPCS) deleteCache(dirs []string, subtrees ...string) {
 	pcs.lazyInit()
 	changed := make(map[string]bool, len(dirs))
 	for _, dir := range dirs {
-		changed[directoryCachePath(dir)] = true
+		changed[directoryCachePath(PathSeparator+dir)] = true
 	}
 	roots := make([]string, len(subtrees))
 	for i, dir := range subtrees {
-		roots[i] = directoryCachePath(dir)
+		roots[i] = directoryCachePath(PathSeparator + dir)
 	}
 	pcs.cacheOpMap.InvalidateKeys(OperationFilesDirectoriesList, func(key interface{}) bool {
 		if listing, ok := key.(directoryCacheKey); ok {
-			remove := changed[listing.path]
+			// Relative and absolute queries identify the same remote directory.
+			// Normalize only matching, preserving request and response spelling.
+			identity := directoryCachePath(PathSeparator + listing.path)
+			remove := changed[identity]
 			for _, root := range roots {
-				if listing.path == root || strings.HasPrefix(listing.path, strings.TrimSuffix(root, "/")+"/") {
+				if identity == root || strings.HasPrefix(identity, strings.TrimSuffix(root, "/")+"/") {
 					remove = true
 					break
 				}

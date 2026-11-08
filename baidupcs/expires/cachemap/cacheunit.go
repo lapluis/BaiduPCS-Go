@@ -32,15 +32,23 @@ func (cu *cacheUnit) currentRevision() uint64 {
 	return cu.revision
 }
 
-func (cu *cacheUnit) storeAtRevision(key interface{}, value expires.DataExpires, revision uint64) {
+func (cu *cacheUnit) storeAtRevision(ctx context.Context, key interface{}, value expires.DataExpires, revision uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if value == nil || value.IsExpires() {
-		return
+		return ctx.Err()
 	}
 	cu.publishMu.Lock()
 	defer cu.publishMu.Unlock()
+	// Expiry validation and waiting for publication may outlive the caller.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if revision == cu.revision {
 		cu.unit.Store(key, &cacheEntry{value: value})
 	}
+	return nil
 }
 
 func (cu *cacheUnit) invalidateKeys(match func(interface{}) bool) {

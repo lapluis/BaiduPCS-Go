@@ -94,8 +94,14 @@ func (ds *DownloadStatus) AddSpeedsDownloadedWithContext(ctx context.Context, d 
 
 // SetMaxSpeeds 设置最大速度, 原子操作
 func (ds *DownloadStatus) SetMaxSpeeds(speeds int64) {
-	if speeds > atomic.LoadInt64(&ds.maxSpeeds) {
-		atomic.StoreInt64(&ds.maxSpeeds, speeds)
+	for {
+		previous := atomic.LoadInt64(&ds.maxSpeeds)
+		if speeds <= previous {
+			return
+		}
+		if atomic.CompareAndSwapInt64(&ds.maxSpeeds, previous, speeds) {
+			return
+		}
 	}
 }
 

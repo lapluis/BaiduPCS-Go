@@ -23,7 +23,7 @@ func (cm *CacheOpMap) CacheOperation(op string, key interface{}, opFunc OpFunc) 
 	if !ok {
 		data = opFunc()
 		if data != nil {
-			cache.storeAtRevision(key, data, revision)
+			_ = cache.storeAtRevision(context.Background(), key, data, revision)
 		}
 		return
 	}
@@ -36,6 +36,7 @@ func (cm *CacheOpMap) CacheOperationWithError(op string, key interface{}, opFunc
 }
 
 // CacheOperationWithContext allows cancellation while waiting for a key.
+// Cancellation is rechecked after lookup and before cache publication.
 // The callback must observe ctx when performing blocking work.
 func (cm *CacheOpMap) CacheOperationWithContext(ctx context.Context, op string, key interface{}, opFunc OpFuncWithError) (data expires.DataExpires, err error) {
 	var (
@@ -49,6 +50,9 @@ func (cm *CacheOpMap) CacheOperationWithContext(ctx context.Context, op string, 
 	defer cache.UnlockKey(key)
 	revision := cache.currentRevision()
 	data, ok = cache.Load(key)
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !ok {
 		data, err = opFunc()
 		if err != nil {
@@ -61,7 +65,9 @@ func (cm *CacheOpMap) CacheOperationWithContext(ctx context.Context, op string, 
 			// 数据为空时也不存
 			return
 		}
-		cache.storeAtRevision(key, data, revision)
+		if err = cache.storeAtRevision(ctx, key, data, revision); err != nil {
+			return nil, err
+		}
 	}
 
 	return

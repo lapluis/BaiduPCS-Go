@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -206,10 +207,10 @@ func parseRate(s string) (int64, error) {
 // unlimited; a nonzero value must represent at least one byte per second.
 func ParseBandwidthRate(s string) (int64, error) {
 	s = strings.ToUpper(strings.TrimSpace(s))
-	mult := float64(1)
+	mult := int64(1)
 	for _, suffix := range []struct {
 		s string
-		n float64
+		n int64
 	}{{"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}} {
 		if strings.HasSuffix(s, suffix.s) {
 			s = strings.TrimSuffix(s, suffix.s)
@@ -218,7 +219,7 @@ func ParseBandwidthRate(s string) (int64, error) {
 		}
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	rate := v * mult
+	rate := v * float64(mult)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || rate > float64(1<<62) {
 		return 0, errors.New("invalid --bwlimit")
 	}
@@ -238,7 +239,24 @@ func ParseBandwidthRate(s string) (int64, error) {
 	if nonzero && rate < 1 {
 		return 0, errors.New("--bwlimit must be zero or at least 1 B/s")
 	}
-	return int64(rate), nil
+	if !nonzero {
+		return 0, nil
+	}
+	// ParseFloat above preserves the existing numeric grammar and rejects
+	// extreme exponents cheaply. Exact arithmetic decides bounds and truncation.
+	// Underscore placement has already been validated by ParseFloat.
+	amount, ok := new(big.Rat).SetString(strings.ReplaceAll(s, "_", ""))
+	if !ok {
+		return 0, errors.New("invalid --bwlimit")
+	}
+	amount.Mul(amount, new(big.Rat).SetInt64(mult))
+	if amount.Cmp(new(big.Rat).SetInt64(1<<62)) > 0 {
+		return 0, errors.New("invalid --bwlimit")
+	}
+	if amount.Cmp(big.NewRat(1, 1)) < 0 {
+		return 0, errors.New("--bwlimit must be zero or at least 1 B/s")
+	}
+	return new(big.Int).Quo(amount.Num(), amount.Denom()).Int64(), nil
 }
 
 func Handles(args []string) bool {

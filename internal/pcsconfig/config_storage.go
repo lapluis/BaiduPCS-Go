@@ -35,14 +35,15 @@ func saveConfigData(path string, data []byte) error {
 	if path == "" {
 		return ErrConfigFileNotExist
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	// Replace the target of a symbolic-link configuration, including a link
+	// whose target parents have not been initialized yet. Resolve before
+	// creating directories so relative links use their physical parent.
+	var err error
+	path, err = ResolveConfigDestination(path)
+	if err != nil {
 		return err
 	}
-	// Replace the target of a symbolic-link configuration, including a link
-	// whose target has not been initialized yet. Keep the link itself intact.
-	var err error
-	path, err = configDestination(path)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	mode := os.FileMode(0600)

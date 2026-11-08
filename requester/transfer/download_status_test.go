@@ -95,3 +95,52 @@ func TestConcurrentDownloadStatusReadsAreAtomic(t *testing.T) {
 		})
 	}
 }
+
+func TestConcurrentDownloadPeakKeepsLargestSample(t *testing.T) {
+	previous := runtime.GOMAXPROCS(8)
+	defer runtime.GOMAXPROCS(previous)
+	const workers, rounds = 32, 4096
+	const base = int64(1 << 32)
+	status := NewDownloadStatus()
+	for round := 0; round < rounds; round++ {
+		status.ClearMaxSpeeds()
+		start := make(chan struct{})
+		var group sync.WaitGroup
+		group.Add(workers)
+		for i := 0; i < workers; i++ {
+			sample := base + int64((i*17+round)%workers)
+			go func() {
+				defer group.Done()
+				<-start
+				status.SetMaxSpeeds(sample)
+			}()
+		}
+		close(start)
+		group.Wait()
+		if got := status.MaxSpeeds(); got != base+workers-1 {
+			t.Fatalf("round %d: concurrent samples lost peak: got=%d want=%d", round, got, base+workers-1)
+		}
+	}
+}
+
+func TestDownloadPeakResetAndBounds(t *testing.T) {
+	status := NewDownloadStatus()
+	for _, sample := range []int64{-1, math.MinInt64, 0} {
+		status.SetMaxSpeeds(sample)
+		if got := status.MaxSpeeds(); got != 0 {
+			t.Fatalf("nonpositive sample changed initial peak: %d", got)
+		}
+	}
+	for _, sample := range []int64{1, 1 << 32, math.MaxInt64, math.MaxInt64, 0, -1, 1} {
+		before := status.MaxSpeeds()
+		status.SetMaxSpeeds(sample)
+		if got := status.MaxSpeeds(); got != max(before, sample) {
+			t.Fatalf("peak=%d previous=%d sample=%d", got, before, sample)
+		}
+	}
+	status.ClearMaxSpeeds()
+	status.SetMaxSpeeds(7)
+	if got := status.MaxSpeeds(); got != 7 {
+		t.Fatalf("clear did not start a fresh sample window: %d", got)
+	}
+}

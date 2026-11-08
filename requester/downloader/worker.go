@@ -523,6 +523,10 @@ func (wer *Worker) Execute() {
 
 			// 读取数据
 			for n < len(buf) && readErr == nil && (single || wer.wrange.Len() > 0) {
+				if resetCtx.Err() != nil {
+					setInterruptedStatus()
+					return
+				}
 				nn, readErr = resp.Body.Read(buf[n:])
 				nn64 = int64(nn)
 

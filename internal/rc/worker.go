@@ -98,7 +98,8 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 		}
 		return fmt.Errorf("%s transfer failed (account %d); source retained: %w", kind, uid, err)
 	}
-	return nil
+	// An EOF-tail progress callback can cancel after Cmd.Run has returned.
+	return ctx.Err()
 }
 
 // RunWorker receives paths and an account ID only, never credential arguments.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"path"
+	"slices"
 )
 
 // Remove 批量删除文件/目录
@@ -13,6 +14,8 @@ func (pcs *BaiduPCS) Remove(paths ...string) (pcsError pcserror.Error) {
 
 // RemoveWithContext cancels deletion requests and response decoding.
 func (pcs *BaiduPCS) RemoveWithContext(ctx context.Context, paths ...string) (pcsError pcserror.Error) {
+	// Invalidation must describe this request even if the caller reuses paths.
+	paths = slices.Clone(paths)
 	dataReadCloser, pcsError := pcs.PrepareRemoveWithContext(ctx, paths...)
 	// The server may have applied the request even if its response is lost.
 	defer pcs.deleteCache(allRelatedDir(paths), paths...)

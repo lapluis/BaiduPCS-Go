@@ -11,6 +11,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/pcstime"
 	pathpkg "path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -132,6 +133,8 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMeta(paths ...string) (data FileDirect
 
 // FilesDirectoriesBatchMetaWithContext also cancels response body decoding.
 func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, paths ...string) (data FileDirectoryList, pcsError pcserror.Error) {
+	// Bind response validation to the paths serialized for this request.
+	paths = slices.Clone(paths)
 	dataReadCloser, pcsError := pcs.PrepareFilesDirectoriesBatchMetaWithContext(ctx, paths...)
 	if pcsError != nil {
 		return nil, pcsError
@@ -158,19 +161,22 @@ func (pcs *BaiduPCS) FilesDirectoriesBatchMetaWithContext(ctx context.Context, p
 	if pcsError != nil {
 		return nil, pcsError
 	}
-	requested := make(map[string]struct{}, len(paths))
+	requested := make(map[string]int, len(paths))
 	for _, p := range paths {
-		requested[pathpkg.Clean(PathSeparator+p)] = struct{}{}
+		requested[pathpkg.Clean(PathSeparator+p)]++
 	}
 	for i, file := range data {
-		_, matched := requested[pathpkg.Clean(PathSeparator+file.Path)]
-		if file.Path == "" || !matched {
+		identity := pathpkg.Clean(PathSeparator + file.Path)
+		if file.Path == "" || requested[identity] == 0 {
 			return nil, &pcserror.PCSErrInfo{
 				Operation: OperationFilesDirectoriesMeta,
 				ErrType:   pcserror.ErrTypeOthers,
 				Err:       fmt.Errorf("metadata path mismatch at index %d", i),
 			}
 		}
+		// Preserve repeated requests and partial responses, but never accept
+		// more results for a rooted path than the caller requested.
+		requested[identity]--
 	}
 	// 修复MD5
 	data.fixMD5()

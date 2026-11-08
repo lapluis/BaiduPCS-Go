@@ -21,7 +21,8 @@ func buildBaiduGroup() *command {
 		Usage:   "pcsclone baidu <subcommand> [options]",
 		Description: `Baidu-specific operations. Every operation selects its account
 through an explicit remote path (for example bd: or bd:/backup). There is no
-implicit current account or remote working directory.`,
+implicit current account or remote working directory.
+Repeated numeric IDs are processed once, in first occurrence order.`,
 		Group: []*command{
 			{
 				Name: "share", Summary: "Create, list or cancel share links",
@@ -211,12 +212,17 @@ func (c *commandContext) resolveRemote(arg string) (*rc.Remote, string, error) {
 
 func parseIDs(args []string) ([]int64, error) {
 	ids := make([]int64, 0, len(args))
+	seen := make(map[int64]bool, len(args))
 	for _, arg := range args {
 		id, err := strconv.ParseInt(arg, 10, 64)
 		if err != nil || id <= 0 {
 			return nil, usageErrorf("invalid numeric ID %q", arg)
 		}
-		ids = append(ids, id)
+		// Process a numeric identity once, preserving first occurrence order.
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }

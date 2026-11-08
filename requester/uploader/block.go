@@ -68,7 +68,16 @@ func NewBufioSplitUnit(readerAt io.ReaderAt, readRange transfer.Range, speedsSta
 }
 
 func (bfb *bufioFileBlock) Read(b []byte) (n int, err error) {
-	return bfb.bufio.Read(b) // 间接调用fileBlock 的Read
+	n, err = bfb.bufio.Read(b) // 间接调用fileBlock 的Read
+	if n > 0 && err == nil && bfb.bufio.Buffered() == 0 && bfb.Left() <= 0 {
+		// bufio can defer an error returned alongside the final bytes. A
+		// length-limited multipart reader will not read again after those bytes,
+		// so expose a terminal source failure before it can certify the part.
+		if _, terminalErr := bfb.bufio.Peek(1); terminalErr != nil && terminalErr != io.EOF {
+			err = terminalErr
+		}
+	}
+	return
 }
 
 func (bfb *bufioFileBlock) Seek(offset int64, whence int) (int64, error) {

@@ -62,11 +62,13 @@ func proxyFunc(req *http.Request) (*url.URL, error) {
 	}
 
 	if ProxyHostnameRules != "" {
-		if strings.Contains(ProxyHostnameRules, req.URL.Hostname()) {
-			return u, err
-		} else {
-			return http.ProxyFromEnvironment(req)
+		host := req.URL.Hostname()
+		for _, rule := range strings.Split(ProxyHostnameRules, ",") {
+			if rule = strings.TrimSpace(rule); rule != "" && strings.EqualFold(rule, host) {
+				return u, nil
+			}
 		}
+		return http.ProxyFromEnvironment(req)
 	}
 	return u, err
 }
@@ -114,7 +116,7 @@ func SetGlobalProxy(proxyAddr string) {
 	ProxyAddr = proxyAddr
 }
 
-// SetProxyHostnameRules 设置走代理的域名列表
+// SetProxyHostnameRules 设置走代理的域名列表，逗号分隔，完整名称匹配且不区分大小写。
 func SetProxyHostnameRules(hostnames string) {
 	ProxyHostnameRules = hostnames
 }

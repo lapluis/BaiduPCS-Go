@@ -9,6 +9,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/pcstime"
 	"io"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -219,6 +220,9 @@ func (pcs *BaiduPCS) CloudDlQueryTaskWithContext(ctx context.Context, taskIDs []
 	if len(taskIDs) == 0 {
 		return pcs.cloudDlQueryTask(ctx, OperationCloudDlQueryTask, taskIDs)
 	}
+	// Keep every batch tied to the original request if the caller reuses IDs
+	// while an earlier batch is in flight.
+	taskIDs = slices.Clone(taskIDs)
 	cl = make(CloudDlTaskList, 0, len(taskIDs))
 	for len(taskIDs) > 0 {
 		n := min(len(taskIDs), 100)

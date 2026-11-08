@@ -20,9 +20,52 @@ const stageMarker = "pcsclone-owned-download-state-v1\n"
 
 var stageDirectoryMu sync.Mutex
 
-var readDownloadRecord = os.ReadFile
+var readDownloadRecord = readDownloadRecordFile
 var statDownloadState = os.Stat
 var removeDownloadState = os.Remove
+
+// These records contain scalar metadata, not the per-range checkpoint. Use the
+// downloader checkpoint's size budget while allowing ample room for paths and
+// HTTP entity validators. Inspection errors must preserve existing progress.
+const maxDownloadRecordSize = 16 << 20
+
+var errDownloadRecordSize = errors.New("download record size exceeds limit")
+
+func readDownloadRecordFile(name string) ([]byte, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("download record is not a regular file: %s", name)
+	}
+	if info.Size() < 0 || info.Size() > maxDownloadRecordSize {
+		return nil, fmt.Errorf("%w: %s", errDownloadRecordSize, name)
+	}
+	data, err := readDownloadRecordContents(f)
+	if err != nil {
+		return nil, fmt.Errorf("read download record %s: %w", name, err)
+	}
+	return data, nil
+}
+
+func readDownloadRecordContents(r io.Reader) ([]byte, error) {
+	// A file can grow after Stat. Bound the actual read too, leaving one byte
+	// to distinguish an exact-budget record from a truncated oversized record.
+	data, err := io.ReadAll(io.LimitReader(r, maxDownloadRecordSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDownloadRecordSize {
+		return nil, errDownloadRecordSize
+	}
+	return data, nil
+}
 
 func ownedStageDirectory(dir string) bool {
 	info, err := os.Lstat(filepath.Join(dir, ".owner"))
@@ -225,6 +268,9 @@ func (s *downloadStage) save() (saveErr error) {
 	if err != nil {
 		return err
 	}
+	if len(b) > maxDownloadRecordSize {
+		return errDownloadRecordSize
+	}
 	f, err := os.CreateTemp(filepath.Dir(s.record), ".state-*")
 	if err != nil {
 		return err
@@ -294,6 +340,9 @@ func (s *downloadStage) complete(ctx context.Context, name, payloadHash string) 
 	if err != nil {
 		return err
 	}
+	if len(b) > maxDownloadRecordSize {
+		return errDownloadRecordSize
+	}
 	if err := safeParents(s.record + ".done"); err != nil {
 		return err
 	}
@@ -324,7 +373,7 @@ func verifiedDownloadedFile(ctx context.Context, remote *Remote, source, destina
 	if err := safeParents(base + ".json.done"); err != nil {
 		return false, err
 	}
-	data, err := os.ReadFile(base + ".json.done")
+	data, err := readDownloadRecordFile(base + ".json.done")
 	if os.IsNotExist(err) {
 		return false, nil
 	}

@@ -69,8 +69,11 @@ type (
 	}
 
 	// DURLCheckFunc 下载URL检测函数
+	// Successful probes return a response with an open Body. Request metadata
+	// is optional for the primary probe; mirrors need Request.URL to be used.
 	DURLCheckFunc func(client *requester.HTTPClient, durl string) (contentLength int64, resp *http.Response, err error)
 	// DURLCheckContextFunc receives the execution context, including Cancel().
+	// Its response ownership contract is the same as DURLCheckFunc.
 	DURLCheckContextFunc func(context.Context, *requester.HTTPClient, string) (int64, *http.Response, error)
 	// StatusCodeBodyCheckFunc 响应状态码出错的检查函数
 	StatusCodeBodyCheckFunc func(respBody io.Reader) error
@@ -263,6 +266,12 @@ func (der *Downloader) checkURL(ctx context.Context, client *requester.HTTPClien
 // Only file responses can supply the size used to plan writes and truncation.
 // In particular, an empty redirect or no-content response is not an empty file.
 func (der *Downloader) checkProbeResponse(resp *http.Response, totalSize int64) error {
+	if resp == nil {
+		return errors.New("download probe returned no response")
+	}
+	if resp.Body == nil {
+		return errors.New("download probe response has no body")
+	}
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
@@ -290,7 +299,7 @@ func (der *Downloader) checkLoadBalancers(ctx context.Context) *LoadBalancerResp
 		responsesMu           sync.Mutex
 		loadBalancerResponses = make([]*LoadBalancerResponse, 0, len(der.loadBalansers)+1)
 		handleLoadBalancer    = func(req *http.Request) {
-			if req == nil {
+			if req == nil || req.URL == nil {
 				return
 			}
 
@@ -327,7 +336,7 @@ func (der *Downloader) checkLoadBalancers(ctx context.Context) *LoadBalancerResp
 			defer wg.Done()
 
 			subContentLength, subResp, subErr := der.checkURL(ctx, &probeClient, loadBalanser)
-			if subResp != nil {
+			if subResp != nil && subResp.Body != nil {
 				// Error decoders may need the body before this probe finishes.
 				defer subResp.Body.Close()
 			}
@@ -404,7 +413,7 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		var contentLength int64
 		var err error
 		contentLength, resp, err = der.checkURL(ctx, der.client, der.durl)
-		if resp != nil {
+		if resp != nil && resp.Body != nil {
 			body := resp.Body
 			resp.Body = &sharedProbeBody{ReadCloser: body, close: sync.OnceValue(body.Close)}
 			defer resp.Body.Close()
@@ -426,7 +435,14 @@ func (der *Downloader) ExecuteWithContext(ctx context.Context) (resultErr error)
 		// 初始化firstInfo
 		der.firstInfo = NewDownloadFirstInfoByResp(contentLength, resp)
 		der.firstInfo.AcceptRanges = acceptRanges
-		pcsverbose.Verbosef("DEBUG: download task: URL: %s, Referer: %s\n", resp.Request.URL, resp.Request.Referer())
+		requestURL, referer := der.durl, ""
+		if resp.Request != nil {
+			if resp.Request.URL != nil {
+				requestURL = resp.Request.URL.String()
+			}
+			referer = resp.Request.Referer()
+		}
+		pcsverbose.Verbosef("DEBUG: download task: URL: %s, Referer: %s\n", requestURL, referer)
 	}
 	if !acceptsByteRanges(der.firstInfo.AcceptRanges) || der.firstInfo.ContentLength < 0 {
 		der.firstInfo.AcceptRanges = ""

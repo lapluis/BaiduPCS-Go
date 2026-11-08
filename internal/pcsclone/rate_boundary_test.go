@@ -38,7 +38,7 @@ func TestBandwidthParsingRejectsPositiveRatesThatRoundToUnlimited(t *testing.T) 
 }
 
 func TestInvalidSubByteBandwidthStopsBeforeCopy(t *testing.T) {
-	for _, rate := range []string{"0.5", "1e-400", "-1e-400", "0x1p-2000", "0.0001K", "0.0000005M", "0.0000000005G"} {
+	for _, rate := range []string{"0.5", "1e-400", "-1e-400", "0x1p-2000", "0.0001K", "0.0000005M", "0.0000000005G", "0.999999999999999999999999", "4611686018427387905", "4294967296.000000000000000001G"} {
 		t.Run(rate, func(t *testing.T) {
 			root := t.TempDir()
 			source, target := filepath.Join(root, "source"), filepath.Join(root, "target")

@@ -19,6 +19,8 @@ const (
 
 type (
 	//CheckFunc 上传完成的检测函数
+	// The callback owns the response body. Without a callback, Execute closes
+	// the unused response itself.
 	CheckFunc func(resp *http.Response, uploadErr error)
 
 	// Uploader 上传
@@ -101,6 +103,8 @@ func (u *Uploader) Execute() {
 
 	if u.checkFunc != nil {
 		u.checkFunc(resp, err)
+	} else if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
 	}
 
 	pcsutil.Trigger(u.onFinish) // 触发上传结束的事件
