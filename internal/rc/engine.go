@@ -158,8 +158,8 @@ func validLocalPath(p string) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	p = filepath.Clean(p)
-	p = strings.TrimLeft(p[len(filepath.VolumeName(p)):], `/\`)
+	p = localCleanPath(p)
+	p = strings.TrimLeft(p[len(localVolumeName(p)):], `/\`)
 	if p == "" || p == "." {
 		return nil
 	}

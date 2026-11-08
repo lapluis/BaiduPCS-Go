@@ -213,7 +213,7 @@ func Delete(ctx context.Context, e Endpoint, mode string, o Options) (deleteErr 
 	if mode == "rmdirs" {
 		return removeEmpty(ctx, e, false, o)
 	}
-	if mode == "purge" && (e.Root == "/" || filepath.Dir(e.Root) == e.Root) {
+	if mode == "purge" && (e.Root == "/" || localDir(e.Root) == e.Root) {
 		return errors.New("refusing to purge a filesystem root")
 	}
 	var purgeRoot Entry

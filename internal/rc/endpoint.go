@@ -83,7 +83,7 @@ func ResolveLocalPath(cwd, p string) (string, error) {
 	if p == "" {
 		return "", errors.New("empty path")
 	}
-	if filepath.VolumeName(p) != "" && !filepath.IsAbs(p) {
+	if localVolumeName(p) != "" && !filepath.IsAbs(p) {
 		return "", errors.New("drive-relative paths are ambiguous; use an absolute path")
 	}
 	if !filepath.IsAbs(p) {
@@ -91,12 +91,12 @@ func ResolveLocalPath(cwd, p string) (string, error) {
 			if !filepath.IsAbs(cwd) {
 				return "", errors.New("root-relative path requires an absolute working directory")
 			}
-			p = filepath.VolumeName(cwd) + p
+			p = localVolumeName(cwd) + p
 		} else {
-			p = filepath.Join(cwd, p)
+			p = localJoinPath(cwd, p)
 		}
 	}
-	return filepath.Clean(p), nil
+	return localCleanPath(p), nil
 }
 
 func (r *Resolver) Resolve(s string) (Endpoint, error) {

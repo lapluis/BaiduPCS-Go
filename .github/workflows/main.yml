@@ -6,15 +6,17 @@ env:
   BINARY_PREFIX: "baidupcs-go_"
   BINARY_SUFFIX: ""
   PR_PROMPT: "::warning:: Build artifact will not be uploaded due to the workflow is trigged by pull request."
-  LD_FLAGS: "-w -s"
+  LD_FLAGS: "-w"
+  GOTOOLCHAIN: local
 
 jobs:
   build:
-    name: Build binary CI
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.legacy && ' (compatibility only)' || '' }}
+    needs: compatibility
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # build and publish in parallel: linux/386, linux/amd64, windows/386, windows/amd64, darwin/amd64, darwin/arm64
+        # Eight release targets plus a Windows ARM32 compatibility-only build.
         goos: [linux, windows, darwin]
         goarch: ["386", amd64, arm, arm64]
         exclude:
@@ -24,23 +26,27 @@ jobs:
             goarch: "386"
           - goos: windows
             goarch: arm64
+        include:
+          - goos: windows
+            goarch: arm
+            legacy: true
       fail-fast: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go environment
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ matrix.legacy && 'go.mod' || '.go-version' }}
       - name: Cache downloaded module
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('go.mod', '.go-version', 'go.sum') }}
       - name: Verify build scripts
         if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}
-        run: go test ./internal/cliintegration -run '^Test(WorkflowBuildArtifactNamesAndEntrypoints|BuildScriptStopsBeforePackagingOrCleanupOnFailure|BuildArchiveReplacesStaleEntriesAndPreservesPreviousOnFailure)$' -count=1
+        run: go test ./internal/cliintegration -run '^Test(WorkflowBuildArtifactNamesAndEntrypoints|WorkflowReleasePolicy|WorkflowVulnerabilityGateStopsOnFailure|BuildScriptStopsBeforePackagingOrCleanupOnFailure|BuildArchiveReplacesStaleEntriesAndPreservesPreviousOnFailure)$' -count=1
       - name: Build binary file
         env:
           GOOS: ${{ matrix.goos }}
@@ -61,9 +67,32 @@ jobs:
           if [ "$GOOS" = "windows" ]; then PCS_SUFFIX=".exe"; fi
           export CGO_ENABLED=0
           go build -o "output/pcsclone_${GOOS}_${GOARCH}${PCS_SUFFIX}" -trimpath -ldflags "$LD_FLAGS" ./cmd/pcsclone
+      - name: Verify release artifacts
+        if: ${{ !matrix.legacy }}
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          for binary in output/*; do
+            govulncheck -mode binary "$binary"
+          done
+      - name: Explain legacy compatibility build
+        if: ${{ matrix.legacy }}
+        run: echo "Windows ARM32 is a compile-only compatibility check; artifacts are not uploaded."
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        if: ${{ !github.head_ref }}
+        if: ${{ success() && !github.head_ref && !matrix.legacy }}
         with:
           name: ${{ matrix.goos }}_${{ matrix.goarch }}
           path: output/
+  compatibility:
+    name: Go 1.23 Windows source compatibility
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup compatibility Go environment
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test source compatibility
+        env:
+          GOFLAGS: -mod=readonly
+        run: go test -p 1 ./... -shuffle=on -count=1 -timeout 180s

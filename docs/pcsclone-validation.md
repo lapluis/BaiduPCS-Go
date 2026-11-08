@@ -634,6 +634,20 @@ PowerShell 中间光标补全回归：本机 PowerShell 7 基线确认，在 `pc
 
 ETA 精确算术模糊回归：新增 FuzzRemainingTime，以 math/big 完整计算剩余字节乘纳秒单位后再整除速度，作为独立精确参照；不复用生产实现的整数秒/余数分拆算法。十五个固定种子覆盖空文件、完成/超额、分数时间、极低/极高速度、int64 及 time.Duration 上限、负值与零速度。Windows amd64 两个 fuzz worker 持续三十秒完成 3,056,221 次执行，未发现不一致；固定种子及既有 ETA、速度精确采样、统计原子读取和进度聚合边界回归在 Windows amd64、386 和 Linux WSL race 下各随机三轮通过。Windows Go 1.27.1 全仓随机测试、构建、go vet、差异检查及 Linux WSL Go 1.26.6 全仓 race、构建、go vet 均通过。本轮只增加测试，未复现新生产缺陷；所有极值均为内存算术，没有大文件或真实网盘请求。普通 go test 运行固定种子，持续模糊搜索需显式执行：`go test ./pcsutil/converter -run '^$' -fuzz '^FuzzRemainingTime$' -fuzztime 30s -parallel 2 -timeout 90s`。
 
+构建工具链安全核对（2026-11-08）：使用固定 govulncheck v1.9.0 和官方数据库（工具报告更新时间 2026-11-05 23:49:57 UTC）检查生产源码和当前二进制。Go 1.27.1 源码扫描报告十项调用可达的标准库漏洞，包含 [GO-2026-6809 证书验证修复](https://pkg.go.dev/vuln/GO-2026-6809) 及 HTTP/TLS 修复；这不是十项均已证明可利用。隔离下载并校验 Go 1.27.3 后，Windows 全仓生产源码复扫为零项调用可达漏洞，但仍有两项导入包及六十二项模块层告警；新二进制的保守符号扫描仍报告来自 x/net、x/sys 和 beego 的三十四项告警，不能将源码结果解释成所有依赖均无漏洞。原始及补丁工具链扫描日志保留于忽略的 build/govulncheck-*.log，检测范围和反射/unsafe 等局限见 [官方说明](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)。
+
+新增 .go-version 和 scripts/build-pcsclone.ps1，将本地发布构建固定到 Go 1.27.3、关闭 CGO，并恢复调用者的工具链/CGO 环境和工作目录；不替换系统 Go，不提高 go.mod 的 Go 1.23 源码兼容性下限。三个实际 PowerShell 脚本回归场景核对成功编译参数、失败退出码 42 和旧产物保留、非法版本不调用编译器，以及空格目录和环境恢复，在 Windows amd64、386 各随机十轮通过；没有 PowerShell 的 WSL 明确跳过该脚本回归。实际脚本构建产物已验证工具链为 Go 1.27.3，并通过本地文件操作、帮助、退出码、配置导入及脱敏冒烟测试。Windows Go 1.27.3 全仓随机测试、构建、go vet、差异检查及 Linux WSL Go 1.26.10 全仓 race、构建、go vet 均通过。WSL 直连下载 SDK 超时后，经 Windows 下载校验到共享缓存，再复制到任务临时目录运行；两边原有系统 SDK 均未替换。未读取真实凭据或验证真实网盘速度。
+
+二进制漏洞扫描精度核对：前段记录的三十四项“符号扫描告警”并非已确认存在于产物中的漏洞函数。核对 govulncheck v1.9.0 源码及 [官方限制说明](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck#hdr-Limitations)，确认剥离符号后提取不到符号表时，工具回退到模块级匹配，并用数据库已知漏洞符号作保守报告。保留符号的同源、同 Go 1.27.3 诊断产物扫描为零项受影响漏洞；go tool nm 未见第三方 x/net/html、x/net/http2 或 x/sys/windows.NewNTUnicodeString 的链接函数（内部标准库同名函数不计入第三方模块）。进一步固定源码、版本字符串、CGO=0、trimpath 及工具链，只比较链接标志：-s -w 产物为 14,827,008 字节，-w 产物为 16,217,600 字节，后者二进制扫描仍为零项受影响漏洞，并另报一项导入包和三十三项模块层告警。没有把这些依赖版本告警隐藏或视为依赖均无漏洞。
+
+本地构建脚本现仅用 -w 去除 DWARF，保留 Go 符号，支持后续按实际链接代码进行二进制审计；不改变传输代码或依赖版本，也不将此调整称为修复三十四项实际漏洞。更新参数回归在 Windows amd64、386 各随机十轮通过；Windows Go 1.27.3 全仓随机测试、构建、go vet、差异检查及 Linux WSL Go 1.26.10 全仓 race、构建、go vet 均通过。Linux 使用已验证共享缓存中的 SDK ZIP，在任务临时目录一次性解压运行，没有替换系统 SDK；没有 PowerShell 的环境仍明确跳过 PowerShell 专有回归。持续审计仍需保留依赖版本告警，并考虑官方说明中的反射和 unsafe 等分析局限。
+
+Go 1.23 实际兼容性及扩展 UNC 根保护回归：隔离 Go 1.23.12 首次全仓测试复现三组失败：旧 net/url 接受 [:] 等非法括号地址；filepath 将扩展 UNC 卷截为 \\?\UNC，导致根相对及 .. 路径丢失主机/共享边界；控制台下载夹具的 Job Object 进程查询返回空集合。新增拦截后端进一步确认，旧 SDK 下 purge 扩展 UNC 共享根会越过根目录保护并调用 Stat；夹具在此返回合成错误，没有访问真实共享或删除文件。地址校验现显式使用 netip 验证 IPv6，保留合法 zone 和 IPv4-mapped IPv6；扩展 UNC 只在词法计算时转普通 UNC，完成卷名、清理、拼接及父目录计算后恢复原命名空间，并用于路径解析、目标名称校验及 purge 根保护。控制台夹具用 runtime.Pinner 固定传给 uintptr 接口的本机输入/输出缓冲区，保留原有严格进程归属检查和隔离隐藏控制台；未放宽 Ctrl-C 的安全限制。
+
+新增回归覆盖十六种地址输入、六种扩展 UNC 解析、三种共享根各执行/预览拒绝、三种卷与文件名校验，以及自有子进程的 Job Object PID 查询。新增及相关回归在 Go 1.23.12、Go 1.27.3 的 Windows amd64、386 各随机十轮通过，Linux WSL Go 1.26.10 race 下可用用例随机十轮通过，Windows 专有用例按平台跳过。Go 1.23.12 和 Go 1.27.3 的 Windows 全仓随机测试、构建、go vet，以及 Linux Go 1.26.10 全仓 race、构建、go vet、差异检查均通过；既有控制台中断后的普通恢复、共享 partial 和远端变化三种场景也通过。补丁 Go 1.27.3 实际交叉构建 linux/386、amd64、arm、arm64，windows/386、amd64，darwin/amd64、arm64 的双入口共十六个产物，逐个二进制扫描均为零项受影响漏洞，依赖版本层告警仍保留。另以 Go 1.23.12 编译 Windows ARM32 双入口，共十八个编译结果；旧 SDK 仅验证兼容性，不作为安全发布工具链或替换用户程序。没有运行异平台程序，未触发线上 CI、读取真实凭据或验证真实网盘速度，发布矩阵尚未调整。
+
+CI 发布工具链与上传门禁回归：八个受支持目标改用 .go-version 的 Go 1.27.3、仅移除 DWARF 并保留 Go 符号，双入口产物通过固定版本 govulncheck 二进制扫描后才上传。Windows ARM32 暂保留 Go 1.23 编译检查且不上传；未收到平台偏好回复，本轮采用此可回退的本地配置，未推送。所有矩阵任务依赖 Windows Go 1.23 全仓兼容性测试。新增发布策略校验及执行工作流原始 Shell 的四个门禁场景，验证成功、扫描器安装失败、首个和第二个产物扫描失败的退出码与扫描次数，并覆盖带空格文件名。相关回归在两套 Windows SDK 的 amd64、386 各随机十轮通过；Linux Go 1.26.10 race 下随机十轮通过。YAML 独立解析确认八个发布目标加一个兼容性目标，actionlint v1.7.7 校验通过。Windows Go 1.23.12、Go 1.27.3 全仓随机测试、构建、go vet，以及 Linux Go 1.26.10 全仓 race、构建、go vet、差异检查均通过。源码漏洞扫描为零项受影响漏洞，另有两项导入包、六十二项模块层告警；没有触发线上 GitHub Actions 或验证真实网盘性能。
+
 ## 2. 未执行（发布前仍需验证）
 
 以下项目需要真实百度账号和网盘环境，本轮环境没有可用测试凭据，因此**未执行**：
@@ -651,6 +665,8 @@ ETA 精确算术模糊回归：新增 FuzzRemainingTime，以 math/big 完整计
 - 真实中断（Ctrl-C）期间 worker 终止与源文件保留。
 
 Windows 原生 `go test -race` 尚未执行：当前 Windows Go 为 CGO_ENABLED=0，未发现可用的原生 C 编译器。Linux WSL 全仓 race 已通过，见上方记录；该结果不替代 Windows 专有路径的 race 验证。
+
+CI 发布配置已在本地调整：受支持目标按 .go-version 构建，Windows ARM32 保留旧工具链编译检查但不上传；构建依赖 Windows Go 1.23 全仓兼容性测试，发布产物上传前还需通过二进制漏洞扫描。[Go 1.26 已移除 Windows ARM32](https://go.dev/doc/go1.26#windows)，其旧工具链产物不作为安全发布包。尚未推送或触发线上 GitHub Actions，本地校验不等于远端工作流已验证；第三方依赖版本告警仍需继续审查。
 
 建议的真实网盘验证方式：
 

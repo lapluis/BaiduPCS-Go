@@ -7,6 +7,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs/pcserror"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -126,10 +127,18 @@ func parseDownloadURL(raw string, https bool) *url.URL {
 // validServerAuthority checks the parsed host without reconstructing the URL,
 // which would lose escaping for IPv6 zone identifiers.
 func validServerAuthority(u *url.URL) bool {
-	if u.Hostname() == "" || u.User != nil {
+	host := u.Hostname()
+	if host == "" || u.User != nil {
 		return false
 	}
-	if strings.Contains(u.Hostname(), ":") && !strings.HasPrefix(u.Host, "[") {
+	if strings.HasPrefix(u.Host, "[") {
+		// Older net/url versions accept malformed bracketed literals. Check
+		// the address here, preserving IPv6 zones and IPv4-mapped IPv6.
+		address, err := netip.ParseAddr(host)
+		if err != nil || !address.Is6() {
+			return false
+		}
+	} else if strings.Contains(host, ":") {
 		return false
 	}
 	if port := u.Port(); port != "" {

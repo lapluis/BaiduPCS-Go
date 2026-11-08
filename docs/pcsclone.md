@@ -8,22 +8,25 @@
 
 ## 1. 构建
 
-只需要 Go 工具链：
+安装 Go 后，使用固定工具链的构建脚本：
 
 ```powershell
-go build -o build/pcsclone.exe ./cmd/pcsclone
+& .\scripts\build-pcsclone.ps1
 & .\build\pcsclone.exe --version
 & .\build\pcsclone.exe help
 ```
 
-发布时建议关闭 CGO：
+脚本从 `.go-version` 选择发布工具链（当前为 Go 1.27.3），通过 Go 自动工具链机制下载并校验，关闭 CGO，退出时恢复调用者的环境变量和工作目录。系统 Go 安装不被替换。构建使用 `-w` 去除 DWARF 调试信息，保留 Go 符号以供 `govulncheck -mode binary` 检查实际链接的函数；使用 `-s` 剥离符号后，扫描器可能退回模块级匹配，报告未链接进程序的函数漏洞。该扫描仍不等于证明整个程序没有安全问题。指定版本字符串或输出路径：
 
 ```powershell
-$env:CGO_ENABLED = '0'
-go build -trimpath -ldflags "-s -w -X main.Version=v4.0.2-dev" -o build/pcsclone.exe ./cmd/pcsclone
+& .\scripts\build-pcsclone.ps1 -Version 'v4.0.2-dev' -Output 'build/pcsclone.exe'
 ```
 
+手动构建（包括其他 Shell）时，使用 `.go-version` 对应的已修补工具链。`go.mod` 的 Go 1.23 是源码兼容性下限，不表示旧标准库仍有安全更新；发布版本应另行核对 [Go 安全公告](https://go.dev/security/) 和 [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) 结果。
+
 `go build ./...` 仍然会构建旧的 `BaiduPCS-Go` 入口；两个入口共享代码，但产物独立。CI 的构建矩阵会同时输出 `BaiduPCS-Go` 和 `pcsclone_<os>_<arch>` 两种产物。`pcsclone.exe` 不需要旁边的 `BaiduPCS-Go.exe`：传输 worker 通过 `os.Executable()` 重新执行自身。
+
+CI 先在 Windows 上用 `go.mod` 的 Go 1.23 运行全仓兼容性测试，再构建各平台。八个发布目标使用 `.go-version` 工具链、保留 Go 符号，并在两个入口均通过二进制漏洞扫描后上传；扫描器安装或扫描失败会阻止上传。Windows ARM32 保留旧工具链编译检查，但不上传其产物；PR 也不上传产物。当前发布目标为 Linux 386/amd64/arm/arm64、Windows 386/amd64、macOS amd64/arm64。[Go 1.27 的 macOS 产物要求 macOS 13 或更高版本](https://go.dev/doc/go1.27#darwin)。
 
 ## 2. 配置目录
 

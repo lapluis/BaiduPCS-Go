@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,11 @@ type consoleJobProcessList struct {
 
 func consoleJobPIDs(job windows.Handle) (map[uint32]bool, error) {
 	var p consoleJobProcessList
+	// The generated wrapper accepts uintptr, so pin the output across its
+	// call boundary instead of allowing a stack move to invalidate the address.
+	var pin runtime.Pinner
+	pin.Pin(&p)
+	defer pin.Unpin()
 	if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList, uintptr(unsafe.Pointer(&p)), uint32(unsafe.Sizeof(p)), nil); err != nil {
 		return nil, err
 	}
@@ -93,6 +99,9 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 	defer windows.CloseHandle(job)
 	var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	var limitsPin runtime.Pinner
+	limitsPin.Pin(&limits)
+	defer limitsPin.Unpin()
 	if _, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		return err
 	}
