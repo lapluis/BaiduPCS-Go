@@ -354,16 +354,19 @@ func runBaiduTransfer(c *commandContext) error {
 	if code != "" && len(code) != 4 {
 		return usageErrorf("--code must contain exactly four characters")
 	}
+	params := []string{c.args[0]}
+	if code != "" {
+		params = append(params, code)
+	}
+	if err := pcscommand.ValidateShareTransferParams(params); err != nil {
+		return usageErrorf("%s", err)
+	}
 	remote, root, err := c.resolveRemote(c.args[1])
 	if err != nil {
 		return err
 	}
 	if err = remote.Mkdir(c.ctx, root); err != nil {
 		return operationError(err)
-	}
-	params := []string{c.args[0]}
-	if code != "" {
-		params = append(params, code)
 	}
 	result, err := pcscommand.ShareTransferToWithContext(c.ctx, remote.PCS, params, root, &baidupcs.TransferOption{Collect: c.flags.Bool("collect")})
 	if err != nil {

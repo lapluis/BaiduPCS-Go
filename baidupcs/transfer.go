@@ -115,8 +115,15 @@ func (pcs *BaiduPCS) ExtractShareInfoWithContext(ctx context.Context, shareURL, 
 	for _, item := range list.Array() {
 		sid := item.Get("fs_id")
 		id, parseErr := strconv.ParseUint(sid.Raw, 10, 64)
-		if sid.Type != gjson.Number || parseErr != nil || id == 0 || item.Get("server_filename").String() == "" {
+		name := item.Get("server_filename")
+		if sid.Type != gjson.Number || parseErr != nil || id == 0 || name.Type != gjson.String || name.Str == "" {
 			res["ErrMsg"] = "分享项元数据不完整"
+			return
+		}
+		// This is a single remote name, not a path. It may be used to build
+		// a collect directory beneath the user's chosen destination.
+		if name.Str == "." || name.Str == ".." || strings.Contains(name.Str, "/") {
+			res["ErrMsg"] = "分享项文件名无效"
 			return
 		}
 		fsidList = append(fsidList, sid.Raw)
@@ -260,6 +267,11 @@ func (pcs *BaiduPCS) GenerateRequestQueryWithContext(ctx context.Context, mode s
 	postdata := make(map[string]string)
 	postdata["fsidlist"] = params["fs_id"]
 	postdata["path"] = params["path"]
+	if mode == http.MethodPost {
+		// A transfer can merge directory contents even when its response is
+		// lost. Invalidate the submitted destination tree, not a reused map.
+		defer pcs.deleteCache(nil, postdata["path"])
+	}
 	dataReadCloser, panError := pcs.sendReqReturnReadCloserContext(ctx, reqTypePan, OperationShareFileSavetoLocal, mode, params["shareUrl"], postdata, headers)
 	if panError != nil {
 		res["ErrNo"] = "1"

@@ -15,7 +15,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 )
 
-var shareLinkRe = regexp.MustCompile(`https?://pan\.baidu\.com/[^\s<>"，。]+`)
+var shareLinkRe = regexp.MustCompile(`(?i:https?://pan\.baidu\.com)/[^\s<>"，。]+`)
 var shareFeatureRe = regexp.MustCompile(`^1[0-9A-Za-z_-]{1,22}$`)
 var shareCodeRe = regexp.MustCompile(`^[0-9A-Za-z]{4}$`)
 
@@ -41,41 +41,44 @@ func ShareTransferTo(pcs *baidupcs.BaiduPCS, params []string, savePath string, o
 	return ShareTransferToWithContext(context.Background(), pcs, params, savePath, opt)
 }
 
-// ShareTransferToWithContext keeps every transfer stage within the caller's lifetime.
-func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, params []string, savePath string, opt *baidupcs.TransferOption) (*ShareTransferResult, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+type shareTransferParams struct {
+	link, code, feature string
+}
+
+// ValidateShareTransferParams checks share input without account or network access.
+func ValidateShareTransferParams(params []string) error {
+	_, err := parseShareTransferParams(params)
+	return err
+}
+
+func parseShareTransferParams(params []string) (shareTransferParams, error) {
 	if len(params) == 0 || strings.TrimSpace(params[0]) == "" {
-		return nil, errors.New("分享链接不能为空")
+		return shareTransferParams{}, errors.New("分享链接不能为空")
 	}
 	if len(params) > 2 {
-		return nil, errors.New("参数过多: 需要分享链接和可选的提取码")
-	}
-	if opt == nil {
-		opt = &baidupcs.TransferOption{}
+		return shareTransferParams{}, errors.New("参数过多: 需要分享链接和可选的提取码")
 	}
 
 	link := strings.TrimSpace(params[0])
 	// 支持整段分享文本(如 "通过网盘分享的文件: 链接: https://... 提取码: xxxx ..."),
 	// 先从中提取出规范的分享链接, 再交给 net/url 解析
-	if !strings.HasPrefix(link, "https://") && !strings.HasPrefix(link, "http://") {
+	if prefix := strings.ToLower(link); !strings.HasPrefix(prefix, "https://") && !strings.HasPrefix(prefix, "http://") {
 		if extracted := shareLinkRe.FindString(link); extracted != "" {
 			link = extracted
 		}
 	}
 	parsedURL, err := url.Parse(link)
 	if err != nil {
-		return nil, errors.New("链接格式非法")
+		return shareTransferParams{}, errors.New("链接格式非法")
 	}
 	if (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") || !strings.EqualFold(parsedURL.Host, "pan.baidu.com") || parsedURL.User != nil {
-		return nil, errors.New("链接地址或提取码非法")
+		return shareTransferParams{}, errors.New("链接地址或提取码非法")
 	}
 	queryParams := parsedURL.Query()
 	extraCode := queryParams.Get("pwd")
 	if len(params) == 1 {
-		if strings.Contains(link, "bdlink=") || !strings.Contains(link, "pan.baidu.com/") {
-			return nil, errors.New("秒传已不再被支持")
+		if strings.Contains(link, "bdlink=") {
+			return shareTransferParams{}, errors.New("秒传已不再被支持")
 		}
 	} else {
 		extraCode = params[1]
@@ -88,8 +91,24 @@ func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, par
 		featureStr = strings.TrimSuffix(strings.TrimPrefix(parsedURL.Path, "/s/"), "/")
 	}
 	if !shareFeatureRe.MatchString(featureStr) || !shareCodeRe.MatchString(extraCode) {
-		return nil, errors.New("链接地址或提取码非法")
+		return shareTransferParams{}, errors.New("链接地址或提取码非法")
 	}
+	return shareTransferParams{link: link, code: extraCode, feature: featureStr}, nil
+}
+
+// ShareTransferToWithContext keeps every transfer stage within the caller's lifetime.
+func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, params []string, savePath string, opt *baidupcs.TransferOption) (*ShareTransferResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	input, err := parseShareTransferParams(params)
+	if err != nil {
+		return nil, err
+	}
+	if opt == nil {
+		opt = &baidupcs.TransferOption{}
+	}
+	link, extraCode, featureStr := input.link, input.code, input.feature
 
 	tokens := pcs.AccessSharePageWithContext(ctx, featureStr, true)
 	if err := ctx.Err(); err != nil {
@@ -101,7 +120,7 @@ func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, par
 
 	verifyURL := pcs.GenerateShareQueryURL("verify", map[string]string{
 		"shareid":    tokens["shareid"],
-		"time":       strconv.Itoa(int(time.Now().UnixMilli())),
+		"time":       strconv.FormatInt(time.Now().UnixMilli(), 10),
 		"clienttype": "1",
 		"uk":         tokens["share_uk"],
 	}).String()
@@ -170,7 +189,7 @@ func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, par
 				return nil, cancelErr
 			}
 			if metaErr != nil || info == nil || !info.Isdir {
-				return nil, fmt.Errorf("创建汇总目录失败: %w", err)
+				return nil, fmt.Errorf("创建汇总目录失败: %w", errors.Join(err, metaErr))
 			}
 		}
 	}
