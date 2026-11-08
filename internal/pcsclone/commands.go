@@ -382,7 +382,10 @@ func runTransfer(c *commandContext, mode string) (resultErr error) {
 			return operationError(fmt.Errorf("sync expects a source directory"))
 		}
 		if !o.Filter.Match(item.Name) {
-			return nil
+			// Finalize filtered single files through the same empty-plan path
+			// as a directory with no selected transfers.
+			plan = &rc.Plan{Source: src, Destination: dst, Move: mode == "move"}
+			break
 		}
 		dst.Root = dst.At(item.Name)
 		plan, err = rc.FilePlan(c.ctx, src, dst, mode == "move", o)
@@ -430,7 +433,7 @@ func runList(c *commandContext, mode string) error {
 	filtered := make([]rc.Entry, 0, len(items))
 	for _, entry := range items {
 		if mode == "lsd" {
-			if !entry.IsDir || !f.Match(entry.Path) {
+			if !entry.IsDir || !f.MatchDirectory(entry.Path) {
 				continue
 			}
 		}

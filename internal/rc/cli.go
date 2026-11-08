@@ -134,6 +134,9 @@ func parse(args []string) (parsed, error) {
 		case "exclude":
 			p.Excludes = append(p.Excludes, val)
 		case "files-from":
+			if strings.TrimSpace(val) == "" {
+				return p, fmt.Errorf("missing value for --files-from")
+			}
 			p.FilesFrom = val
 		case "log-file":
 			p.LogFile = val
@@ -503,11 +506,12 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			if cmd == "sync" {
 				return errors.New("sync expects a source directory")
 			}
-			if !p.Filter.Match(item.Name) {
-				return nil
+			if p.Filter.Match(item.Name) {
+				dst.Root = dst.At(item.Name)
+				plan, err = FilePlan(ctx, src, dst, cmd == "move", p.Options)
+			} else {
+				plan = &Plan{Source: src, Destination: dst, Move: cmd == "move"}
 			}
-			dst.Root = dst.At(item.Name)
-			plan, err = FilePlan(ctx, src, dst, cmd == "move", p.Options)
 		} else {
 			plan, err = BuildPlan(ctx, src, dst, cmd, p.Options)
 		}
@@ -555,7 +559,7 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 		var count, size int64
 		filtered := make([]Entry, 0, len(items))
 		for _, e := range items {
-			if cmd == "lsd" && !p.Filter.Match(e.Path) {
+			if cmd == "lsd" && (!e.IsDir || !p.Filter.MatchDirectory(e.Path)) {
 				continue
 			}
 			if !e.IsDir {

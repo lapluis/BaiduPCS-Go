@@ -222,8 +222,11 @@ func TestDirectoryExclusionAppliesToDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Match("secret/nested/a.txt") || f.Match("secret") {
+	if f.Match("secret/nested/a.txt") || f.MatchDirectory("secret") {
 		t.Fatal("excluded subtree selected")
+	}
+	if !f.Match("secret") {
+		t.Fatal("directory rule excluded ordinary file")
 	}
 	if !f.Match("public/a.txt") {
 		t.Fatal("unrelated file excluded")

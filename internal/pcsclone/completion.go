@@ -38,7 +38,7 @@ func completionScript(shell string) (string, error) {
 	case "powershell", "pwsh":
 		return powershellCompletion(cases), nil
 	default:
-		return "", fmt.Errorf("unsupported shell %q; use bash, zsh or powershell", shell)
+		return "", fmt.Errorf("unsupported shell %q; use bash, zsh or powershell", diagnosticName(shell))
 	}
 }
 

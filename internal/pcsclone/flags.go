@@ -142,7 +142,7 @@ func parseCommandFlags(args []string, specs []flagSpec) ([]string, *flagValues, 
 		} else {
 			spec, ok = byShort[strings.TrimPrefix(arg, "-")]
 			if !ok {
-				return nil, nil, usageErrorf("unknown option %s; run 'pcsclone help' for options", arg)
+				return nil, nil, usageErrorf("unknown option %s; run 'pcsclone help' for options", diagnosticName(arg))
 			}
 		}
 
@@ -168,6 +168,9 @@ func parseCommandFlags(args []string, specs []flagSpec) ([]string, *flagValues, 
 		}
 		switch spec.Kind {
 		case flagString:
+			if spec.Name == "files-from" && strings.TrimSpace(value) == "" {
+				return nil, nil, usageErrorf("missing value for --files-from")
+			}
 			values.values[spec.Name] = value
 		case flagList:
 			values.values[spec.Name] = append(values.List(spec.Name), value)

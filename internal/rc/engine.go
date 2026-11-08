@@ -253,7 +253,7 @@ func BuildPlan(ctx context.Context, src, dst Endpoint, mode string, o Options) (
 		d, exists := dm[k]
 		if s.IsDir {
 			p.SourceDirs = append(p.SourceDirs, k)
-			if o.CreateEmptyDirs && o.Filter.Match(k) {
+			if o.CreateEmptyDirs && o.Filter.MatchDirectory(k) {
 				if exists && !d.IsDir {
 					return nil, fmt.Errorf("file/directory conflict: %s", k)
 				}
@@ -369,7 +369,7 @@ dispatchComparisons:
 		sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
 		for _, k := range dirs {
 			d := dm[k]
-			if _, exists := sm[k]; d.IsDir && !exists && (o.DeleteExcluded || o.Filter.Match(k)) {
+			if _, exists := sm[k]; d.IsDir && !exists && (o.DeleteExcluded || o.Filter.MatchDirectory(k)) {
 				p.Actions = append(p.Actions, Action{Kind: "rmdir", Path: k, Destination: &d})
 			}
 		}

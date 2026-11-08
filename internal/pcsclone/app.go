@@ -59,6 +59,12 @@ func usageErrorf(format string, args ...interface{}) error {
 	return &exitError{code: 2, err: fmt.Errorf(format, args...)}
 }
 
+// Diagnostics for command, option and shell names omit attached values.
+func diagnosticName(arg string) string {
+	name, _, _ := strings.Cut(arg, "=")
+	return name
+}
+
 func operationError(err error) error {
 	if err == nil {
 		return nil
@@ -153,7 +159,7 @@ func (a *App) run(raw []string) (code int) {
 
 	cmd := findCommand(topLevelCommands(), name)
 	if cmd == nil {
-		return a.report(usageErrorf("unknown command %q; run 'pcsclone help'", name))
+		return a.report(usageErrorf("unknown command %q; run 'pcsclone help'", diagnosticName(name)))
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -217,6 +223,9 @@ func (a *App) ensureRuntime(configPath string) error {
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
+	if err = validateRuntimeStorage(path); err != nil {
+		return err
+	}
 
 	pcsconfig.SetConfigDir(filepath.Dir(path))
 	old := pcsconfig.Config
@@ -241,6 +250,33 @@ func (a *App) ensureRuntime(configPath string) error {
 	a.ConfigFile = path
 	a.Resolver = resolver
 	a.initialized = true
+	return nil
+}
+
+func validateRuntimeStorage(config string) error {
+	aliases := filepath.Join(filepath.Dir(config), "rc_remotes.json")
+	resolvedConfig, err := pcsconfig.ResolveConfigDestination(config)
+	if err != nil {
+		return fmt.Errorf("resolve config storage: %w", err)
+	}
+	resolvedAliases, err := pcsconfig.ResolveConfigDestination(aliases)
+	if err != nil {
+		return fmt.Errorf("resolve alias storage: %w", err)
+	}
+	same, err := sameStoragePath(resolvedConfig, resolvedAliases)
+	if err != nil {
+		return err
+	}
+	configInfo, configErr := os.Stat(resolvedConfig)
+	aliasInfo, aliasErr := os.Stat(resolvedAliases)
+	for _, statErr := range []error{configErr, aliasErr} {
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect configuration storage: %w", statErr)
+		}
+	}
+	if same || (configErr == nil && aliasErr == nil && os.SameFile(configInfo, aliasInfo)) {
+		return errors.New("configuration overlaps remote alias storage; choose a separate --config file")
+	}
 	return nil
 }
 
@@ -299,10 +335,13 @@ func parseGlobalOptions(args []string) (globalOptions, error) {
 				return g, usageErrorf("missing value for %s", arg)
 			}
 			g.config = args[i+1]
+			if strings.TrimSpace(g.config) == "" {
+				return g, usageErrorf("missing value for %s", arg)
+			}
 			i++
 		case strings.HasPrefix(arg, "--config="):
 			g.config = strings.TrimPrefix(arg, "--config=")
-			if g.config == "" {
+			if strings.TrimSpace(g.config) == "" {
 				return g, usageErrorf("missing value for --config")
 			}
 		case arg == "--help" || arg == "-h":
@@ -313,7 +352,7 @@ func parseGlobalOptions(args []string) (globalOptions, error) {
 			g.args = args[i+1:]
 			return g, nil
 		case strings.HasPrefix(arg, "-") && arg != "-":
-			return g, usageErrorf("unknown global option %q (global options must precede the command)", arg)
+			return g, usageErrorf("unknown global option %q (global options must precede the command)", diagnosticName(arg))
 		default:
 			g.args = args[i:]
 			return g, nil
@@ -375,7 +414,7 @@ func (a *App) runGroup(ctx context.Context, group *command, args []string, confi
 	}
 	sub := findCommand(group.Group, args[0])
 	if sub == nil {
-		return usageErrorf("unknown %s subcommand %q; run 'pcsclone help %s'", group.Name, args[0], group.UsagePath())
+		return usageErrorf("unknown %s subcommand %q; run 'pcsclone help %s'", group.Name, diagnosticName(args[0]), group.UsagePath())
 	}
 	return a.runCommand(ctx, sub, args[1:], configPath)
 }
@@ -422,7 +461,7 @@ func (a *App) runHelp(args []string) int {
 	}
 	cmd := findCommand(topLevelCommands(), args[0])
 	if cmd == nil {
-		return a.report(usageErrorf("unknown command %q", args[0]))
+		return a.report(usageErrorf("unknown command %q", diagnosticName(args[0])))
 	}
 	return a.report(a.printHelpPath(cmd, args[1:]))
 }
@@ -434,7 +473,7 @@ func (a *App) printHelpPath(cmd *command, rest []string) error {
 		}
 		next := findCommand(cmd.Group, name)
 		if next == nil {
-			return usageErrorf("unknown subcommand %q for %s", name, cmd.UsagePath())
+			return usageErrorf("unknown subcommand %q for %s", diagnosticName(name), cmd.UsagePath())
 		}
 		cmd = next
 	}
@@ -449,7 +488,7 @@ func (a *App) printHelpSubcommand(group *command, args []string) error {
 	}
 	sub := findCommand(group.Group, args[0])
 	if sub == nil {
-		return usageErrorf("unknown subcommand %q for %s", args[0], group.UsagePath())
+		return usageErrorf("unknown subcommand %q for %s", diagnosticName(args[0]), group.UsagePath())
 	}
 	return a.printHelpPath(sub, args[1:])
 }
@@ -472,6 +511,12 @@ func findCommand(commands []*command, name string) *command {
 func (c *command) UsagePath() string {
 	usage := c.Usage
 	usage = strings.TrimPrefix(usage, "pcsclone ")
+	words := strings.Fields(usage)
+	for i := len(words) - 1; i >= 0; i-- {
+		if words[i] == c.Name {
+			return strings.Join(words[:i+1], " ")
+		}
+	}
 	if i := strings.IndexAny(usage, " [<"); i >= 0 {
 		usage = usage[:i]
 	}

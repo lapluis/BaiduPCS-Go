@@ -378,6 +378,9 @@ type legacyConfig struct {
 }
 
 func runConfigImport(c *commandContext) error {
+	if c.flags.Has("from") && strings.TrimSpace(c.flags.String("from")) == "" {
+		return usageErrorf("missing value for --from")
+	}
 	config, err := resolveConfigPath(c.configPath)
 	if err != nil {
 		return operationError(err)
@@ -532,10 +535,15 @@ func runConfigImport(c *commandContext) error {
 // config filename is insufficient when the two front-ends share a directory.
 func validateImportStorage(source, destination string) error {
 	sourceDir, destinationDir := filepath.Dir(source), filepath.Dir(destination)
+	sourceAliases := filepath.Join(sourceDir, "rc_remotes.json")
+	destinationAliases := filepath.Join(destinationDir, "rc_remotes.json")
+	overlapErr := errors.New("legacy and pcsclone configuration must use separate files and directories; choose a separate --config directory before importing")
 	for _, pair := range [][2]string{
 		{source, destination},
 		{sourceDir, destinationDir},
-		{filepath.Join(sourceDir, "rc_remotes.json"), filepath.Join(destinationDir, "rc_remotes.json")},
+		{sourceAliases, destinationAliases},
+		{source, destinationAliases},
+		{sourceAliases, destination},
 	} {
 		sourceInfo, sourceErr := os.Stat(pair[0])
 		destinationInfo, destinationErr := os.Stat(pair[1])
@@ -546,7 +554,23 @@ func validateImportStorage(source, destination string) error {
 			return destinationErr
 		}
 		if sourceErr == nil && destinationErr == nil && os.SameFile(sourceInfo, destinationInfo) {
-			return errors.New("legacy and pcsclone configuration must use separate files and directories; choose a separate --config directory before importing")
+			return overlapErr
+		}
+		// A dangling configuration link can create a legacy alias file during
+		// initialization, even for --dry-run. Check its future save target too.
+		resolvedSource, sourceErr := pcsconfig.ResolveConfigDestination(pair[0])
+		resolvedDestination, destinationErr := pcsconfig.ResolveConfigDestination(pair[1])
+		for _, err := range []error{sourceErr, destinationErr} {
+			if err != nil {
+				return err
+			}
+		}
+		same, err := sameStoragePath(resolvedSource, resolvedDestination)
+		if err != nil {
+			return err
+		}
+		if same {
+			return overlapErr
 		}
 	}
 	return nil

@@ -56,7 +56,11 @@ func localPathsOverlap(a, b string) (bool, error) {
 func validateSelectedLocalPaths(source, destination map[string]Entry, o Options) error {
 	selected := map[string]bool{}
 	for name, entry := range source {
-		if !o.Filter.Match(name) || (entry.IsDir && !o.CreateEmptyDirs) {
+		if entry.IsDir {
+			if !o.CreateEmptyDirs || !o.Filter.MatchDirectory(name) {
+				continue
+			}
+		} else if !o.Filter.Match(name) {
 			continue
 		}
 		for p := name; p != "."; p = path.Dir(p) {
