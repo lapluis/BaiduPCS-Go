@@ -33,6 +33,7 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		{"switch null account", []string{"su"}, true},
 		{"logout without active account", []string{"logout", "-y"}, true},
 		{"export output parent is a file", nil, true},
+		{"invalid upload policy", nil, true},
 		{"valid combined settings", []string{"config", "set", "-appid", "42", "-cache_size", "64KB", "-max_download_rate", "2MB", "-max_upload_rate", "1MB", "-pcs_addr", "c1.pcs.baidu.com"}, false},
 		{"bad flag", []string{"--nonexistent-fixture-flag"}, true},
 		{"bad option value", []string{"config", "set", "-max_download_rate", "invalid-fixture-value"}, true},
@@ -51,6 +52,9 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := tc.args
+			if tc.name == "invalid upload policy" {
+				args = []string{"upload", "-policy", "skpi", t.TempDir(), "/fixture"}
+			}
 			if tc.name == "export output parent is a file" {
 				parent := filepath.Join(t.TempDir(), "blocking-file")
 				if err := os.WriteFile(parent, []byte("retained"), 0600); err != nil {
@@ -67,6 +71,9 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 			configDir := t.TempDir()
 			configPath := filepath.Join(configDir, "pcs_config.json")
 			fixture := `{"appid":266719,"user_agent":"fixture-original"}`
+			if tc.name == "invalid upload policy" {
+				fixture = `{"appid":266719,"user_agent":"fixture-original","u_policy":"overwrite"}`
+			}
 			if tc.name == "sparse accounts" || tc.name == "logout without active account" || strings.HasPrefix(tc.name, "switch ") {
 				fixture = `{"appid":266719,"user_agent":"fixture-original","baidu_user_list":[null,{"uid":7,"name":"fixture-user"}]}`
 			}
@@ -96,6 +103,16 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 				}
 				if stderr.Len() == 0 {
 					t.Fatal("missing error on stderr")
+				}
+				if tc.name == "invalid upload policy" {
+					if !strings.Contains(stderr.String(), "上传同名文件策略") {
+						t.Errorf("invalid policy silently fell back: %s", stderr.String())
+					}
+					for _, name := range []string{"pcs_uploading.json", "pcs_uploading.json.lock"} {
+						if _, err := os.Stat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
+							t.Errorf("invalid policy created resume state %s: %v", name, err)
+						}
+					}
 				}
 				data, err := os.ReadFile(configPath)
 				if err != nil {

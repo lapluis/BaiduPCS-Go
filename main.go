@@ -707,9 +707,7 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunChangeDirectory(c.Args().Get(0), c.Bool("l"))
-
-				return nil
+				return pcscommand.RunChangeDirectoryWithError(c.Args().Get(0), c.Bool("l"))
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -767,11 +765,9 @@ func main() {
 					orderOptions.By = baidupcs.OrderByName
 				}
 
-				pcscommand.RunLs(c.Args().Get(0), &pcscommand.LsOptions{
+				return pcscommand.RunLsWithError(c.Args().Get(0), &pcscommand.LsOptions{
 					Total: c.Bool("l") || c.Parent().Args().Get(0) == "ll",
 				}, orderOptions)
-
-				return nil
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -955,8 +951,7 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunRemove(c.Args()...)
-				return nil
+				return pcscommand.RunRemoveWithError(c.Args()...)
 			},
 		},
 		{
@@ -971,8 +966,7 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunMkdir(c.Args().Get(0))
-				return nil
+				return pcscommand.RunMkdirWithError(c.Args().Get(0))
 			},
 		},
 		{
@@ -999,8 +993,7 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunCopy(c.Args()...)
-				return nil
+				return pcscommand.RunCopyWithError(c.Args()...)
 			},
 		},
 		{
@@ -1030,8 +1023,7 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunMove(c.Args()...)
-				return nil
+				return pcscommand.RunMoveWithError(c.Args()...)
 			},
 		},
 		{
@@ -1099,9 +1091,8 @@ func main() {
 				case "locate":
 					downloadMode = pcsdownload.DownloadModeLocate
 				default:
-					fmt.Println("下载方式解析失败")
 					cli.ShowCommandHelp(c, c.Command.Name)
-					return nil
+					return fmt.Errorf("下载方式解析失败: %q", c.String("mode"))
 				}
 
 				do := &pcscommand.DownloadOptions{
@@ -1120,9 +1111,7 @@ func main() {
 					FullPath:             c.Bool("fullpath"),
 				}
 
-				pcscommand.RunDownload(c.Args(), do)
-
-				return nil
+				return pcscommand.RunDownloadWithError(c.Args(), do)
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -1472,8 +1461,11 @@ func main() {
 							cli.ShowCommandHelp(c, c.Command.Name)
 							return nil
 						}
-						pcscommand.RunShareCancel(converter.SliceStringToInt64(c.Args()))
-						return nil
+						ids, err := converter.ParsePositiveInt64List(c.Args())
+						if err != nil {
+							return err
+						}
+						return pcscommand.RunShareCancelWithError(ids)
 					},
 				},
 			},
@@ -1741,8 +1733,7 @@ func main() {
 							cli.ShowCommandHelp(c, c.Command.Name)
 							return nil
 						}
-						pcscommand.RunRecycleRestore(c.Args()...)
-						return nil
+						return pcscommand.RunRecycleRestoreWithError(c.Args()...)
 					},
 				},
 				{
@@ -1753,17 +1744,18 @@ func main() {
 					Description: `根据文件/目录的 fs_id 或 -all 参数, 删除回收站指定的文件或目录或清空回收站`,
 					Action: func(c *cli.Context) error {
 						if c.Bool("all") {
+							if c.NArg() != 0 {
+								return fmt.Errorf("-all 不能与 fs_id 同时指定")
+							}
 							// 清空回收站
-							pcscommand.RunRecycleClear()
-							return nil
+							return pcscommand.RunRecycleClearWithError()
 						}
 
 						if c.NArg() <= 0 {
 							cli.ShowCommandHelp(c, c.Command.Name)
 							return nil
 						}
-						pcscommand.RunRecycleDelete(c.Args()...)
-						return nil
+						return pcscommand.RunRecycleDeleteWithError(c.Args()...)
 					},
 					Flags: []cli.Flag{
 						cli.BoolFlag{

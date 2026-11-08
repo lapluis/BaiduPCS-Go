@@ -2,11 +2,11 @@ package pcscommand
 
 import (
 	"fmt"
+	"github.com/olekukonko/tablewriter"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/pcstime"
-	"github.com/olekukonko/tablewriter"
 	"os"
 	"strconv"
 )
@@ -40,47 +40,68 @@ func RunRecycleList(page int) {
 
 // RunRecycleRestore 执行还原回收站文件或目录
 func RunRecycleRestore(fidStrList ...string) {
-	var (
-		fidList = converter.SliceStringToInt64(fidStrList)
-		pcs     = GetBaiduPCS()
-		ex, err = pcs.RecycleRestore(fidList...)
-	)
-	if err != nil {
+	if err := RunRecycleRestoreWithError(fidStrList...); err != nil {
 		fmt.Println(err)
+	}
+}
+
+// RunRecycleRestoreWithError validates all IDs before restoring any item.
+func RunRecycleRestoreWithError(fidStrList ...string) error {
+	fidList, err := converter.ParsePositiveInt64List(fidStrList)
+	if err != nil {
+		return err
+	}
+	ex, err := GetBaiduPCS().RecycleRestore(fidList...)
+	if err != nil {
 		if len(ex) > 0 {
 			fmt.Printf("\n以下的 fs_id 还原成功, 数量: %d\n", len(ex))
 			for k := range ex {
 				fmt.Println(ex[k].FsID)
 			}
 		}
-		return
+		return err
 	}
 
 	fmt.Printf("还原成功, 数量: %d\n", len(ex))
+	return nil
 }
 
 // RunRecycleDelete 执行删除回收站文件或目录
 func RunRecycleDelete(fidStrList ...string) {
-	var (
-		fidList = converter.SliceStringToInt64(fidStrList)
-		pcs     = GetBaiduPCS()
-		err     = pcs.RecycleDelete(fidList...)
-	)
-	if err != nil {
+	if err := RunRecycleDeleteWithError(fidStrList...); err != nil {
 		fmt.Println(err)
-		return
+	}
+}
+
+// RunRecycleDeleteWithError validates all IDs before permanently deleting items.
+func RunRecycleDeleteWithError(fidStrList ...string) error {
+	fidList, err := converter.ParsePositiveInt64List(fidStrList)
+	if err != nil {
+		return err
+	}
+	err = GetBaiduPCS().RecycleDelete(fidList...)
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("删除成功\n")
+	return nil
 }
 
 // RunRecycleClear 清空回收站
 func RunRecycleClear() {
+	if err := RunRecycleClearWithError(); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunRecycleClearWithError returns a failed clear operation to its caller.
+func RunRecycleClearWithError() error {
 	pcs := GetBaiduPCS()
 	sussNum, err := pcs.RecycleClear()
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 	fmt.Printf("清空回收站成功, 数量: %d\n", sussNum)
+	return nil
 }

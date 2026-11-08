@@ -34,18 +34,29 @@ func RunShareSet(paths []string, option *baidupcs.ShareOption) {
 
 // RunShareCancel 执行取消分享
 func RunShareCancel(shareIDs []int64) {
+	if err := RunShareCancelWithError(shareIDs); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunShareCancelWithError validates IDs and returns any cancellation failure.
+func RunShareCancelWithError(shareIDs []int64) error {
 	if len(shareIDs) == 0 {
-		fmt.Printf("%s失败, 没有任何 shareid\n", baidupcs.OperationShareCancel)
-		return
+		return fmt.Errorf("%s失败, 没有任何 shareid", baidupcs.OperationShareCancel)
+	}
+	for _, id := range shareIDs {
+		if id <= 0 {
+			return fmt.Errorf("shareid %d 必须为正整数", id)
+		}
 	}
 
 	err := GetBaiduPCS().ShareCancel(shareIDs)
 	if err != nil {
-		fmt.Printf("%s失败: %s\n", baidupcs.OperationShareCancel, err)
-		return
+		return fmt.Errorf("%s失败: %w", baidupcs.OperationShareCancel, err)
 	}
 
 	fmt.Printf("%s成功\n", baidupcs.OperationShareCancel)
+	return nil
 }
 
 // RunShareList 执行列出分享列表

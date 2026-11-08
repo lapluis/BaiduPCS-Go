@@ -2,11 +2,11 @@ package pcscommand
 
 import (
 	"fmt"
+	"github.com/olekukonko/tablewriter"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/pcstime"
-	"github.com/olekukonko/tablewriter"
 	"os"
 	"strconv"
 )
@@ -31,16 +31,21 @@ const (
 
 // RunLs 执行列目录
 func RunLs(pcspath string, lsOptions *LsOptions, orderOptions *baidupcs.OrderOptions) {
+	if err := RunLsWithError(pcspath, lsOptions, orderOptions); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunLsWithError lists a directory and preserves matching and API errors.
+func RunLsWithError(pcspath string, lsOptions *LsOptions, orderOptions *baidupcs.OrderOptions) error {
 	err := matchPathByShellPatternOnce(&pcspath)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 
 	files, err := GetBaiduPCS().FilesDirectoriesList(pcspath, orderOptions)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 
 	fmt.Printf("\n当前目录: %s\n----\n", pcspath)
@@ -50,7 +55,7 @@ func RunLs(pcspath string, lsOptions *LsOptions, orderOptions *baidupcs.OrderOpt
 	}
 
 	renderTable(opLs, lsOptions.Total, pcspath, files)
-	return
+	return nil
 }
 
 // RunSearch 执行搜索

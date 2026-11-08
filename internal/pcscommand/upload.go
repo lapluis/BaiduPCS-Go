@@ -1,6 +1,8 @@
 package pcscommand
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
@@ -15,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -52,6 +55,41 @@ func uploadFailureError(failed int) error {
 
 // RunUpload 执行文件上传
 func RunUpload(localPaths []string, savePath string, opt *UploadOptions) error {
+	return runUpload(localPaths, savePath, opt, watchUploadSignals)
+}
+
+// Each invocation owns its listener until cleanup has joined the goroutine.
+func watchUploadSignals(executor *taskframework.TaskExecutor) func() {
+	sigChan := make(chan os.Signal, 2)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signalDone := make(chan struct{})
+	signalFinished := make(chan struct{})
+	go func() {
+		defer close(signalFinished)
+		select {
+		case <-sigChan:
+		case <-signalDone:
+			return
+		}
+		fmt.Println("\n收到退出信号, 等待进行中的分片完成 (再次 Ctrl+C 强制退出)...")
+		executor.Stop()
+		pcsupload.GracefulStopActiveUploaders()
+		select {
+		case <-sigChan:
+		case <-signalDone:
+			return
+		}
+		fmt.Println("强制退出")
+		os.Exit(130)
+	}()
+	return func() {
+		signal.Stop(sigChan)
+		close(signalDone)
+		<-signalFinished
+	}
+}
+
+func runUpload(localPaths []string, savePath string, opt *UploadOptions, listen func(*taskframework.TaskExecutor) func()) error {
 	if opt == nil {
 		opt = &UploadOptions{}
 	}
@@ -71,8 +109,11 @@ func RunUpload(localPaths []string, savePath string, opt *UploadOptions) error {
 		opt.Load = pcsconfig.Config.MaxUploadLoad
 	}
 
-	if opt.Policy != baidupcs.SkipPolicy && opt.Policy != baidupcs.OverWritePolicy && opt.Policy != baidupcs.RsyncPolicy {
+	if opt.Policy == "" {
 		opt.Policy = pcsconfig.Config.UPolicy
+	}
+	if opt.Policy != baidupcs.SkipPolicy && opt.Policy != baidupcs.OverWritePolicy && opt.Policy != baidupcs.RsyncPolicy {
+		return fmt.Errorf("无效的上传同名文件策略 %q, 支持 %s、%s、%s", opt.Policy, baidupcs.SkipPolicy, baidupcs.OverWritePolicy, baidupcs.RsyncPolicy)
 	}
 
 	err := matchPathByShellPatternOnce(&savePath)
@@ -103,18 +144,8 @@ func RunUpload(localPaths []string, savePath string, opt *UploadOptions) error {
 		statistic = &pcsupload.UploadStatistic{}
 	)
 
-	// 优雅退出: 第一次 Ctrl+C 停止派发新任务并等待进行中的分片完成后保存进度, 第二次 Ctrl+C 强制退出
-	sigChan := make(chan os.Signal, 2)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		fmt.Println("\n收到退出信号, 等待进行中的分片完成 (再次 Ctrl+C 强制退出)...")
-		executor.Stop()
-		pcsupload.GracefulStopActiveUploaders()
-		<-sigChan
-		fmt.Println("强制退出")
-		os.Exit(130)
-	}()
+	stopListening := sync.OnceFunc(listen(executor))
+	defer stopListening()
 
 	fmt.Print("\n")
 	fmt.Printf("[0] 提示: 当前上传单个文件最大并发量为: %d, 最大同时上传文件数为: %d\n", opt.Parallel, opt.Load)
@@ -179,9 +210,16 @@ func RunUpload(localPaths []string, savePath string, opt *UploadOptions) error {
 	executor.SetParallel(LoadCount)
 	// 执行上传任务
 	executor.Execute()
+	// Join any signal handler before freezing the final stopped state.
+	stopListening()
+	stopped := executor.Stopped()
 
 	fmt.Printf("\n")
-	fmt.Printf("上传结束, 时间: %s, 总大小: %s\n", statistic.Elapsed()/1e6*1e6, converter.ConvertFileSize(statistic.TotalSize()))
+	if stopped {
+		fmt.Printf("上传已取消, 剩余文件数: %d, 时间: %s, 总大小: %s\n", executor.Count(), statistic.Elapsed()/1e6*1e6, converter.ConvertFileSize(statistic.TotalSize()))
+	} else {
+		fmt.Printf("上传结束, 时间: %s, 总大小: %s\n", statistic.Elapsed()/1e6*1e6, converter.ConvertFileSize(statistic.TotalSize()))
+	}
 
 	// 输出上传失败的文件列表
 	failedList := executor.FailedDeque()
@@ -195,5 +233,9 @@ func RunUpload(localPaths []string, savePath string, opt *UploadOptions) error {
 		}
 		tb.Render()
 	}
-	return uploadFailureError(failedCount)
+	resultErr := uploadFailureError(failedCount)
+	if stopped {
+		return errors.Join(resultErr, fmt.Errorf("上传已取消, 剩余文件数: %d: %w", executor.Count(), context.Canceled))
+	}
+	return resultErr
 }
