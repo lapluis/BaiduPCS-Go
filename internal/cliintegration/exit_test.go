@@ -32,6 +32,7 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		{"switch sparse account", []string{"su"}, false},
 		{"switch null account", []string{"su"}, true},
 		{"logout without active account", []string{"logout", "-y"}, true},
+		{"export output parent is a file", nil, true},
 		{"valid combined settings", []string{"config", "set", "-appid", "42", "-cache_size", "64KB", "-max_download_rate", "2MB", "-max_upload_rate", "1MB", "-pcs_addr", "c1.pcs.baidu.com"}, false},
 		{"bad flag", []string{"--nonexistent-fixture-flag"}, true},
 		{"bad option value", []string{"config", "set", "-max_download_rate", "invalid-fixture-value"}, true},
@@ -49,7 +50,15 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		{"partial server update", []string{"config", "set", "-appid", "42", "-pcs_addr", "bad"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(binary, tc.args...)
+			args := tc.args
+			if tc.name == "export output parent is a file" {
+				parent := filepath.Join(t.TempDir(), "blocking-file")
+				if err := os.WriteFile(parent, []byte("retained"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"export", "-out", filepath.Join(parent, "child"), "/fixture.txt"}
+			}
+			cmd := exec.Command(binary, args...)
 			for _, entry := range os.Environ() {
 				if !strings.HasPrefix(strings.ToUpper(entry), "BAIDUPCS_GO_CONFIG_DIR=") {
 					cmd.Env = append(cmd.Env, entry)

@@ -1511,7 +1511,7 @@ func main() {
 					pcspaths = []string{"."}
 				}
 
-				pcscommand.RunExport(pcspaths, &pcscommand.ExportOptions{
+				return pcscommand.RunExportWithError(pcspaths, &pcscommand.ExportOptions{
 					RootPath:   c.String("root"),
 					SavePath:   c.String("out"),
 					MaxRetry:   c.Int("retry"),
@@ -1519,7 +1519,6 @@ func main() {
 					LinkFormat: c.Bool("link"),
 					StdOut:     c.Bool("stdout"),
 				})
-				return nil
 			},
 			Flags: []cli.Flag{
 				cli.StringFlag{
