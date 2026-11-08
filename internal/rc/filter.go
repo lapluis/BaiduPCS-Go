@@ -67,11 +67,6 @@ func glob(s string) (*regexp.Regexp, error) {
 	anchored := strings.HasPrefix(s, "/")
 	s = strings.TrimPrefix(s, "/")
 	var b strings.Builder
-	if anchored || strings.Contains(s, "/") {
-		b.WriteString("^")
-	} else {
-		b.WriteString("(^|/)")
-	}
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
 		case '*':
@@ -80,6 +75,7 @@ func glob(s string) (*regexp.Regexp, error) {
 				// Recursive wildcards must cover them as well as separators.
 				i++
 				if i+1 < len(s) && s[i+1] == '/' {
+					anchored = true
 					i++
 					b.WriteString("(?s:.*/)?")
 				} else {
@@ -91,11 +87,31 @@ func glob(s string) (*regexp.Regexp, error) {
 		case '?':
 			b.WriteString("[^/]")
 		case '[':
-			j := strings.IndexByte(s[i+1:], ']')
-			if j < 0 {
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '\\' {
+					// An escaped bracket belongs to the class, not its delimiter.
+					j += 2
+					continue
+				}
+				if strings.HasPrefix(s[j:], "[:") {
+					// POSIX classes have their own closing bracket.
+					end := strings.Index(s[j+2:], ":]")
+					if end < 0 {
+						return nil, fmt.Errorf("invalid filter %q", s)
+					}
+					j += end + 4
+					continue
+				}
+				if s[j] == ']' {
+					break
+				}
+				j++
+			}
+			if j >= len(s) {
 				return nil, fmt.Errorf("invalid filter %q", s)
 			}
-			part := s[i : i+j+2]
+			part := s[i : j+1]
 			if strings.HasPrefix(part, "[!") {
 				part = "[^" + part[2:]
 			}
@@ -104,13 +120,22 @@ func glob(s string) (*regexp.Regexp, error) {
 				return nil, err
 			}
 			b.WriteString(class)
-			i += j + 1
+			i = j
 		default:
+			// Separators inside a character class do not make a basename
+			// pattern root-relative; the entire class was consumed above.
+			if s[i] == '/' {
+				anchored = true
+			}
 			b.WriteString(regexp.QuoteMeta(s[i : i+1]))
 		}
 	}
 	b.WriteString("$")
-	return regexp.Compile(b.String())
+	prefix := "(^|/)"
+	if anchored {
+		prefix = "^"
+	}
+	return regexp.Compile(prefix + b.String())
 }
 func NewFilter(include, exclude []string, files string) (Filter, error) {
 	f := Filter{}

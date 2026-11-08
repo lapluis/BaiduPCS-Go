@@ -2,6 +2,7 @@ package cachepool
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -16,19 +17,19 @@ type Cache interface {
 }
 
 type cache struct {
-	isUsed bool
+	isUsed atomic.Bool
 	b      []byte
 }
 
 func (c *cache) Bytes() []byte {
-	if !c.isUsed {
+	if !c.isUsed.Load() {
 		return nil
 	}
 	return c.b
 }
 
 func (c *cache) Free() {
-	c.isUsed = false
+	c.isUsed.Store(false)
 }
 
 type cachePool2 struct {
@@ -40,17 +41,17 @@ func (cp2 *cachePool2) Require(size int) Cache {
 	cp2.mu.Lock()
 	defer cp2.mu.Unlock()
 	for k := range cp2.pool {
-		if cp2.pool[k] == nil || cp2.pool[k].isUsed || len(cp2.pool[k].b) < size {
+		if cp2.pool[k] == nil || cp2.pool[k].isUsed.Load() || len(cp2.pool[k].b) < size {
 			continue
 		}
 
-		cp2.pool[k].isUsed = true
+		cp2.pool[k].isUsed.Store(true)
 		return cp2.pool[k]
 	}
 	newCache := &cache{
-		isUsed: true,
-		b:      RawMallocByteSlice(size),
+		b: RawMallocByteSlice(size),
 	}
+	newCache.isUsed.Store(true)
 	cp2.addCache(newCache)
 	return newCache
 }
@@ -73,7 +74,7 @@ func (cp2 *cachePool2) DeleteNotUsed() {
 			continue
 		}
 
-		if !cp2.pool[k].isUsed {
+		if !cp2.pool[k].isUsed.Load() {
 			cp2.pool[k] = nil
 		}
 	}

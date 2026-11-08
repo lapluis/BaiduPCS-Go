@@ -2,6 +2,7 @@ package rc
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"unicode"
 	"unicode/utf8"
@@ -10,7 +11,7 @@ import (
 func FuzzFilterClassRanges(f *testing.F) {
 	for _, seed := range [][3]uint32{
 		{'.', '0', '/'}, {'a', 'z', 'm'}, {0, unicode.MaxRune, '\n'},
-		{'/', '/', '/'}, {'α', 'ω', 'λ'}, {'A', 'Z', 'a'},
+		{'/', '/', '/'}, {'/', 'Y', 'Y'}, {'α', 'ω', 'λ'}, {'A', 'Z', 'a'},
 	} {
 		f.Add(seed[0], seed[1], seed[2], false)
 		f.Add(seed[0], seed[1], seed[2], true)
@@ -34,13 +35,23 @@ func FuzzFilterClassRanges(f *testing.F) {
 			want = !want
 		}
 		want = want && r != '/'
-		included, err := NewFilter([]string{pattern}, nil, "")
-		if err != nil || included.Match(name) != want {
-			t.Fatalf("include %q matched %q = %t, want %t, err=%v", pattern, name, included.Match(name), want, err)
-		}
-		excluded, err := NewFilter(nil, []string{pattern}, "")
-		if err != nil || excluded.Match(name) == want {
-			t.Fatalf("exclude %q matched %q = %t, want %t, err=%v", pattern, name, excluded.Match(name), !want, err)
+		// Literal and hex-escaped slashes describe the same character set.
+		// Neither turns this basename rule into a root-relative path rule.
+		for _, rule := range []string{pattern, strings.ReplaceAll(pattern, `\x{2F}`, "/")} {
+			included, err := NewFilter([]string{rule}, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			excluded, err := NewFilter(nil, []string{rule}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, parent := range []string{"", "dir/", "dir/deep/"} {
+				candidate := parent + name
+				if included.Match(candidate) != want || excluded.Match(candidate) == want {
+					t.Fatalf("rule %q name=%q include=%t exclude=%t want=%t/%t", rule, candidate, included.Match(candidate), excluded.Match(candidate), want, !want)
+				}
+			}
 		}
 	})
 }

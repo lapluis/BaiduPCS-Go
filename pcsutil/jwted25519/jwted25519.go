@@ -3,7 +3,6 @@ package jwted25519
 import (
 	"github.com/dgrijalva/jwt-go"
 	"golang.org/x/crypto/ed25519"
-	"unsafe"
 )
 
 type (
@@ -32,7 +31,7 @@ func (m *SigningMethodEd25519) Sign(signingString string, key interface{}) (stri
 			return "", jwt.ErrInvalidKey
 		}
 
-		signature := ed25519.Sign(privkey, *(*[]byte)(unsafe.Pointer(&signingString)))
+		signature := ed25519.Sign(privkey, []byte(signingString))
 		return jwt.EncodeSegment(signature), nil
 	}
 
@@ -54,7 +53,7 @@ func (m *SigningMethodEd25519) Verify(signingString, signature string, key inter
 		return err
 	}
 
-	ok = ed25519.Verify(pubkey, *(*[]byte)(unsafe.Pointer(&signingString)), message)
+	ok = ed25519.Verify(pubkey, []byte(signingString), message)
 	if !ok {
 		return jwt.ErrSignatureInvalid
 	}

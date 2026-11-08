@@ -16,20 +16,19 @@ var (
 type cachePool struct {
 	lastID    int32
 	cachepool sync.Map
+	growMu    sync.Mutex
 }
 
 func (cp *cachePool) Apply(size int) (id int32) {
+	cache := RawMallocByteSlice(size)
 	for {
-		_, ok := cp.cachepool.Load(cp.lastID)
-		atomic.AddInt32(&cp.lastID, 1)
-		if ok {
-			continue
+		id = atomic.AddInt32(&cp.lastID, 1)
+		// Reserve the exact ID returned by the atomic increment. Another
+		// caller may advance lastID before this allocation is published.
+		if _, loaded := cp.cachepool.LoadOrStore(id, cache); !loaded {
+			return id
 		}
-		break
 	}
-
-	cp.Set(cp.lastID, size)
-	return cp.lastID
 }
 
 func (cp *cachePool) Existed(id int32) (existed bool) {
@@ -48,22 +47,22 @@ func (cp *cachePool) Get(id int32) []byte {
 func (cp *cachePool) Set(id int32, size int) []byte {
 	cache := RawMallocByteSlice(size)
 	cp.cachepool.Store(id, cache)
-	return cp.Get(id)
+	return cache
 }
 
 func (cp *cachePool) SetIfNotExist(id int32, size int) []byte {
-	ok := cp.Existed(id)
+	// Serialize conditional growth so a smaller request cannot overwrite a
+	// larger allocation after observing the same older buffer.
+	cp.growMu.Lock()
+	defer cp.growMu.Unlock()
 	cache := cp.Get(id)
-	if !ok || len(cache) < size {
-		cache = nil
-		cp.Delete(id)
-		cp.Set(id, size)
+	if cache == nil || len(cache) < size {
+		return cp.Set(id, size)
 	}
-	return cp.Get(id)
+	return cache
 }
 
 func (cp *cachePool) Delete(id int32) {
-	cp.cachepool.Store(id, nil)
 	cp.cachepool.Delete(id)
 }
 

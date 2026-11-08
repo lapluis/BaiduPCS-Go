@@ -106,6 +106,7 @@ func (cli *uploadCLIExecutable) run(t *testing.T, root, mode, source, proxy stri
 	cmd := exec.CommandContext(ctx, cli.binary, "--config", config, mode, source, "bd:/target", "-P", "--retries", "0", "--transfers", "1")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "BAIDUPCS_GO_CONFIG_DIR="+root, "BAIDUPCS_GO_VERBOSE=0", "PCS_TEST_UPLOAD_CLI=1", "PCS_TEST_UPLOAD_ROOT="+cli.rootPEM, "GODEBUG="+os.Getenv("GODEBUG")+",x509usefallbackroots=1")
+	cmd.Env = childRaceEnv(t, cmd.Env)
 	cmd.WaitDelay = 5 * time.Second
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {

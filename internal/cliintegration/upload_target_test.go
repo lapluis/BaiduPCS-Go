@@ -30,6 +30,10 @@ import (
 // ordinary worker processes. Only these subprocesses trust the synthetic TLS CA;
 // neither the product binary nor the machine certificate store is changed.
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "__pcs_test_race_enabled" {
+		fmt.Printf("pcsclone-test-race=%t\n", cliRaceEnabled)
+		os.Exit(0)
+	}
 	if os.Getenv("PCS_TEST_UPLOAD_CLI") == "1" {
 		certificate, err := base64.StdEncoding.DecodeString(os.Getenv("PCS_TEST_UPLOAD_ROOT"))
 		roots := x509.NewCertPool()
@@ -52,11 +56,12 @@ func newUploadCLIExecutable(t *testing.T) *uploadCLIExecutable {
 	binary := filepath.Join(t.TempDir(), "pcsclone-test.exe")
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer buildCancel()
-	build := exec.CommandContext(buildCtx, "go", "test", "-c", "-o", binary, "./internal/cliintegration")
+	build := exec.CommandContext(buildCtx, "go", cliBuildArgs("test", "-c", "-o", binary, "./internal/cliintegration")...)
 	build.Dir = repo
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
+	assertCLIRaceBuild(t, binary, true)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)

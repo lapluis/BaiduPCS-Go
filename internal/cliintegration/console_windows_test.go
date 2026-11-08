@@ -60,16 +60,18 @@ func TestWindowsConsoleDownloadInterruptAndResume(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "pcsclone.exe")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	build := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/pcsclone")
+	build := exec.CommandContext(ctx, "go", cliBuildArgs("build", "-o", binary, "./cmd/pcsclone")...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
+	assertCLIRaceBuild(t, binary, false)
 	for _, mode := range []string{"plain", "shared-partial", "remote-changed"} {
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWindowsConsoleDownloadProcessFixture$")
 			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE, HideWindow: true}
 			cmd.Env = append(os.Environ(), "PCS_CONSOLE_DOWNLOAD_BINARY="+binary, "PCS_CONSOLE_DOWNLOAD_ROOT="+t.TempDir(), "PCS_CONSOLE_DOWNLOAD_MODE="+mode)
+			cmd.Env = childRaceEnv(t, cmd.Env)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("isolated download cancellation: %v\n%s", err, output)
 			}

@@ -16,11 +16,12 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(t.TempDir(), "pcs-test.exe")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", cliBuildArgs("build", "-o", binary, ".")...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
+	assertCLIRaceBuild(t, binary, false)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -70,6 +71,7 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd.Env = append(cmd.Env, "BAIDUPCS_GO_CONFIG_DIR="+configDir)
+			cmd.Env = childRaceEnv(t, cmd.Env)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			err := cmd.Run()

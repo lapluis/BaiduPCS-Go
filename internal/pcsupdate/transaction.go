@@ -1,6 +1,7 @@
 package pcsupdate
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -14,11 +15,11 @@ func commitUpdates(entries []stagedUpdate, rename func(string, string) error) (b
 		var restoreErr error
 		for i := moved - 1; i >= 0; i-- {
 			if err := rename(entries[i].backup, entries[i].target); err != nil {
-				restoreErr = fmt.Errorf("restore %s: %w", entries[i].target, err)
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("restore %s: %w", entries[i].target, err))
 			}
 		}
 		if restoreErr != nil {
-			return false, fmt.Errorf("install failed: %v; rollback failed: %w; backups retained", cause, restoreErr)
+			return false, fmt.Errorf("install failed: %w; rollback failed: %w; backups retained", cause, restoreErr)
 		}
 		return true, cause
 	}
