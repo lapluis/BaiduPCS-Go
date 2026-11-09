@@ -13,6 +13,13 @@ import (
 
 // RunRecycleList 执行列出回收站文件列表
 func RunRecycleList(page int) {
+	if err := RunRecycleListWithError(page); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunRecycleListWithError returns request and response failures to the CLI.
+func RunRecycleListWithError(page int) error {
 	if page < 1 {
 		page = 1
 	}
@@ -20,8 +27,7 @@ func RunRecycleList(page int) {
 	pcs := GetBaiduPCS()
 	fdl, err := pcs.RecycleList(page)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 
 	tb := pcstable.NewTable(os.Stdout)
@@ -36,6 +42,7 @@ func RunRecycleList(page int) {
 	}
 
 	tb.Render()
+	return nil
 }
 
 // RunRecycleRestore 执行还原回收站文件或目录

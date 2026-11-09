@@ -76,3 +76,26 @@ func TestFinalProgressBypassesLogThrottle(t *testing.T) {
 		}
 	}
 }
+
+func TestWaitingProgressInRedirectedLogs(t *testing.T) {
+	for _, jsonLog := range []bool{false, true} {
+		var out bytes.Buffer
+		sink := &logSink{w: &out, level: "INFO", json: jsonLog}
+		sink.Progress(rc.ProgressSnapshot{Done: 40, Total: 100, Active: 1, Count: 2, Pending: 1,
+			Files: []rc.FileProgress{{Path: "large.mkv", Done: 40, Total: 100, Idle: 6 * time.Second}}})
+		sink.Progress(rc.ProgressSnapshot{Final: true, Done: 40, Total: 100, Canceled: 1, Pending: 1, Count: 2})
+		if err := sink.Close(); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 || !strings.Contains(lines[0], "waiting=1") || !strings.Contains(lines[0], "0.0 B/s") ||
+			!strings.Contains(lines[1], "canceled=1 pending=1") || strings.Contains(lines[1], "waiting=") {
+			t.Fatalf("waiting or final outcome lost: %q", out.String())
+		}
+		for _, line := range lines {
+			if strings.Contains(line, "\x1b") || jsonLog && !json.Valid([]byte(line)) {
+				t.Fatalf("invalid redirected output: %q", line)
+			}
+		}
+	}
+}

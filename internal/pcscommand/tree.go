@@ -1,6 +1,7 @@
 package pcscommand
 
 import (
+	"errors"
 	"fmt"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"strings"
@@ -19,7 +20,7 @@ type (
 	}
 )
 
-func getTree(pcspath string, depth int, option *TreeOptions) {
+func getTree(pcspath string, depth int, option *TreeOptions) error {
 	var (
 		err   error
 		files baidupcs.FileDirectoryList
@@ -27,15 +28,13 @@ func getTree(pcspath string, depth int, option *TreeOptions) {
 	if depth == 0 {
 		err := matchPathByShellPatternOnce(&pcspath)
 		if err != nil {
-			fmt.Println(err)
-			return
+			return fmt.Errorf("%s: %w", pcspath, err)
 		}
 	}
 
 	files, err = GetBaiduPCS().FilesDirectoriesList(pcspath, baidupcs.DefaultOrderOptions)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return fmt.Errorf("%s: %w", pcspath, err)
 	}
 
 	var (
@@ -43,6 +42,7 @@ func getTree(pcspath string, depth int, option *TreeOptions) {
 		fN              = len(files)
 		indentPrefixStr = strings.Repeat(indentPrefix, depth)
 	)
+	var failures []error
 	for i, file := range files {
 		if file.Isdir {
 			if option.ShowFsid {
@@ -51,7 +51,9 @@ func getTree(pcspath string, depth int, option *TreeOptions) {
 				fmt.Printf("%v%v %v/\n", indentPrefixStr, pathPrefix, file.Filename)
 			}
 			if option.Depth < 0 || depth < option.Depth {
-				getTree(file.Path, depth+1, option)
+				if err := getTree(file.Path, depth+1, option); err != nil {
+					failures = append(failures, err)
+				}
 			}
 			continue
 		}
@@ -66,10 +68,23 @@ func getTree(pcspath string, depth int, option *TreeOptions) {
 		}
 	}
 
-	return
+	return errors.Join(failures...)
 }
 
 // RunTree 列出树形图
 func RunTree(path string, depth int, option *TreeOptions) {
-	getTree(path, depth, option)
+	if err := RunTreeWithError(path, depth, option); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunTreeWithError retains partial output and every failed directory's cause.
+func RunTreeWithError(path string, depth int, option *TreeOptions) error {
+	if depth < 0 {
+		return fmt.Errorf("目录树起始深度不能为负数: %d", depth)
+	}
+	if option == nil {
+		option = &TreeOptions{Depth: -1}
+	}
+	return getTree(path, depth, option)
 }

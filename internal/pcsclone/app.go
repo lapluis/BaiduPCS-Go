@@ -172,27 +172,37 @@ func (a *App) run(raw []string) (code int) {
 }
 
 func (a *App) reportCancellation(err error) int {
-	if errors.Is(err, rc.ErrLogCallback) || errors.Is(err, rc.ErrProgressCallback) {
+	if hasCancellationDiagnostic(err) {
 		fmt.Fprintln(a.Stderr, "pcsclone:", err)
-		fmt.Fprintln(a.Stderr, "pcsclone: canceled")
-		return 130
-	}
-	checkpointFailure := errors.Is(err, rc.ErrCheckpointSave)
-	protocolFailure := errors.Is(err, rc.ErrWorkerProtocol)
-	if checkpointFailure {
-		fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrCheckpointSave)
-	}
-	if protocolFailure {
-		fmt.Fprintln(a.Stderr, "pcsclone:", rc.ErrWorkerProtocol)
-	}
-	var logErr *logOutputError
-	if err != nil && !errors.Is(err, context.Canceled) && !checkpointFailure && !protocolFailure {
-		fmt.Fprintln(a.Stderr, "pcsclone:", err)
-	} else if errors.As(err, &logErr) {
-		fmt.Fprintln(a.Stderr, "pcsclone:", logErr)
 	}
 	fmt.Fprintln(a.Stderr, "pcsclone: canceled")
 	return 130
+}
+
+// hasCancellationDiagnostic distinguishes cancellation-only error trees from
+// trees containing an independent failure. Keep a mixed diagnostic intact:
+// wrappers can carry file/command context not available through Unwrap alone.
+func hasCancellationDiagnostic(err error) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, context.Canceled) {
+		return true
+	}
+	switch e := err.(type) {
+	case *logOutputError:
+		// A canceled log write/close is an output failure in its own right.
+		return true
+	case interface{ Unwrap() []error }:
+		for _, child := range e.Unwrap() {
+			if hasCancellationDiagnostic(child) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasCancellationDiagnostic(e.Unwrap())
+	}
+	return false
 }
 
 func (a *App) report(err error) int {

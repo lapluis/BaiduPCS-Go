@@ -1,6 +1,7 @@
 package pcscommand
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -61,6 +62,13 @@ func RunShareCancelWithError(shareIDs []int64) error {
 
 // RunShareList 执行列出分享列表
 func RunShareList(page int) {
+	if err := RunShareListWithError(page); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunShareListWithError keeps available rows and reports list/detail failures.
+func RunShareListWithError(page int) error {
 	if page < 1 {
 		page = 1
 	}
@@ -68,12 +76,12 @@ func RunShareList(page int) {
 	pcs := GetBaiduPCS()
 	records, err := pcs.ShareList(page)
 	if err != nil {
-		fmt.Printf("%s失败: %s\n", baidupcs.OperationShareList, err)
-		return
+		return fmt.Errorf("%s失败: %w", baidupcs.OperationShareList, err)
 	}
 
 	tb := pcstable.NewTable(os.Stdout)
 	tb.SetHeader([]string{"#", "ShareID", "分享链接", "提取密码", "特征目录", "特征路径", "过期时间", "浏览次数"})
+	var failures []error
 	for k, record := range records {
 		if record.ExpireType == -1 {
 			record.Valid = "已过期" // 已失效分享
@@ -88,18 +96,20 @@ func RunShareList(page int) {
 
 		}
 		// 获取Passwd
+		password := record.Passwd
 		if record.Public == 0 && record.ExpireType != -1 {
 			// 私密分享
 			info, pcsError := pcs.ShareSURLInfo(record.ShareID)
 			if pcsError != nil {
-				// 获取错误
-				fmt.Printf("[%d] 获取分享密码错误: %s\n", k, pcsError)
+				failures = append(failures, fmt.Errorf("[ShareID %d] 获取分享密码失败: %w", record.ShareID, pcsError))
+				password = "查询失败"
 			} else {
-				record.Passwd = strings.TrimSpace(info.Pwd)
+				password = strings.TrimSpace(info.Pwd)
 			}
 		}
 
-		tb.Append([]string{strconv.Itoa(k), strconv.FormatInt(record.ShareID, 10), record.Shortlink, record.Passwd, path.Clean(path.Dir(record.TypicalPath)), record.TypicalPath, record.Valid, strconv.Itoa(record.ViewCount)})
+		tb.Append([]string{strconv.Itoa(k), strconv.FormatInt(record.ShareID, 10), record.Shortlink, password, path.Clean(path.Dir(record.TypicalPath)), record.TypicalPath, record.Valid, strconv.Itoa(record.ViewCount)})
 	}
 	tb.Render()
+	return errors.Join(failures...)
 }

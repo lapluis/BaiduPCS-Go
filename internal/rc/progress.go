@@ -76,6 +76,7 @@ func (r Result) String() string {
 type FileProgress struct {
 	Path              string
 	Done, Total, Rate int64
+	Idle              time.Duration
 }
 type ProgressSnapshot struct {
 	Files                            []FileProgress
@@ -114,7 +115,17 @@ func (p ProgressSnapshot) String() string {
 	if p.Rate > 0 && p.ETA >= 0 {
 		eta = p.ETA.Round(time.Second).String()
 	}
-	return fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d canceled=%d pending=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed, p.Canceled, p.Pending)
+	text := fmt.Sprintf("%.1f%% | %s / %s | %s/s | elapsed %s | ETA %s | files %d/%d | active=%d failed=%d canceled=%d pending=%d", percent, humanBytes(p.Done), humanBytes(p.Total), humanBytes(p.Rate), p.Elapsed.Round(time.Second), eta, p.Completed, p.Count, p.Active, p.Failed, p.Canceled, p.Pending)
+	waiting := 0
+	for _, f := range p.Files {
+		if f.Idle >= 5*time.Second {
+			waiting++
+		}
+	}
+	if waiting > 0 {
+		text += fmt.Sprintf(" waiting=%d", waiting)
+	}
+	return text
 }
 func (p ProgressSnapshot) Lines() []string {
 	percent := p.percentage()
@@ -133,12 +144,16 @@ func (p ProgressSnapshot) Lines() []string {
 			}
 			return r
 		}, f.Path)
-		name = runewidth.Truncate(name, 44, "...")
 		percent := float64(0)
 		if f.Total > 0 {
 			percent = 100 * float64(f.Done) / float64(f.Total)
 		}
-		lines = append(lines, fmt.Sprintf("%5.1f%% | %s/s | %s", percent, humanBytes(f.Rate), name))
+		prefix := fmt.Sprintf("%5.1f%% | %s/s | ", percent, humanBytes(f.Rate))
+		if f.Idle >= 5*time.Second {
+			prefix += fmt.Sprintf("waiting %s | ", f.Idle.Truncate(time.Second))
+		}
+		name = runewidth.Truncate(name, max(3, 78-runewidth.StringWidth(prefix)), "...")
+		lines = append(lines, prefix+name)
 	}
 	for i := range lines {
 		lines[i] = runewidth.Truncate(lines[i], 78, "...")
@@ -153,10 +168,11 @@ type progressState struct {
 	finished   int64
 	files      map[string]FileProgress
 	updated    map[string]time.Time
+	advanced   map[string]time.Time
 }
 
 func newProgress(p *Plan) *progressState {
-	s := &progressState{started: time.Now(), files: map[string]FileProgress{}, updated: map[string]time.Time{}}
+	s := &progressState{started: time.Now(), files: map[string]FileProgress{}, updated: map[string]time.Time{}, advanced: map[string]time.Time{}}
 	for _, a := range p.Actions {
 		if a.Kind == "copy" || a.Kind == "skip" {
 			s.totalFiles++
@@ -173,13 +189,18 @@ func (s *progressState) start(a Action) {
 		size = a.Source.Size
 	}
 	s.files[a.Path] = FileProgress{Path: a.Path, Total: size}
+	s.advanced[a.Path] = time.Now()
 }
 func (s *progressState) update(path string, v transferProgress) {
 	f, ok := s.files[path]
 	if !ok {
 		return
 	}
-	f.Done = max(0, min(f.Total, v.Done))
+	done := max(0, min(f.Total, v.Done))
+	if done != f.Done {
+		s.advanced[path] = time.Now()
+	}
+	f.Done = done
 	f.Rate = max(0, v.Rate)
 	s.files[path] = f
 	s.updated[path] = time.Now()
@@ -194,12 +215,17 @@ func (s *progressState) finish(a Action, success bool) {
 	}
 	delete(s.files, a.Path)
 	delete(s.updated, a.Path)
+	delete(s.advanced, a.Path)
 }
 func (s *progressState) snapshot(r Result, active int) ProgressSnapshot {
 	p := ProgressSnapshot{Done: s.finished, Total: s.total, Count: s.totalFiles, Completed: r.Copied + r.Skipped, Failed: r.Failed, Canceled: r.Canceled, Active: active, Elapsed: time.Since(s.started)}
 	p.Pending = max(0, p.Count-p.Completed-p.Failed-p.Canceled-active)
+	now := time.Now()
 	for path, f := range s.files {
-		if time.Since(s.updated[path]) > 5*time.Second {
+		f.Idle = now.Sub(s.advanced[path])
+		// A live heartbeat can repeat the same byte count and an old average
+		// rate. Only new bytes end a wait; a heartbeat alone cannot do so.
+		if f.Idle >= 5*time.Second || now.Sub(s.updated[path]) > 5*time.Second {
 			f.Rate = 0
 		}
 		p.Done += f.Done

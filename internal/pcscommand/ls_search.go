@@ -60,10 +60,16 @@ func RunLsWithError(pcspath string, lsOptions *LsOptions, orderOptions *baidupcs
 
 // RunSearch 执行搜索
 func RunSearch(targetPath, keyword string, opt *SearchOptions) {
+	if err := RunSearchWithError(targetPath, keyword, opt); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunSearchWithError preserves matching and search failures for the CLI.
+func RunSearchWithError(targetPath, keyword string, opt *SearchOptions) error {
 	err := matchPathByShellPatternOnce(&targetPath)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return fmt.Errorf("%s: %w", targetPath, err)
 	}
 
 	if opt == nil {
@@ -72,12 +78,11 @@ func RunSearch(targetPath, keyword string, opt *SearchOptions) {
 
 	files, err := GetBaiduPCS().Search(targetPath, keyword, opt.Recurse)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return fmt.Errorf("%s: %w", targetPath, err)
 	}
 
 	renderTable(opSearch, opt.Total, targetPath, files)
-	return
+	return nil
 }
 
 func renderTable(op int, isTotal bool, path string, files baidupcs.FileDirectoryList) {

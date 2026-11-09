@@ -671,8 +671,7 @@ func main() {
 			Category:    "百度网盘",
 			Before:      reloadFn,
 			Action: func(c *cli.Context) error {
-				pcscommand.RunGetQuota()
-				return nil
+				return pcscommand.RunGetQuotaWithError()
 			},
 		},
 		{
@@ -824,12 +823,10 @@ func main() {
 					return nil
 				}
 
-				pcscommand.RunSearch(c.String("path"), c.Args().Get(0), &pcscommand.SearchOptions{
+				return pcscommand.RunSearchWithError(c.String("path"), c.Args().Get(0), &pcscommand.SearchOptions{
 					Total:   c.Bool("l"),
 					Recurse: c.Bool("r"),
 				})
-
-				return nil
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -870,11 +867,10 @@ func main() {
 			Category: "百度网盘",
 			Before:   reloadFn,
 			Action: func(c *cli.Context) error {
-				pcscommand.RunTree(c.Args().Get(0), 0, &pcscommand.TreeOptions{
+				return pcscommand.RunTreeWithError(c.Args().Get(0), 0, &pcscommand.TreeOptions{
 					Depth:    c.Int("depth"),
 					ShowFsid: c.Bool("fsid"),
 				})
-				return nil
 			},
 			Flags: []cli.Flag{
 				cli.IntFlag{
@@ -917,8 +913,7 @@ func main() {
 					as = ca
 				}
 
-				pcscommand.RunGetMeta(as...)
-				return nil
+				return pcscommand.RunGetMetaWithError(as...)
 			},
 		},
 		{
@@ -1439,8 +1434,7 @@ func main() {
 					Usage:     "列出已分享文件/目录",
 					UsageText: app.Name + " share list",
 					Action: func(c *cli.Context) error {
-						pcscommand.RunShareList(c.Int("page"))
-						return nil
+						return pcscommand.RunShareListWithError(c.Int("page"))
 					},
 					Flags: []cli.Flag{
 						cli.IntFlag{
@@ -1578,8 +1572,7 @@ func main() {
 							return nil
 						}
 
-						pcscommand.RunCloudDlAddTask(c.Args(), c.String("path"))
-						return nil
+						return pcscommand.RunCloudDlAddTaskWithError(c.Args(), c.String("path"))
 					},
 					Flags: []cli.Flag{
 						cli.StringFlag{
@@ -1599,15 +1592,11 @@ func main() {
 							return nil
 						}
 
-						taskIDs := converter.SliceStringToInt64(c.Args())
-
-						if len(taskIDs) == 0 {
-							fmt.Printf("未找到合法的任务ID, task_id\n")
-							return nil
+						taskIDs, err := converter.ParsePositiveInt64List(c.Args())
+						if err != nil {
+							return err
 						}
-
-						pcscommand.RunCloudDlQueryTask(taskIDs)
-						return nil
+						return pcscommand.RunCloudDlQueryTaskWithError(taskIDs)
 					},
 				},
 				{
@@ -1616,8 +1605,7 @@ func main() {
 					Usage:     "查询离线下载任务列表",
 					UsageText: app.Name + " offlinedl list",
 					Action: func(c *cli.Context) error {
-						pcscommand.RunCloudDlListTask()
-						return nil
+						return pcscommand.RunCloudDlListTaskWithError()
 					},
 				},
 				{
@@ -1631,15 +1619,11 @@ func main() {
 							return nil
 						}
 
-						taskIDs := converter.SliceStringToInt64(c.Args())
-
-						if len(taskIDs) == 0 {
-							fmt.Printf("未找到合法的任务ID, task_id\n")
-							return nil
+						taskIDs, err := converter.ParsePositiveInt64List(c.Args())
+						if err != nil {
+							return err
 						}
-
-						pcscommand.RunCloudDlCancelTask(taskIDs)
-						return nil
+						return pcscommand.RunCloudDlCancelTaskWithError(taskIDs)
 					},
 				},
 				{
@@ -1656,19 +1640,18 @@ func main() {
 
 						// 清空离线下载任务记录
 						if isClear {
-							pcscommand.RunCloudDlClearTask()
-							return nil
+							if c.NArg() != 0 {
+								return fmt.Errorf("-all 不能与 task_id 同时指定")
+							}
+							return pcscommand.RunCloudDlClearTaskWithError()
 						}
 
 						// 删除特定的离线下载任务记录
-						taskIDs := converter.SliceStringToInt64(c.Args())
-						if len(taskIDs) == 0 {
-							fmt.Printf("未找到合法的任务ID, task_id\n")
-							return nil
+						taskIDs, err := converter.ParsePositiveInt64List(c.Args())
+						if err != nil {
+							return err
 						}
-
-						pcscommand.RunCloudDlDeleteTask(taskIDs)
-						return nil
+						return pcscommand.RunCloudDlDeleteTaskWithError(taskIDs)
 					},
 					Flags: []cli.Flag{
 						cli.BoolFlag{
@@ -1711,8 +1694,7 @@ func main() {
 					Usage:     baidupcs.OperationRecycleList,
 					UsageText: app.Name + " recycle list",
 					Action: func(c *cli.Context) error {
-						pcscommand.RunRecycleList(c.Int("page"))
-						return nil
+						return pcscommand.RunRecycleListWithError(c.Int("page"))
 					},
 					Flags: []cli.Flag{
 						cli.IntFlag{
