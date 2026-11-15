@@ -71,7 +71,8 @@ func TestWorkflowReleasePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolchain := "go" + strings.TrimSpace(string(data))
-	if !version.IsValid(toolchain) || version.Compare(toolchain, "go1.27.3") < 0 {
+	// GO-2026-6859 (net/http) is fixed in Go 1.27.4.
+	if !version.IsValid(toolchain) || version.Compare(toolchain, "go1.27.4") < 0 {
 		t.Fatalf("release toolchain predates the verified security baseline: %q", toolchain)
 	}
 }
