@@ -89,6 +89,17 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 	if output.checkpointFailed {
 		return errors.Join(ctx.Err(), ErrCheckpointSave)
 	}
+	if context.Cause(ctx) == errSlowDownloadTail {
+		if output.reset {
+			return errResumeIdentity
+		}
+		if cmd.ProcessState != nil && cmd.ProcessState.Success() && (err == nil || err == context.Canceled) {
+			return nil // Download finished before the stop request.
+		}
+		if !output.downloadStopped {
+			return fmt.Errorf("%w: download worker did not confirm shutdown", ErrWorkerProtocol)
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -234,6 +245,9 @@ func RunWorker(args []string) (err error) {
 	}
 	executor.Execute()
 	if ctx.Err() != nil {
+		if kind == "download" {
+			report(transferProgress{DownloadStopped: true})
+		}
 		return ctx.Err()
 	}
 	if executor.FailedDeque().Size() != 0 {

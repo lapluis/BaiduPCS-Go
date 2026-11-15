@@ -451,6 +451,10 @@ func preserveContextError(ctx context.Context, err error) error {
 }
 
 func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr error) {
+	return execute(ctx, p, o, time.Now)
+}
+
+func execute(ctx context.Context, p *Plan, o Options, sampleTime func() time.Time) (out Result, executeErr error) {
 	defer func(parent context.Context) { executeErr = preserveContextError(parent, executeErr) }(ctx)
 	result := Result{}
 	// Validate before dry-run logging, directory creation or worker dispatch, also
@@ -537,6 +541,10 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 	}
 	// Metadata-only skips do not consume download or bandwidth shares.
 	o.Transfers = min(n, max(1, contentJobs))
+	_, remoteSource := p.Source.FS.(*Remote)
+	_, localTarget := p.Destination.FS.(*Local)
+	watchTails := remoteSource && localTarget && o.Transfers > 1 && o.Retries > 0 && o.BWLimit == 0
+	fastPeerCompleted := false // protected by mu, like the completed-file counters
 	jobs := make(chan Action)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -612,13 +620,38 @@ func Execute(ctx context.Context, p *Plan, o Options) (out Result, executeErr er
 						serverMoved, err = tryServerMove(ctx, p.Source, p.Destination, a, o)
 					}
 					for attempt := 0; !serverMoved && attempt <= o.Retries; attempt++ {
-						err = copyAction(actionCtx, p.Source, p.Destination, &a, o)
+						attemptCtx := actionCtx
+						var tail *downloadTail
+						if watchTails && attempt == 0 {
+							tail = &downloadTail{now: sampleTime, isLastAfterFastPeer: func() bool {
+								mu.Lock()
+								defer mu.Unlock()
+								return fastPeerCompleted && active == 1 && result.Copied+result.Skipped == progress.totalFiles-1
+							}}
+							attemptCtx = context.WithValue(actionCtx, downloadTailKey{}, tail)
+						}
+						err = copyAction(attemptCtx, p.Source, p.Destination, &a, o)
+						if err == nil && tail != nil && tail.fastPeerCandidate {
+							mu.Lock()
+							fastPeerCompleted = true
+							mu.Unlock()
+						}
 						// Restarting a worker must not hide failures saving state or
 						// observing its output, even if a later attempt could succeed.
 						if err == nil || ctx.Err() != nil || errors.Is(err, ErrCheckpointSave) || errors.Is(err, ErrWorkerProtocol) || errors.Is(err, ErrProgressCallback) || errors.Is(err, ErrLogCallback) {
 							break
 						}
 						if attempt < o.Retries {
+							if errors.Is(err, errSlowDownloadTail) {
+								mu.Lock()
+								logErr := logAction(o, "reconnect", actionPath(p, a))
+								mu.Unlock()
+								if logErr != nil {
+									err = logErr
+									cancel(logErr)
+									break
+								}
+							}
 							select {
 							case <-ctx.Done():
 								err = ctx.Err()
@@ -879,6 +912,12 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 			settings.ETag = stage.info.ETag
 			settings.Modified = stage.info.LastModified
 			transferCtx := context.WithValue(ctx, transferSettingsKey{}, settings)
+			tail, _ := ctx.Value(downloadTailKey{}).(*downloadTail)
+			var stop context.CancelCauseFunc
+			if tail != nil {
+				transferCtx, stop = context.WithCancelCause(transferCtx)
+				defer stop(nil)
+			}
 			transferCtx = context.WithValue(transferCtx, progressKey{}, func(v transferProgress) {
 				if v.ETag != "" {
 					stage.info.ETag = v.ETag
@@ -887,8 +926,14 @@ func copyAction(ctx context.Context, src, dst Endpoint, a *Action, o Options) er
 					stage.info.LastModified = v.Modified
 				}
 				reportProgress(ctx, v)
+				if tail != nil && transferCtx.Err() == nil && tail.observe(tail.now(), v) && stage.hasResumableRanges() {
+					stop(errSlowDownloadTail)
+				}
 			})
 			err = runTransferWorker(transferCtx, "download", sr.UID, sp, tmp, perTransferRate(o))
+			if err == context.Canceled && ctx.Err() == nil && context.Cause(transferCtx) == errSlowDownloadTail {
+				err = errSlowDownloadTail
+			}
 			if errors.Is(err, errResumeIdentity) {
 				return errors.Join(err, stage.reset())
 			}

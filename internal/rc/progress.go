@@ -49,6 +49,7 @@ type transferProgress struct {
 	Reset             bool
 	CheckpointFailed  bool
 	ProtocolFailed    bool
+	DownloadStopped   bool `json:",omitempty"`
 }
 
 func reportProgress(ctx context.Context, v transferProgress) {

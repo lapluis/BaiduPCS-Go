@@ -20,6 +20,7 @@ type workerOutput struct {
 	pending                  []byte
 	discarding               bool
 	reset, checkpointFailed  bool
+	downloadStopped          bool
 	callbackErr, protocolErr error
 	stop                     func()
 }
@@ -71,6 +72,10 @@ func (w *workerOutput) parseLine(line []byte, final bool) {
 	w.checkpointFailed = w.checkpointFailed || v.CheckpointFailed
 	if v.ProtocolFailed {
 		w.failProtocol("worker rejected an outgoing frame")
+	}
+	if v.DownloadStopped {
+		w.downloadStopped = true
+		return
 	}
 	// Failure suppresses callbacks, not final checkpoint diagnostics.
 	w.report(v)
