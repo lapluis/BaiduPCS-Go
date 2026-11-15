@@ -68,12 +68,14 @@ func TestWindowsConsoleDownloadInterruptAndResume(t *testing.T) {
 	assertCLIRaceBuild(t, binary, false)
 	for _, mode := range []string{"plain", "shared-partial", "remote-changed"} {
 		t.Run(mode, func(t *testing.T) {
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWindowsConsoleDownloadProcessFixture$")
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.v", "-test.run=^TestWindowsConsoleDownloadProcessFixture$")
 			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE, HideWindow: true}
 			cmd.Env = append(os.Environ(), "PCS_CONSOLE_DOWNLOAD_BINARY="+binary, "PCS_CONSOLE_DOWNLOAD_ROOT="+t.TempDir(), "PCS_CONSOLE_DOWNLOAD_MODE="+mode)
 			cmd.Env = childRaceEnv(t, cmd.Env)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("isolated download cancellation: %v\n%s", err, output)
+			} else {
+				t.Logf("%s", output)
 			}
 		})
 	}
@@ -125,6 +127,7 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 	var gateOnce sync.Once
 	release := func() { gateOnce.Do(func() { close(gate) }) }
 	defer release()
+	stalledBody := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -180,6 +183,14 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 			at = next
 			if begin > 0 && served.Load() >= 1024*1024 {
 				readyOnce.Do(func() { close(ready) })
+				if mode == "plain" && slow.Load() {
+					// Keep the response open without sending more bytes until Ctrl-C.
+					select {
+					case <-r.Context().Done():
+					case <-stalledBody:
+					}
+					return
+				}
 			}
 			if slow.Load() && end-begin > 32768 {
 				select {
@@ -191,6 +202,7 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 		}
 	}))
 	defer server.Close()
+	defer close(stalledBody)
 	// If any assertion fails, closing this job kills only the CLI and its workers
 	// before httptest waits for handlers. Never leave a blocked metadata handler.
 	defer func() { release(); _ = windows.TerminateJobObject(job, 1) }()
@@ -248,6 +260,15 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 	case <-time.After(15 * time.Second):
 		return fmt.Errorf("download did not become active")
 	}
+	if mode == "plain" {
+		// Redirected progress is throttled to one line per five seconds.
+		// Allow two intervals for the last received bytes and the idle report.
+		select {
+		case err := <-done:
+			return fmt.Errorf("stalled transfer exited early: %v %s", err, out.String())
+		case <-time.After(12 * time.Second):
+		}
+	}
 	owned, err := consoleJobPIDs(job)
 	if err != nil {
 		return err
@@ -280,6 +301,19 @@ func runConsoleDownloadInterrupt(binary, root, mode string) error {
 	}
 	if !strings.Contains(out.String(), "copied=0 skipped=0 deleted=0 failed=0 canceled=1 pending=0 bytes=0") {
 		return fmt.Errorf("wrong canceled summary: %s", out.String())
+	}
+	if mode == "plain" {
+		waiting := false
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.Contains(line, "waiting=1") && strings.Contains(line, "0.0 B/s") && strings.Contains(line, "ETA --") && !strings.Contains(line, "0.0 B /") {
+				waiting = true
+				fmt.Println(line)
+				break
+			}
+		}
+		if !waiting {
+			return fmt.Errorf("missing stalled download progress: %s", out.String())
+		}
 	}
 	owned, err = consoleJobPIDs(job)
 	if err != nil || len(owned) != 0 {

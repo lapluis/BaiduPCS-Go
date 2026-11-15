@@ -22,6 +22,55 @@ func TestLegacyCLIExitStatus(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	assertCLIRaceBuild(t, binary, false)
+	t.Run("crypto batches", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("BAIDUPCS_GO_CONFIG_DIR", dir)
+		if err := os.WriteFile(filepath.Join(dir, "pcs_config.json"), []byte(`{"appid":266719}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, batch := range []string{"all fail", "mixed", "success"} {
+			t.Run(batch, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "input")
+				missing := path + ".missing"
+				payload := []byte("synthetic batch payload")
+				if err := os.WriteFile(path, payload, 0600); err != nil {
+					t.Fatal(err)
+				}
+				for _, op := range []string{"enc", "dec"} {
+					args := []string{"tool", op, "-key=synthetic"}
+					if batch != "success" {
+						args = append(args, missing)
+					}
+					src := path
+					if op == "dec" {
+						src += ".encrypt"
+					}
+					if batch != "all fail" {
+						args = append(args, src)
+					}
+					cmd := exec.Command(binary, args...)
+					cmd.Env = childRaceEnv(t, os.Environ())
+					var stdout, stderr bytes.Buffer
+					cmd.Stdout, cmd.Stderr = &stdout, &stderr
+					err := cmd.Run()
+					if batch == "success" {
+						if err != nil || stderr.Len() != 0 {
+							t.Fatalf("%s: %v %s", op, err, &stderr)
+						}
+					} else if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 1 || !strings.Contains(stderr.String(), missing) {
+						t.Fatalf("%s: %v %s", op, err, &stderr)
+					}
+					if strings.Contains(stdout.String(), "成功") != (batch != "all fail") {
+						t.Fatalf("%s output: %s", op, &stdout)
+					}
+				}
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, payload) {
+					t.Fatalf("batch bytes: %v", err)
+				}
+			})
+		}
+	})
 	for _, tc := range []struct {
 		name string
 		args []string

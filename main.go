@@ -2028,17 +2028,18 @@ func main() {
 							return nil
 						}
 
+						var failures []error
 						for _, filePath := range c.Args() {
 							encryptedFilePath, err := pcsutil.EncryptFile(c.String("method"), []byte(c.String("key")), filePath, !c.Bool("disable-gzip"))
 							if err != nil {
-								fmt.Printf("%s\n", err)
+								failures = append(failures, fmt.Errorf("加密 %s: %w", filePath, err))
 								continue
 							}
 
 							fmt.Printf("加密成功, %s -> %s\n", filePath, encryptedFilePath)
 						}
 
-						return nil
+						return errors.Join(failures...)
 					},
 					Flags: []cli.Flag{
 						cli.StringFlag{
@@ -2068,17 +2069,18 @@ func main() {
 							return nil
 						}
 
+						var failures []error
 						for _, filePath := range c.Args() {
 							decryptedFilePath, err := pcsutil.DecryptFile(c.String("method"), []byte(c.String("key")), filePath, !c.Bool("disable-gzip"))
 							if err != nil {
-								fmt.Printf("%s\n", err)
+								failures = append(failures, fmt.Errorf("解密 %s: %w", filePath, err))
 								continue
 							}
 
 							fmt.Printf("解密成功, %s -> %s\n", filePath, decryptedFilePath)
 						}
 
-						return nil
+						return errors.Join(failures...)
 					},
 					Flags: []cli.Flag{
 						cli.StringFlag{

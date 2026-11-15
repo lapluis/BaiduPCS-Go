@@ -1,5 +1,36 @@
 # pcsclone 验证记录
 
+## 2026-11-15 加解密安全与下载复测
+
+冻结代码后的 Windows Go 1.27.4 全仓 build、vet 和原生 race 均退出 0。race 命令为 `go test -race -p 1 ./... -parallel 4 -shuffle=on -count=1 -timeout 600s`，本机日志 `build/crypto-release-race.log`。对根包、pcsutil 和 CLI 集成包运行 staticcheck 仍有既有的 SA1006、SA1019、ST1013、U1000 告警，详情见 `build/crypto-release-staticcheck.log`。
+
+`tool enc` 和 `tool dec` 在目标目录内创建独占随机文件。转换、同步、关闭成功后才发布，已有目标及预检查之后出现的目标均保留。Windows 使用带写穿标志的同卷移动。Linux 优先使用禁止替换的 renameat2，缺少支持时尝试硬链接。其他平台使用硬链接。非 Windows 平台在清理源文件前同步目标目录。文件系统拒绝发布或目录同步时报告错误，保留源文件。未模拟断电或验证网络文件系统的持久性。
+
+Unix 输出权限取源文件权限与 0600 的交集，Windows 的访问权限由目录 ACL 决定。源文件及目录应在操作期间由调用者控制。文件身份、长度和修改时间检查能够发现已测试的改写与替换，最后检查至按路径删除之间仍有竞态。旧格式缺少认证，不能可靠检测错误密钥或篡改。裸解密保留密文，gzip 解密和加密成功后清理源文件。
+
+Go 1.27.4 Windows amd64 与 Go 1.26.10 WSL Linux amd64 的定向 API 测试通过。九种 AES 方法分别验证新写旧读和旧写新读，包含 gzip 开关、空文件和跨缓冲区数据。覆盖短 IV、损坏 gzip、校验和错误、读写及关闭失败、同步与发布失败、清理失败、源变化和冲突。Windows 定向运行跳过五个需要符号链接权限的用例，Linux 全部执行。八个发布平台组合完成变动包编译，Go 1.23.12 Windows 386 运行定向测试，Windows ARM32 完成该包编译。实际 CLI 检查 enc/dec 全失败、混合和成功批次的退出码、标准输出、错误输出及往返内容。
+
+**下载复现。** 在仓库根目录运行 `go test -v ./internal/cliintegration -run '^TestWindowsConsoleDownloadInterruptAndResume$' -count=1`。Windows 独立控制台使用回环 HTTP 服务，限制为一个文件、一条 Range 连接。服务每 20 ms 发送 16 KiB，然后保持响应打开并停止发送。实测活动文件停在 1.0 MiB，日志显示 12.5%、0.0 B/s、ETA --、waiting=1。Ctrl-C 返回 130，canceled=1、failed=0，旧目标与检查点保留，退出后没有残留 worker。恢复原命令时服务发送 7,372,817 字节，目标 8,388,625 字节逐字节相同。共享部分文件也通过。替换远端 ETag 后重新下载，服务发送 8,421,393 字节（含探测及重试），最终内容匹配替换后的文件。
+
+旧记录中的 completed-bytes 只给出已完成传输的字节数。当前进度同时计入活动文件字节，五秒没有推进时显示 waiting，重定向日志最多每五秒输出一次。另用回环服务将 8 字节分片截断至 3 字节，验证第二个 Range 从字节 3 开始，最终计数为 8；Retry-After 到期后完整下载，以及在 429、503、509 等待期间取消均通过。活动文件数不能单独定位服务限速或客户端调度。此次回环结果没有给出真实百度吞吐数据。
+
+**用户实盘复测。** 在专用测试账号的 `bd:/pcsclone-test-<ID>/` 中准备一份大小和 SHA256 已知的大文件。替换下面的远端路径和别名，使用全新的本地目录。运行中按一次 Ctrl-C，记录退出码，再对同一目标执行相同命令，保留两次日志。
+
+```powershell
+$pcs = 'D:\src\BaiduPCS-Go\build\pcsclone.exe'
+$remote = 'bd:/pcsclone-test-<ID>/fixture.bin'
+$testDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("pcsclone-check-" + [guid]::NewGuid()))
+$target = Join-Path $testDir.FullName 'fixture.bin'
+$copyArgs = @('copyto', $remote, $target, '-P', '--transfers', '1', '--download-threads', '1', '--max-connections', '1', '--use-json-log')
+& $pcs @copyArgs --log-file (Join-Path $testDir.FullName 'first.jsonl')
+$LASTEXITCODE
+& $pcs @copyArgs --log-file (Join-Path $testDir.FullName 'resume.jsonl')
+$LASTEXITCODE
+Get-FileHash -Algorithm SHA256 -LiteralPath $target
+```
+
+对照原始哈希，记录活动字节、速率、waiting 时长、失败与取消数、两次耗时。比较并发影响时，用另一新目录从零测量同一文件，将 download-threads 和 max-connections 一起从 1 调至 4，保持其余条件相同。真实网盘、线上 CI 和实际远端限速归因均未验证。
+
 ## 2026-11-06：进度、取消与下载续传回归
 
 后续复查新增回归：模拟目标文件刚发布就被其他程序改写，旧实现会把修改后的摘要与原远端 ETag 绑定并错误跳过。修复后在发布前计算下载临时文件的摘要；完成记录升级为版本 2，旧版本记录回退到完整内容比较。有效的部分下载断点不受记录升级影响。
