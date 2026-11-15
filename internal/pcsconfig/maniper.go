@@ -2,6 +2,7 @@ package pcsconfig
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -102,6 +103,23 @@ func (c *PCSConfig) setupNewUser(user *Baidu) {
 // SwitchUser 切换用户, 返回切换成功的用户
 func (c *PCSConfig) SwitchUser(baiduBase *BaiduBase) (*Baidu, error) {
 	return c.manipUser(opSwitch, baiduBase)
+}
+
+// SwitchUserAndSave publishes the selected account only if its configuration
+// can be saved. On failure the existing account and client remain active.
+func (c *PCSConfig) SwitchUserAndSave(baiduBase *BaiduBase) (*Baidu, error) {
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
+	previousUID, previousUser, previousPCS := c.BaiduActiveUID, c.activeUser, c.pcs
+	user, err := c.SwitchUser(baiduBase)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.saveLocked(); err != nil {
+		c.BaiduActiveUID, c.activeUser, c.pcs = previousUID, previousUser, previousPCS
+		return nil, fmt.Errorf("保存切换后的账号配置失败: %w", err)
+	}
+	return user, nil
 }
 
 // DeleteUser 删除用户, 返回删除成功的用户

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,7 +13,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/olekukonko/tablewriter"
 	"github.com/peterh/liner"
 	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcscommand"
@@ -24,9 +23,7 @@ import (
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsliner"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsliner/args"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcstable"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil"
-	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checksum"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/converter"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/escaper"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/getip"
@@ -359,7 +356,7 @@ func main() {
 
 				err := cmd.Run()
 				if err != nil {
-					fmt.Println(err)
+					return &systemCommandError{cause: err}
 				}
 
 				return nil
@@ -503,18 +500,16 @@ func main() {
 `,
 			Category: "百度帐号",
 			Before:   reloadFn,
-			After:    saveFunc,
 			Action: func(c *cli.Context) error {
 				if c.NArg() >= 2 {
 					cli.ShowCommandHelp(c, c.Command.Name)
-					return nil
+					return fmt.Errorf("切换用户失败, 仅接受一个 UID 或用户名")
 				}
 
 				numLogins := pcsconfig.Config.NumLogins()
 
 				if numLogins == 0 {
-					fmt.Printf("未设置任何百度帐号, 不能切换\n")
-					return nil
+					return fmt.Errorf("未设置任何百度帐号, 不能切换")
 				}
 
 				var (
@@ -524,17 +519,21 @@ func main() {
 
 				if c.NArg() == 1 {
 					// 直接切换
-					uid, _ = strconv.ParseUint(inputData, 10, 64)
+					if parsed, err := strconv.ParseUint(inputData, 10, 64); err == nil {
+						uid = parsed
+					}
 				} else if c.NArg() == 0 {
 					// 输出所有帐号供选择切换
-					cli.HandleAction(app.Command("loglist").Action, c)
+					if err := cli.HandleAction(app.Command("loglist").Action, c); err != nil {
+						return err
+					}
 
 					// 提示输入 index
 					var index string
 					fmt.Printf("输入要切换帐号的 # 值 > ")
 					_, err := fmt.Scanln(&index)
 					if err != nil {
-						return nil
+						return fmt.Errorf("读取切换账号选择失败: %w", err)
 					}
 
 					users := pcsconfig.Config.BaiduUserList
@@ -547,17 +546,15 @@ func main() {
 					cli.ShowCommandHelp(c, c.Command.Name)
 				}
 
-				switchedUser, err := pcsconfig.Config.SwitchUser(&pcsconfig.BaiduBase{
-					Name: inputData,
-				})
-				if err != nil {
-					switchedUser, err = pcsconfig.Config.SwitchUser(&pcsconfig.BaiduBase{
-						UID: uid,
-					})
-					if err != nil {
-						fmt.Printf("切换用户失败, %s\n", err)
-						return nil
+				selection := &pcsconfig.BaiduBase{UID: uid}
+				if inputData != "" {
+					if named, err := pcsconfig.Config.GetBaiduUser(&pcsconfig.BaiduBase{Name: inputData}); err == nil {
+						selection = &named.BaiduBase
 					}
+				}
+				switchedUser, err := pcsconfig.Config.SwitchUserAndSave(selection)
+				if err != nil {
+					return fmt.Errorf("切换用户失败: %w", err)
 				}
 
 				fmt.Printf("切换用户: %s\n", switchedUser.Name)
@@ -1270,8 +1267,7 @@ func main() {
 					FromPan: c.Bool("pan"),
 				}
 
-				pcscommand.RunLocateDownload(c.Args(), opt)
-				return nil
+				return pcscommand.RunLocateDownloadWithError(c.Args(), opt)
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -1301,34 +1297,7 @@ func main() {
 					return nil
 				}
 
-				for k, filePath := range c.Args() {
-					lp, err := checksum.GetFileSum(filePath, checksum.CHECKSUM_MD5|checksum.CHECKSUM_SLICE_MD5|checksum.CHECKSUM_CRC32)
-					if err != nil {
-						fmt.Printf("[%d] %s\n", k+1, err)
-						continue
-					}
-
-					fmt.Printf("[%d] - [%s]:\n", k+1, filePath)
-
-					strLength, strMd5, strSliceMd5, strCrc32 := strconv.FormatInt(lp.Length, 10), hex.EncodeToString(lp.MD5), hex.EncodeToString(lp.SliceMD5), strconv.FormatUint(uint64(lp.CRC32), 10)
-					fileName := filepath.Base(filePath)
-					regFileName := strings.Replace(fileName, " ", "_", -1)
-					regFileName = strings.Replace(regFileName, "#", "_", -1)
-					tb := pcstable.NewTable(os.Stdout)
-					tb.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_LEFT})
-					tb.AppendBulk([][]string{
-						[]string{"文件大小", strLength},
-						[]string{"md5", strMd5},
-						[]string{"前256KB切片的md5", strSliceMd5},
-						[]string{"crc32", strCrc32},
-						[]string{"秒传命令", app.Name + " rapidupload -length=" + strLength + " -md5=" + strMd5 + " -slicemd5=" + strSliceMd5 + " -crc32=" + strCrc32 + " " + fileName},
-						[]string{"通用秒传链接", strMd5 + "#" + strSliceMd5 + "#" + strLength + "#" + regFileName},
-					})
-					tb.Render()
-					fmt.Printf("\n")
-				}
-
-				return nil
+				return pcscommand.RunSumFileWithError(c.Args(), app.Name)
 			},
 		},
 		{
@@ -1359,8 +1328,7 @@ func main() {
 					Rname:    c.Bool("rname"),
 					FsID:     c.String("fs_id"),
 				}
-				pcscommand.RunShareTransfer(c.Args(), opt)
-				return nil
+				return pcscommand.RunShareTransferWithError(c.Args(), opt)
 			},
 			Flags: []cli.Flag{
 				cli.BoolFlag{
@@ -1408,8 +1376,7 @@ func main() {
 							Period:     c.Int("period"),
 							IsCombined: c.Bool("f"),
 						}
-						pcscommand.RunShareSet(c.Args(), opt)
-						return nil
+						return pcscommand.RunShareSetWithError(c.Args(), opt)
 					},
 					Flags: []cli.Flag{
 						cli.StringFlag{
@@ -2163,6 +2130,11 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		pcsconfig.Config.Close()
-		os.Exit(1)
+		code := 1
+		var commandError *systemCommandError
+		if errors.As(err, &commandError) {
+			code = commandError.exitStatus()
+		}
+		os.Exit(code)
 	}
 }

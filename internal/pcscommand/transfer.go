@@ -220,15 +220,32 @@ func ShareTransferToWithContext(ctx context.Context, pcs *baidupcs.BaiduPCS, par
 
 // RunShareTransfer 执行分享链接转存到网盘
 func RunShareTransfer(params []string, opt *baidupcs.TransferOption) {
-	result, err := ShareTransferTo(GetBaiduPCS(), params, GetActiveUser().Workdir, opt)
+	if err := RunShareTransferWithError(params, opt); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunShareTransferWithError reports both transfer and optional download failures.
+func RunShareTransferWithError(params []string, opt *baidupcs.TransferOption) error {
+	return runShareTransferWithError(params, opt, time.Sleep, RunDownloadWithError)
+}
+
+func runShareTransferWithError(params []string, opt *baidupcs.TransferOption, wait func(time.Duration), download func([]string, *DownloadOptions) error) error {
+	settings := baidupcs.TransferOption{}
+	if opt != nil {
+		settings = *opt
+	}
+	result, err := ShareTransferTo(GetBaiduPCS(), params, GetActiveUser().Workdir, &settings)
 	if err != nil {
-		fmt.Printf("%s失败: %s\n", baidupcs.OperationShareFileSavetoLocal, err)
-		return
+		return fmt.Errorf("%s失败: %w", baidupcs.OperationShareFileSavetoLocal, err)
 	}
 	fmt.Printf("%s成功, 保存了%s到当前目录\n", baidupcs.OperationShareFileSavetoLocal, result.Filename)
-	if opt != nil && opt.Download {
+	if settings.Download {
 		fmt.Println("10s后开始下载")
-		time.Sleep(10 * time.Second)
-		RunDownload(result.downloadPaths(), nil)
+		wait(10 * time.Second)
+		if err := download(result.downloadPaths(), nil); err != nil {
+			return fmt.Errorf("自动下载失败（转存已完成）: %w", err)
+		}
 	}
+	return nil
 }

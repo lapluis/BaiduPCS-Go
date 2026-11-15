@@ -15,22 +15,35 @@ import (
 
 // RunShareSet 执行分享
 func RunShareSet(paths []string, option *baidupcs.ShareOption) {
+	if err := RunShareSetWithError(paths, option); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunShareSetWithError refuses empty selections and returns creation failures.
+func RunShareSetWithError(paths []string, option *baidupcs.ShareOption) error {
+	if option == nil {
+		return fmt.Errorf("分享选项不能为空")
+	}
+	settings := *option
 	pcspaths, err := matchPathByShellPattern(paths...)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
+	}
+	if len(pcspaths) == 0 {
+		return ErrShellPatternNoHit
 	}
 
-	shared, err := GetBaiduPCS().ShareSet(pcspaths, option)
+	shared, err := GetBaiduPCS().ShareSet(pcspaths, &settings)
 	if err != nil {
-		fmt.Printf("%s失败: %s\n", baidupcs.OperationShareSet, err)
-		return
+		return fmt.Errorf("%s失败: %w", baidupcs.OperationShareSet, err)
 	}
-	if option.IsCombined {
+	if settings.IsCombined {
 		fmt.Printf("shareID: %d, 链接: %s?pwd=%s\n", shared.ShareID, shared.Link, shared.Pwd)
 	} else {
 		fmt.Printf("shareID: %d, 链接: %s, 密码: %s\n", shared.ShareID, shared.Link, shared.Pwd)
 	}
+	return nil
 }
 
 // RunShareCancel 执行取消分享
