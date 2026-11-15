@@ -78,6 +78,7 @@ type FileProgress struct {
 	Path              string
 	Done, Total, Rate int64
 	Idle              time.Duration
+	Reconnecting      bool
 }
 type ProgressSnapshot struct {
 	Files                            []FileProgress
@@ -95,6 +96,9 @@ func humanBytes(n int64) string {
 	for v >= 1024 && i < len(units)-1 {
 		v /= 1024
 		i++
+	}
+	if i >= 3 {
+		return fmt.Sprintf("%.3f %s", v, units[i])
 	}
 	return fmt.Sprintf("%.1f %s", v, units[i])
 }
@@ -128,7 +132,11 @@ func (p ProgressSnapshot) String() string {
 	}
 	return text
 }
-func (p ProgressSnapshot) Lines() []string {
+func (p ProgressSnapshot) Lines() []string { return p.TerminalLines(78, 0) }
+
+// TerminalLines fits the live block within the available terminal cells.
+func (p ProgressSnapshot) TerminalLines(width, height int) []string {
+	width = max(1, width)
 	percent := p.percentage()
 	eta := "--"
 	if p.Rate > 0 && p.ETA >= 0 {
@@ -138,7 +146,11 @@ func (p ProgressSnapshot) Lines() []string {
 	if p.Canceled > 0 || p.Pending > 0 {
 		lines = append(lines, fmt.Sprintf("canceled %d | pending %d", p.Canceled, p.Pending))
 	}
-	for _, f := range p.Files {
+	for i, f := range p.Files {
+		if height > 0 && len(lines)+1 >= height && i+1 < len(p.Files) {
+			lines = append(lines, fmt.Sprintf("... %d more transfers", len(p.Files)-i))
+			break
+		}
 		name := strings.Map(func(r rune) rune {
 			if unicode.IsControl(r) {
 				return ' '
@@ -149,15 +161,27 @@ func (p ProgressSnapshot) Lines() []string {
 		if f.Total > 0 {
 			percent = 100 * float64(f.Done) / float64(f.Total)
 		}
-		prefix := fmt.Sprintf("%5.1f%% | %s/s | ", percent, humanBytes(f.Rate))
-		if f.Idle >= 5*time.Second {
-			prefix += fmt.Sprintf("waiting %s | ", f.Idle.Truncate(time.Second))
+		status := humanBytes(f.Rate) + "/s"
+		if f.Reconnecting {
+			status = "reconnecting"
+		} else if f.Idle >= 5*time.Second {
+			status = fmt.Sprintf("waiting %s", f.Idle.Truncate(time.Second))
+		} else if eta := converter.RemainingTime(f.Total, f.Done, f.Rate); eta >= 0 && f.Rate > 0 {
+			status += " ETA " + eta.Round(time.Second).String()
 		}
-		name = runewidth.Truncate(name, max(3, 78-runewidth.StringWidth(prefix)), "...")
-		lines = append(lines, prefix+name)
+		detail := fmt.Sprintf(" %5.1f%%  %s", percent, status)
+		if width >= 72 {
+			detail = fmt.Sprintf(" %5.1f%%  %s / %s  %s", percent, humanBytes(f.Done), humanBytes(f.Total), status)
+		}
+		space := max(1, width-2-runewidth.StringWidth(detail))
+		name = runewidth.Truncate(name, space, "\u2026")
+		lines = append(lines, "* "+name+strings.Repeat(" ", max(0, space-runewidth.StringWidth(name)))+detail)
+	}
+	if height > 0 && len(lines) > height {
+		lines = lines[:height]
 	}
 	for i := range lines {
-		lines[i] = runewidth.Truncate(lines[i], 78, "...")
+		lines[i] = runewidth.Truncate(lines[i], width, "\u2026")
 	}
 	return lines
 }
@@ -189,7 +213,11 @@ func (s *progressState) start(a Action) {
 	if a.Source != nil {
 		size = a.Source.Size
 	}
-	s.files[a.Path] = FileProgress{Path: a.Path, Total: size}
+	name := a.Path
+	if name == "" && a.Source != nil {
+		name = a.Source.Name
+	}
+	s.files[a.Path] = FileProgress{Path: name, Total: size}
 	s.advanced[a.Path] = time.Now()
 }
 func (s *progressState) update(path string, v transferProgress) {
@@ -197,6 +225,10 @@ func (s *progressState) update(path string, v transferProgress) {
 	if !ok {
 		return
 	}
+	if !v.Reset && (v.CheckpointFailed || v.ProtocolFailed || v.DownloadStopped || v.Done == 0 && (v.ETag != "" || v.Modified != "" || f.Reconnecting)) {
+		return
+	}
+	f.Reconnecting = false
 	done := max(0, min(f.Total, v.Done))
 	if done != f.Done {
 		s.advanced[path] = time.Now()

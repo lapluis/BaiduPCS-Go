@@ -563,7 +563,7 @@ func execute(ctx context.Context, p *Plan, o Options, sampleTime func() time.Tim
 		}()
 		go func() {
 			defer close(joined)
-			ticker := time.NewTicker(time.Second)
+			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
 			for {
 				select {
@@ -644,6 +644,10 @@ func execute(ctx context.Context, p *Plan, o Options, sampleTime func() time.Tim
 						if attempt < o.Retries {
 							if errors.Is(err, errSlowDownloadTail) {
 								mu.Lock()
+								file := progress.files[a.Path]
+								file.Reconnecting = true
+								file.Rate = 0
+								progress.files[a.Path] = file
 								logErr := logAction(o, "reconnect", actionPath(p, a))
 								mu.Unlock()
 								if logErr != nil {

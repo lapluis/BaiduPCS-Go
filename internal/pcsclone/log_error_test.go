@@ -26,7 +26,7 @@ func TestLogSinkRetainsOutputFailures(t *testing.T) {
 				writer := &failingStdout{err: failure, short: short}
 				sink := &logSink{w: writer, level: "INFO", json: kind == "json", terminal: kind == "progress" || kind == "clear"}
 				if kind == "clear" {
-					sink.lines = 2
+					sink.frame = []string{"first", "second"}
 				} else if kind == "progress" {
 					sink.Progress(rc.ProgressSnapshot{Done: 1, Total: 2})
 				} else {

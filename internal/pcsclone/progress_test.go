@@ -99,3 +99,25 @@ func TestWaitingProgressInRedirectedLogs(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalProgressPersistsAroundLogMessages(t *testing.T) {
+	var out bytes.Buffer
+	sink := &logSink{w: &out, terminal: true, level: "INFO"}
+	p := rc.ProgressSnapshot{Files: []rc.FileProgress{{Path: "part.bin", Reconnecting: true}}}
+	sink.Progress(p)
+	out.Reset()
+	sink.Emit("copy", "other.bin")
+	if out.Len() != 0 {
+		t.Fatal("suppressed copy redrew progress")
+	}
+	sink.Emit("reconnect", "part.bin")
+	if !strings.Contains(out.String(), "reconnect: part.bin") || !strings.Contains(out.String(), "reconnecting") {
+		t.Fatal(out.String())
+	}
+	sink.Progress(rc.ProgressSnapshot{Final: true, Completed: 1, Count: 1})
+	out.Reset()
+	sink.Emit("summary", "done")
+	if err := sink.Close(); err != nil || out.String() != "summary: done\n" {
+		t.Fatalf("final block erased: %q %v", out.String(), err)
+	}
+}

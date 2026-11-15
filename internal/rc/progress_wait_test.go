@@ -57,3 +57,36 @@ func TestWaitingProgressKeepsUnicodePathWithinWidth(t *testing.T) {
 		t.Fatalf("unsafe or missing waiting progress: %q", line)
 	}
 }
+
+func TestSlowTailDisplay(t *testing.T) {
+	const gib = 1 << 30
+	s := newProgress(&Plan{})
+	s.start(Action{Source: &Entry{Name: "tail.bin", Size: gib}})
+	s.update("", transferProgress{Done: gib / 2, Rate: 1 << 20})
+	f := s.files[""]
+	f.Reconnecting = true
+	f.Rate = 0
+	s.files[""] = f
+	s.update("", transferProgress{Total: gib, ETag: "tag"})
+	s.update("", transferProgress{DownloadStopped: true})
+	p := s.snapshot(Result{}, 1)
+	if p.Done != gib/2 || !strings.Contains(p.Lines()[2], "reconnecting") {
+		t.Fatal(p)
+	}
+	s.update("", transferProgress{Done: gib/2 + 1<<20, Rate: 1 << 20})
+	p = s.snapshot(Result{}, 1)
+	line := p.Lines()[2]
+	if !strings.Contains(line, "tail.bin") || !strings.Contains(line, "ETA 8m31s") || humanBytes(gib) == humanBytes(gib+1<<20) {
+		t.Fatal(line)
+	}
+	p.Files = append(p.Files, p.Files...)
+	lines := p.TerminalLines(36, 3)
+	if len(lines) != 3 || !strings.Contains(lines[2], "2 more") {
+		t.Fatal(lines)
+	}
+	for _, line := range lines {
+		if runewidth.StringWidth(line) > 36 {
+			t.Fatal(line)
+		}
+	}
+}

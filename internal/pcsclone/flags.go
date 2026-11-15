@@ -15,6 +15,7 @@ import (
 
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
+	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/rc"
 	"github.com/qjfoidnh/BaiduPCS-Go/pcsutil/checkedwriter"
@@ -207,7 +208,8 @@ type logSink struct {
 	json         bool
 	mu           sync.Mutex
 	terminal     bool
-	lines        int
+	frame        []string
+	tty          *os.File
 	lastProgress time.Time
 }
 
@@ -260,22 +262,42 @@ func newLogSink(c *commandContext) (*logSink, error) {
 	}
 	if f, ok := sink.w.(*os.File); ok && sink.file == nil && !sink.json && (isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())) {
 		sink.terminal = true
+		sink.tty = f
 		sink.w = colorable.NewColorable(f)
 	}
 	return sink, nil
 }
 
-func (s *logSink) clearProgress() {
-	if s.lines == 0 {
-		return
+// render replaces the current block and leaves the cursor below it.
+func (s *logSink) render(lines []string, message string) {
+	var buf strings.Builder
+	old := len(s.frame)
+	if old > 0 {
+		fmt.Fprintf(&buf, "\x1b[%dA\r", old)
 	}
-	w := s.writer()
-	fmt.Fprintf(w, "\x1b[%dA", s.lines)
-	for i := 0; i < s.lines; i++ {
-		fmt.Fprint(w, "\r\x1b[2K\n")
+	if message != "" {
+		if old > 0 {
+			buf.WriteString("\x1b[2K")
+			old--
+		}
+		buf.WriteString(message)
+		buf.WriteByte('\n')
 	}
-	fmt.Fprintf(w, "\x1b[%dA", s.lines)
-	s.lines = 0
+	for i, line := range lines {
+		if i < old {
+			buf.WriteString("\r\x1b[2K")
+		}
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+	if extra := old - len(lines); extra > 0 {
+		buf.WriteString(strings.Repeat("\r\x1b[2K\n", extra))
+		fmt.Fprintf(&buf, "\x1b[%dA\r", extra)
+	}
+	if buf.Len() > 0 {
+		io.WriteString(s.writer(), buf.String())
+	}
+	s.frame = lines
 }
 
 func (s *logSink) Progress(p rc.ProgressSnapshot) {
@@ -291,13 +313,16 @@ func (s *logSink) Progress(p rc.ProgressSnapshot) {
 	if s.closed {
 		return
 	}
-	s.clearProgress()
-	lines := p.Lines()
-	w := s.writer()
-	for _, line := range lines {
-		fmt.Fprintln(w, line)
+	width, height := 78, 0
+	if s.tty != nil {
+		if w, h, err := terminal.GetSize(int(s.tty.Fd())); err == nil && w > 1 && h > 1 {
+			width, height = w-1, h-1
+		}
 	}
-	s.lines = len(lines)
+	s.render(p.TerminalLines(width, height), "")
+	if p.Final {
+		s.frame = nil
+	}
 }
 
 func (s *logSink) Emit(kind, item string) {
@@ -319,7 +344,6 @@ func (s *logSink) emit(kind, item string, force bool) {
 		}
 		s.lastProgress = time.Now()
 	}
-	s.clearProgress()
 	if s.terminal && (kind == "copy" || kind == "skip") {
 		return
 	}
@@ -338,6 +362,8 @@ func (s *logSink) emit(kind, item string, force bool) {
 			}
 			return r
 		}, item)
+		s.render(s.frame, fmt.Sprintf("%s: %s", kind, item))
+		return
 	}
 	fmt.Fprintf(s.writer(), "%s: %s\n", kind, item)
 }
@@ -351,7 +377,7 @@ func (s *logSink) Close() error {
 	if s.closed {
 		return s.closeErr
 	}
-	s.clearProgress()
+	s.render(nil, "")
 	s.closed = true
 	var err error
 	if s.file != nil {
