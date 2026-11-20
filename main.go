@@ -629,22 +629,24 @@ func main() {
 `,
 			Category: "百度帐号",
 			Before:   reloadFn,
-			After:    saveFunc,
 			Action: func(c *cli.Context) error {
 				activeUser := pcsconfig.Config.ActiveUser()
 				if activeUser.UID == 0 {
-					fmt.Println("请先登录")
-					return nil
+					return fmt.Errorf("请先登录")
 				}
-				if c.NArg() >= 2 {
+				if c.NArg() != 1 {
 					cli.ShowCommandHelp(c, c.Command.Name)
-					return nil
-				} else if c.NArg() == 0 {
-					cli.ShowCommandHelp(c, c.Command.Name)
-					return nil
+					return fmt.Errorf("设定 accessToken 需要且仅接受一个参数")
 				}
-				activeUser.AccessToken = c.Args().Get(0)
-				pcsconfig.Config.ActiveUserBaiduPCS().SetaccessToken(c.Args().Get(0))
+				token := c.Args().Get(0)
+				previousToken := activeUser.AccessToken
+				activeUser.AccessToken = token
+				pcsconfig.Config.ActiveUserBaiduPCS().SetaccessToken(token)
+				if err := pcsconfig.Config.Save(); err != nil {
+					activeUser.AccessToken = previousToken
+					pcsconfig.Config.ActiveUserBaiduPCS().SetaccessToken(previousToken)
+					return fmt.Errorf("保存配置错误: %w", err)
+				}
 				fmt.Printf("当前用户名: %s 成功设置accessToken: %s\n", activeUser.Name, activeUser.AccessToken)
 				return nil
 			},
@@ -1974,11 +1976,10 @@ func main() {
 			Action: func(c *cli.Context) error {
 				if c.NArg() != 1 {
 					cli.ShowCommandHelp(c, c.Command.Name)
-					return nil
+					return fmt.Errorf("通配符测试需要且仅接受一个表达式")
 				}
 
-				pcscommand.RunTestShellPattern(c.Args()[0])
-				return nil
+				return pcscommand.RunTestShellPatternWithError(c.Args()[0])
 			},
 		},
 		{
@@ -2009,8 +2010,7 @@ func main() {
 
 						ipAddr, err := getip.IPInfoFromTechainBaiduByClient(pcsconfig.Config.HTTPClient())
 						if err != nil {
-							fmt.Printf("获取公网IP错误: %s\n", err)
-							return nil
+							return fmt.Errorf("获取公网IP错误: %w", err)
 						}
 
 						fmt.Printf("公网IP地址: %s\n", ipAddr)

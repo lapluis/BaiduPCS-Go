@@ -417,3 +417,36 @@ func TestSumFileCommandBatchOutcomes(t *testing.T) {
 		})
 	}
 }
+
+func TestRunTestShellPatternWithError(t *testing.T) {
+	for _, state := range []string{"success", "remote-error", "http-503"} {
+		t.Run(state, func(t *testing.T) {
+			changeDirectoryFixture(t)
+			GetBaiduPCS().GetClient().Client.Transport = shareFixtureTransport(func(req *http.Request) (*http.Response, error) {
+				if state == "http-503" {
+					resp := remainingResponse(req, "unavailable")
+					resp.StatusCode = 503
+					return resp, nil
+				}
+				if state == "remote-error" {
+					return remainingResponse(req, `{"errno":31045}`), nil
+				}
+				return remainingResponse(req, `{"errno":0,"list":[{"fs_id":1,"path":"/fixture/a.mp4","server_filename":"a.mp4","size":10,"isdir":0},{"fs_id":2,"path":"/fixture/b.txt","server_filename":"b.txt","size":5,"isdir":0}]}`), nil
+			})
+			var err error
+			out := captureExportCall(t, func() {
+				err = RunTestShellPatternWithError("/fixture/*.mp4")
+			})
+			if state == "success" {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				if strings.TrimSpace(out) != "/fixture/a.mp4" {
+					t.Fatalf("unexpected match output: %q", out)
+				}
+			} else if err == nil {
+				t.Fatalf("expected error for state %s, got nil (out=%q)", state, out)
+			}
+		})
+	}
+}

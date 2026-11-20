@@ -30,16 +30,22 @@ func init() {
 
 // RunTestShellPattern 执行测试通配符
 func RunTestShellPattern(pattern string) {
+	if err := RunTestShellPatternWithError(pattern); err != nil {
+		fmt.Println(err)
+	}
+}
+
+// RunTestShellPatternWithError 执行测试通配符并返回匹配错误
+func RunTestShellPatternWithError(pattern string) error {
 	pcs := GetBaiduPCS()
 	paths, err := pcs.MatchPathByShellPattern(GetActiveUser().PathJoin(pattern))
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 	for k := range paths {
 		fmt.Printf("%s\n", paths[k])
 	}
-	return
+	return nil
 }
 
 func matchPathByShellPatternOnce(pattern *string) error {
