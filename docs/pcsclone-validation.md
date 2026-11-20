@@ -949,3 +949,13 @@ files 3/4 | active 1 | failed 0 | elapsed 1m49s
 | `sample-4.bin` | `bc4e22a50486c07946fd1d8b48fb7bbcda83eec6035e62473f75ecb0e4d869c9` |
 
 测试结束后逐一删除度盘上的 4 个测试文件，确认目录为空后删除目录，再以 `stat` 确认原路径不存在。本地测试源文件、下载副本和临时状态目录均已清理。本次测试机保留了逐轮校验结果 `build/terminal-cloud-c884aa4a/results.json`、第九轮逐帧记录 `round-9-frames.jsonl`、重连摘录 `round-9-excerpt.json` 及同目录下的清理记录 `cleanup.txt`。
+
+## 2026-11-20：旧版命令收尾、配置注入重构与单账号实盘验证
+
+- **旧版 CLI 错误传播（`803f092`）**：修复旧版 `setastoken`、`match` 与 `tool getip` 报错仍退出 0 的问题，`setastoken` 改为显式保存并在保存失败时回滚；新增 `TestRunTestShellPatternWithError` 与 `TestLegacyRemainingUtilityExitStatus`。
+- **依赖注入式账号/配置访问（`d1dafaf`）**：新增 `Baidu.BaiduPCSWithConfig`、`rc.AccountStore`、`rc.NewResolverWithStore`、`rc.RunWithConfig`、`rc.RunWorkerWithConfig`，并将 `ValidateCommandLogPath` 与 `pcsclone.App` 切换为基于注入配置隔离运行，不再改写全局 `pcsconfig.Config` 或全局配置目录；新增 `TestResolverAndCLIWithInjectedStoreAreIsolatedFromGlobalConfig` 与 `TestAppEnsureRuntimeDoesNotMutateGlobalConfig`。
+- **本地门禁**：`go build ./...`、`go vet ./...`、`git diff --check`、`scripts/test-pcsclone-local.ps1` 及受影响五包（`internal/pcsconfig`、`internal/pcscommand`、`internal/rc`、`internal/pcsclone`、`internal/cliintegration`）完整测试全部通过。
+- **单账号实盘验证（`/Temp/pcsclone-live-<id>`，`build/pcsclone.exe` `v4.0.2-dev+d1dafaf`）**：
+  - **已通过**：`about --json`、`mkdir`、`copy`（上传与 `--exclude "*.tmp"` 过滤）、`ls`/`lsf`/`lsd`/`lsjson -R`、`stat --hash`（大小 65,536 字节与本地 MD5 一致）、`size --json`（count=2、bytes=327,680）、`copyto`（下载 262,144 字节并核对 SHA256 逐字节一致）、`check`、`sync --dry-run`（确认远端未改动）、`sync --max-delete 5` + 二次 `check`（新增与删除均生效）、`move --delete-empty-src-dirs`（文件成功迁移至目标目录，源根按契约保留）、`baidu link`（默认 locate 与 `--direct --json`）、`baidu search --recursive`、`baidu share create`/`list`/`cancel`（创建后立即可查并立即取消，无残留分享）、`baidu offline list`、`baidu recycle list`、`deletefile`。
+  - **清理确认**：执行 `purge` 删除远端隔离目录并通过 `stat` 确认已不存在，本地临时目录同步清理；未在日志或仓库中记录任何凭据、Cookie 或分享链接。
+  - **待补充项**：同账号对自身分享执行 `baidu transfer` 返回退出 1（需使用外部或另一账号分享链接复测）；当前环境仅配置单账号，双账号跨账号中转、真实大文件 Ctrl-C 终端续传及线上 GitHub Actions 发布工作流尚未执行。
