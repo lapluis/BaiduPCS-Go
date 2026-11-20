@@ -33,7 +33,7 @@ const (
 	defaultConfigName = "pcs_config.json"
 )
 
-// App holds the process-wide state for one pcsclone invocation.
+// App holds the state for one pcsclone invocation.
 type App struct {
 	Version string
 	Stdout  io.Writer
@@ -41,9 +41,17 @@ type App struct {
 	CWD     string
 
 	ConfigFile string
+	Config     *pcsconfig.PCSConfig
 	Resolver   *rc.Resolver
 
 	initialized bool
+}
+
+func (a *App) config() *pcsconfig.PCSConfig {
+	if a != nil && a.Config != nil {
+		return a.Config
+	}
+	return pcsconfig.Config
 }
 
 // exitError attaches a process exit code to an error.
@@ -109,7 +117,7 @@ func (a *App) run(raw []string) (code int) {
 	oldConfigEnv, hadConfigEnv := os.LookupEnv(EnvConfigFile)
 	defer func() {
 		if a.initialized {
-			_ = pcsconfig.Config.Close()
+			_ = a.config().Close()
 		}
 		if hadConfigEnv {
 			_ = os.Setenv(EnvConfigFile, oldConfigEnv)
@@ -152,8 +160,8 @@ func (a *App) run(raw []string) (code int) {
 			fmt.Fprintln(a.Stderr, "pcsclone: transfer worker:", err)
 			return 1
 		}
-		code := rc.Run(append([]string{name}, rest...), a.CWD)
-		pcsconfig.Config.Close()
+		code := rc.RunWithConfig(append([]string{name}, rest...), a.CWD, a.config())
+		_ = a.config().Close()
 		return code
 	}
 
@@ -237,13 +245,7 @@ func (a *App) ensureRuntime(configPath string) error {
 		return err
 	}
 
-	pcsconfig.SetConfigDir(filepath.Dir(path))
-	old := pcsconfig.Config
 	cfg := pcsconfig.NewConfig(path)
-	pcsconfig.Config = cfg
-	if old != nil && old != cfg {
-		_ = old.Close()
-	}
 	if err = cfg.Init(); err != nil {
 		_ = cfg.Close()
 		return fmt.Errorf("load config %s: %w", path, err)
@@ -252,12 +254,14 @@ func (a *App) ensureRuntime(configPath string) error {
 		_ = cfg.Close()
 		return fmt.Errorf("export config path for transfer workers: %w", err)
 	}
-	resolver, err := rc.NewResolver(a.CWD)
+	store := rc.NewPCSConfigStore(cfg, filepath.Dir(path))
+	resolver, err := rc.NewResolverWithStore(a.CWD, store)
 	if err != nil {
 		_ = cfg.Close()
 		return err
 	}
 	a.ConfigFile = path
+	a.Config = cfg
 	a.Resolver = resolver
 	a.initialized = true
 	return nil

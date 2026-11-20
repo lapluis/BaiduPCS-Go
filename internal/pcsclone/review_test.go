@@ -77,14 +77,14 @@ func TestOfflineBatchStopsAfterCancellation(t *testing.T) {
 			if err := app.ensureRuntime(filepath.Join(app.CWD, defaultConfigName)); err != nil {
 				t.Fatal(err)
 			}
-			defer pcsconfig.Config.Close()
+			defer app.Config.Close()
 			oldProxy, oldRules := requester.ProxyAddr, requester.ProxyHostnameRules
 			defer func() {
 				requester.SetGlobalProxy(oldProxy)
 				requester.SetProxyHostnameRules(oldRules)
 			}()
-			pcsconfig.Config.EnableHTTPS = false
-			pcsconfig.Config.BaiduUserList = pcsconfig.BaiduUserList{&pcsconfig.Baidu{BaiduBase: pcsconfig.BaiduBase{UID: 7}}}
+			app.Config.EnableHTTPS = false
+			app.Config.BaiduUserList = pcsconfig.BaiduUserList{&pcsconfig.Baidu{BaiduBase: pcsconfig.BaiduBase{UID: 7}}}
 			app.Resolver.Aliases["bd"] = 7
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

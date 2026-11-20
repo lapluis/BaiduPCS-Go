@@ -16,7 +16,7 @@
 & .\build\pcsclone.exe help
 ```
 
-脚本从 `.go-version` 选择发布工具链（当前为 Go 1.27.3），通过 Go 自动工具链机制下载并校验，关闭 CGO，退出时恢复调用者的环境变量和工作目录。系统 Go 安装不被替换。构建使用 `-w` 去除 DWARF 调试信息，保留 Go 符号以供 `govulncheck -mode binary` 检查实际链接的函数；使用 `-s` 剥离符号后，扫描器可能退回模块级匹配，报告未链接进程序的函数漏洞。该扫描仍不等于证明整个程序没有安全问题。指定版本字符串或输出路径：
+脚本从 `.go-version` 选择发布工具链（当前为 Go 1.27.4），通过 Go 自动工具链机制下载并校验，关闭 CGO，退出时恢复调用者的环境变量和工作目录。系统 Go 安装不被替换。构建使用 `-w` 去除 DWARF 调试信息，保留 Go 符号以供 `govulncheck -mode binary` 检查实际链接的函数；使用 `-s` 剥离符号后，扫描器可能退回模块级匹配，报告未链接进程序的函数漏洞。该扫描仍不等于证明整个程序没有安全问题。指定版本字符串或输出路径：
 
 ```powershell
 & .\scripts\build-pcsclone.ps1 -Version 'v4.0.2-dev' -Output 'build/pcsclone.exe'
@@ -449,7 +449,7 @@ PowerShell 在命令行中间补全时，只解析光标前的命令和参数。
 ## 9. 当前限制
 
 - 不提供 `mount`、`serve`、`bisync` 或 rclone Remote Control API。
-- 执行引擎仍通过 `pcsconfig.Config` 全局值读取账号列表；pcsclone 在启动时把它指向独立配置文件。完整的依赖注入式账号/配置访问接口尚未重构。
+- 执行引擎与 `pcsclone` 通过注入的 `rc.AccountStore` / 独立 `*pcsconfig.PCSConfig` 访问账号和配置，不再改写全局 `pcsconfig.Config`（旧版 `BaiduPCS-Go` 入口仍沿用默认全局配置）。
 - 下载跨命令续传需要服务端支持 Range 并提供有效的实体校验信息；否则重下。上传续传状态按账号、源、目标隔离。
 - 不跟随符号链接或 Windows 目录联接，路径的父目录也受此限制；不复制 ACL/所有者。
 - 远端比较、`check`、`stat --hash`、`--checksum` 可能需要下载内容，产生流量和临时磁盘占用。

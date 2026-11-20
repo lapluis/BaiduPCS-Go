@@ -48,8 +48,16 @@ type Baidu struct {
 
 // BaiduPCS 初始化*baidupcs.BaiduPCS
 func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
+	return baidu.BaiduPCSWithConfig(Config)
+}
+
+// BaiduPCSWithConfig 使用指定配置初始化 *baidupcs.BaiduPCS；cfg 为 nil 时回退到全局 Config。
+func (baidu *Baidu) BaiduPCSWithConfig(cfg *PCSConfig) *baidupcs.BaiduPCS {
+	if cfg == nil {
+		cfg = Config
+	}
 	// Load cookie defaults once, then overlay explicitly configured credentials.
-	pcs := baidupcs.NewPCSWithCookieStr(Config.AppID, baidu.COOKIES)
+	pcs := baidupcs.NewPCSWithCookieStr(cfg.AppID, baidu.COOKIES)
 	if baidu.BDUSS != "" {
 		pcs.SetBDUSS(baidu.BDUSS)
 	}
@@ -59,11 +67,11 @@ func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
 	if baidu.SBOXTKN != "" {
 		pcs.SetSboxtkn(baidu.SBOXTKN)
 	}
-	pcs.SetHTTPS(Config.EnableHTTPS)
-	pcs.SetStaticPCSAddr(Config.FixPCSAddr)
-	pcs.SetPCSAddr(Config.PCSAddr)
-	pcs.SetPCSUserAgent(Config.PCSUA)
-	pcs.SetPanUserAgent(Config.PanUA)
+	pcs.SetHTTPS(cfg.EnableHTTPS)
+	pcs.SetStaticPCSAddr(cfg.FixPCSAddr)
+	pcs.SetPCSAddr(cfg.PCSAddr)
+	pcs.SetPCSUserAgent(cfg.PCSUA)
+	pcs.SetPanUserAgent(cfg.PanUA)
 	pcs.SetUID(baidu.UID)
 	pcs.SetaccessToken(baidu.AccessToken)
 	return pcs

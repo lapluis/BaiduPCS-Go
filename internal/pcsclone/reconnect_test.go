@@ -18,7 +18,7 @@ func TestReconnectKeepsAccountIdentityAndPersistedAliases(t *testing.T) {
 			c, out := commandFixture(t, func(http.ResponseWriter, *http.Request) {
 				t.Error("offline reconnect reached the network")
 			}, buildConfigGroup().Group, "reconnect", []string{"bd"}, []string{"--bduss", "SYNTHETIC-NEW", "--stoken", "SYNTHETIC-STOKEN"})
-			cfg := pcsconfig.Config
+			cfg := c.app.Config
 			// The existing offline login mode constructs UID 24 without any
 			// authentication request. All account data here is synthetic.
 			cfg.ForceLogin = "offline fixture"
@@ -63,7 +63,7 @@ func TestReconnectKeepsAccountIdentityAndPersistedAliases(t *testing.T) {
 					t.Fatalf("rejected reconnect changed persisted state: err=%v output=%q", runErr, out.String())
 				}
 			} else {
-				user, other := findBaiduUser(uid), findBaiduUser(77)
+				user, other := findBaiduUser(cfg, uid), findBaiduUser(cfg, 77)
 				if runErr != nil || user == nil || user.BDUSS != "SYNTHETIC-NEW" || user.STOKEN != "SYNTHETIC-STOKEN" || other == nil || other.BDUSS != "SYNTHETIC-OTHER" || other.Workdir != "/other" || len(cfg.BaiduUserList) != 2 || bytes.Equal(before, after) {
 					t.Fatalf("same-account reconnect did not preserve account boundaries: %v", runErr)
 				}
@@ -71,7 +71,7 @@ func TestReconnectKeepsAccountIdentityAndPersistedAliases(t *testing.T) {
 					t.Fatalf("reconnect output missing or exposed synthetic credentials: %q", out.String())
 				}
 			}
-			memory, err := json.Marshal(pcsconfig.Config.BaiduUserList)
+			memory, err := json.Marshal(cfg.BaiduUserList)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -83,7 +83,7 @@ func TestReconnectKeepsAccountIdentityAndPersistedAliases(t *testing.T) {
 				t.Fatal(err)
 			}
 			var compact bytes.Buffer
-			if err := json.Compact(&compact, saved.Users); err != nil || !bytes.Equal(memory, compact.Bytes()) || saved.ActiveUID != uid || pcsconfig.Config.BaiduActiveUID != uid {
+			if err := json.Compact(&compact, saved.Users); err != nil || !bytes.Equal(memory, compact.Bytes()) || saved.ActiveUID != uid || cfg.BaiduActiveUID != uid {
 				t.Fatalf("reconnect left persisted and in-memory accounts inconsistent: %v", err)
 			}
 			if current, err := os.ReadFile(aliasPath); err != nil || !bytes.Equal(current, aliases) {

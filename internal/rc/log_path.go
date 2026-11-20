@@ -25,11 +25,16 @@ func ValidateCommandLogPath(ctx context.Context, cwd, logPath, configFile, files
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	configDir := pcsconfig.GetConfigDir()
+	if configFile != "" {
+		configDir = filepath.Dir(configFile)
+	}
 	var protected []string
-	for _, file := range []string{configFile, filesFrom, aliasesPath(),
-		filepath.Join(pcsconfig.GetConfigDir(), "rc-state"),
-		filepath.Join(pcsconfig.GetConfigDir(), pcsupload.UploadingFileName),
-		filepath.Join(pcsconfig.GetConfigDir(), pcsupload.UploadingFileName+".lock")} {
+	for _, file := range []string{configFile, filesFrom,
+		filepath.Join(configDir, "rc_remotes.json"),
+		filepath.Join(configDir, "rc-state"),
+		filepath.Join(configDir, pcsupload.UploadingFileName),
+		filepath.Join(configDir, pcsupload.UploadingFileName+".lock")} {
 		if file == "" {
 			continue
 		}

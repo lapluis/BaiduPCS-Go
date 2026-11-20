@@ -276,14 +276,22 @@ func Handles(args []string) bool {
 	return false
 }
 func Run(args []string, cwd string) int {
-	return runWithIO(args, cwd, os.Stdout, os.Stderr)
+	return runWithConfigIO(args, cwd, nil, os.Stdout, os.Stderr)
+}
+
+func RunWithConfig(args []string, cwd string, cfg *pcsconfig.PCSConfig) int {
+	return runWithConfigIO(args, cwd, cfg, os.Stdout, os.Stderr)
 }
 
 var openLogFile = func(path string) (io.WriteCloser, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 }
 
-func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
+func runWithIO(args []string, cwd string, stdout, stderr io.Writer) int {
+	return runWithConfigIO(args, cwd, nil, stdout, stderr)
+}
+
+func runWithConfigIO(args []string, cwd string, cfg *pcsconfig.PCSConfig, stdout, stderr io.Writer) (code int) {
 	output := checkedwriter.New(stdout)
 	stdout = output
 	defer func() {
@@ -293,7 +301,7 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 		}
 	}()
 	if len(args) > 0 && args[0] == "__rc_transfer" {
-		if err := RunWorker(args[1:]); err != nil {
+		if err := RunWorkerWithConfig(args[1:], cfg); err != nil {
 			fmt.Fprintln(stderr, "transfer worker failed")
 			return 1
 		}
@@ -329,13 +337,14 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 	logWriter := stderr
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	store := NewPCSConfigStore(cfg, "")
 	var logFile io.WriteCloser
 	if p.LogFile != "" {
 		var endpoints []string
 		if args[0] != "remote" && args[0] != "listremotes" {
 			endpoints = p.Args
 		}
-		if err := ValidateCommandLogPath(ctx, cwd, p.LogFile, pcsconfig.Config.FilePath(), p.FilesFrom, endpoints...); err != nil {
+		if err := ValidateCommandLogPath(ctx, cwd, p.LogFile, store.ConfigFilePath(), p.FilesFrom, endpoints...); err != nil {
 			fmt.Fprintln(stderr, err)
 			if ctx.Err() != nil {
 				return 130
@@ -391,7 +400,7 @@ func runWithIO(args []string, cwd string, stdout, stderr io.Writer) (code int) {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	resolver, err := NewResolver(cwd)
+	resolver, err := NewResolverWithStore(cwd, store)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -479,13 +488,7 @@ func runCommand(ctx context.Context, cmd string, p parsed, r *Resolver, out io.W
 			if err != nil {
 				return errors.New("--uid must identify a logged-in account")
 			}
-			found := false
-			for _, u := range pcsconfig.Config.BaiduUserList {
-				if u != nil && u.UID == uid {
-					found = true
-				}
-			}
-			if !found {
+			if !r.HasAccount(uid) {
 				return errors.New("account is not logged in")
 			}
 			r.Aliases[name] = uid

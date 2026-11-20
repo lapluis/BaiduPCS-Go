@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 )
 
 func TestBlankLoginCredentialsDoNotStartInteractiveLogin(t *testing.T) {
@@ -37,8 +35,8 @@ func TestBlankLoginCredentialsDoNotStartInteractiveLogin(t *testing.T) {
 						requests.Add(1)
 						w.WriteHeader(http.StatusBadGateway)
 					}, buildConfigGroup().Group, operation, []string{name}, flags)
-					pcsconfig.Config.BaiduUserList[0].BDUSS = "SYNTHETIC-OLD"
-					if err := pcsconfig.Config.Save(); err != nil {
+					c.app.Config.BaiduUserList[0].BDUSS = "SYNTHETIC-OLD"
+					if err := c.app.Config.Save(); err != nil {
 						t.Fatal(err)
 					}
 					if err := c.app.Resolver.Save(); err != nil {

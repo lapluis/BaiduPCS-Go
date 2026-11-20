@@ -153,13 +153,14 @@ func (c *commandContext) loginInput() (loginInput, error) {
 	return in, nil
 }
 
-func applyLogin(in loginInput) (*pcsconfig.Baidu, error) {
-	return pcsconfig.Config.SetupUserByBDUSS(in.bduss, in.ptoken, in.stoken, in.cookies)
+func applyLogin(cfg *pcsconfig.PCSConfig, in loginInput) (*pcsconfig.Baidu, error) {
+	return cfg.SetupUserByBDUSS(in.bduss, in.ptoken, in.stoken, in.cookies)
 }
 
 func validAlias(name string) bool { return aliasPattern.MatchString(name) }
 
 func runConfigCreate(c *commandContext) error {
+	cfg := c.app.config()
 	name := c.args[0]
 	if !validAlias(name) {
 		return usageErrorf("remote names need at least two letters/digits, start with a letter, and may contain _ or -")
@@ -171,20 +172,20 @@ func runConfigCreate(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	user, err := applyLogin(in)
+	user, err := applyLogin(cfg, in)
 	if err != nil {
 		return operationError(err)
 	}
 	for other, uid := range c.app.Resolver.Aliases {
 		if uid == user.UID {
-			if reloadErr := pcsconfig.Config.Reload(); reloadErr != nil {
+			if reloadErr := cfg.Reload(); reloadErr != nil {
 				return operationError(fmt.Errorf("account is already configured as remote %q; reload failed: %w", other, reloadErr))
 			}
 			return operationError(fmt.Errorf("account is already configured as remote %q", other))
 		}
 	}
 	c.app.Resolver.Aliases[name] = user.UID
-	if err = pcsconfig.Config.Save(); err != nil {
+	if err = cfg.Save(); err != nil {
 		return operationError(err)
 	}
 	if err = c.app.Resolver.Save(); err != nil {
@@ -195,6 +196,7 @@ func runConfigCreate(c *commandContext) error {
 }
 
 func runConfigReconnect(c *commandContext) error {
+	cfg := c.app.config()
 	name := c.args[0]
 	uid, exists := c.app.Resolver.Aliases[name]
 	if !exists {
@@ -204,20 +206,20 @@ func runConfigReconnect(c *commandContext) error {
 	if err != nil {
 		return err
 	}
-	user, err := applyLogin(in)
+	user, err := applyLogin(cfg, in)
 	if err != nil {
-		if reloadErr := pcsconfig.Config.Reload(); reloadErr != nil {
+		if reloadErr := cfg.Reload(); reloadErr != nil {
 			return operationError(errors.Join(err, reloadErr))
 		}
 		return operationError(err)
 	}
 	if user.UID != uid {
-		if reloadErr := pcsconfig.Config.Reload(); reloadErr != nil {
+		if reloadErr := cfg.Reload(); reloadErr != nil {
 			return operationError(errors.Join(fmt.Errorf("login returned uid %d, expected %d", user.UID, uid), reloadErr))
 		}
 		return operationError(fmt.Errorf("login returned uid %d, expected %d; remote %q was not changed", user.UID, uid, name))
 	}
-	if err = pcsconfig.Config.Save(); err != nil {
+	if err = cfg.Save(); err != nil {
 		return operationError(err)
 	}
 	fmt.Fprintf(c.app.Stdout, "Reconnected remote %q for %s (uid %d)\n", name, user.Name, user.UID)
@@ -270,11 +272,12 @@ func runConfigDelete(c *commandContext) error {
 		return operationError(err)
 	}
 	if removeAccount {
-		_, err := pcsconfig.Config.DeleteUser(&pcsconfig.BaiduBase{UID: uid})
+		cfg := c.app.config()
+		_, err := cfg.DeleteUser(&pcsconfig.BaiduBase{UID: uid})
 		if err != nil && !errors.Is(err, pcsconfig.ErrBaiduUserNotFound) && !errors.Is(err, pcsconfig.ErrNoSuchBaiduUser) {
 			return operationError(err)
 		}
-		if err = pcsconfig.Config.Save(); err != nil {
+		if err = cfg.Save(); err != nil {
 			return operationError(err)
 		}
 		fmt.Fprintf(c.app.Stdout, "Removed remote %q and its stored account\n", name)
@@ -295,8 +298,14 @@ type remoteSummary struct {
 	Broken      bool   `json:"broken,omitempty"`
 }
 
-func findBaiduUser(uid uint64) *pcsconfig.Baidu {
-	for _, user := range pcsconfig.Config.BaiduUserList {
+func findBaiduUser(cfg *pcsconfig.PCSConfig, uid uint64) *pcsconfig.Baidu {
+	if cfg == nil {
+		cfg = pcsconfig.Config
+	}
+	if cfg == nil {
+		return nil
+	}
+	for _, user := range cfg.BaiduUserList {
 		if user != nil && user.UID == uid {
 			return user
 		}
@@ -324,7 +333,7 @@ func runConfigShow(c *commandContext) error {
 	for _, name := range names {
 		uid := c.app.Resolver.Aliases[name]
 		summary := remoteSummary{Name: name, UID: uid}
-		user := findBaiduUser(uid)
+		user := findBaiduUser(c.app.config(), uid)
 		if user == nil {
 			summary.Username = "<missing-account>"
 			summary.Broken = true
@@ -434,8 +443,9 @@ func runConfigImport(c *commandContext) error {
 	for name := range c.app.Resolver.Aliases {
 		usedAliases[name] = true
 	}
+	cfg := c.app.config()
 	knownUIDs := map[uint64]bool{}
-	for _, user := range pcsconfig.Config.BaiduUserList {
+	for _, user := range cfg.BaiduUserList {
 		if user != nil {
 			knownUIDs[user.UID] = true
 		}
@@ -468,7 +478,7 @@ func runConfigImport(c *commandContext) error {
 		copied := *user
 		copied.BDUSS = bduss
 		copied.Workdir = "/"
-		pcsconfig.Config.BaiduUserList = append(pcsconfig.Config.BaiduUserList, &copied)
+		cfg.BaiduUserList = append(cfg.BaiduUserList, &copied)
 		knownUIDs[user.UID] = true
 		imported++
 	}
@@ -491,7 +501,7 @@ func runConfigImport(c *commandContext) error {
 		usedAliases[name] = true
 		addedAliases++
 	}
-	for _, user := range pcsconfig.Config.BaiduUserList {
+	for _, user := range cfg.BaiduUserList {
 		if user == nil {
 			continue
 		}
@@ -503,15 +513,15 @@ func runConfigImport(c *commandContext) error {
 		usedAliases[name] = true
 		addedAliases++
 	}
-	if pcsconfig.Config.BaiduActiveUID == 0 || !knownUIDs[pcsconfig.Config.BaiduActiveUID] {
-		if len(pcsconfig.Config.BaiduUserList) > 0 && pcsconfig.Config.BaiduUserList[0] != nil {
-			pcsconfig.Config.BaiduActiveUID = pcsconfig.Config.BaiduUserList[0].UID
+	if cfg.BaiduActiveUID == 0 || !knownUIDs[cfg.BaiduActiveUID] {
+		if len(cfg.BaiduUserList) > 0 && cfg.BaiduUserList[0] != nil {
+			cfg.BaiduActiveUID = cfg.BaiduUserList[0].UID
 		}
 	}
 
 	dryRun := c.flags.Bool("dry-run")
 	if !dryRun {
-		if err = pcsconfig.Config.Save(); err != nil {
+		if err = cfg.Save(); err != nil {
 			return operationError(err)
 		}
 		if err = c.app.Resolver.Save(); err != nil {

@@ -209,11 +209,11 @@ func TestRuntimeExportsConfigForWorker(t *testing.T) {
 	if err := app.ensureRuntime(config); err != nil {
 		t.Fatal(err)
 	}
-	defer pcsconfig.Config.Close()
+	defer app.Config.Close()
 	if got := os.Getenv(EnvConfigFile); got != config {
 		t.Fatalf("worker config env = %q, want %q", got, config)
 	}
-	if got := pcsconfig.GetConfigDir(); got != filepath.Dir(config) {
+	if got := app.Resolver.Store.ConfigDir(); got != filepath.Dir(config) {
 		t.Fatalf("config dir = %q, want %q", got, filepath.Dir(config))
 	}
 	app.Resolver.Aliases["bd"] = 7
@@ -499,5 +499,40 @@ func TestImportDryRunAndSecondRun(t *testing.T) {
 	summaryRemotes, ok := summary["remotes"].([]interface{})
 	if !ok || len(summaryRemotes) != 1 || summaryRemotes[0] != "seven" {
 		t.Fatalf("second import should report the existing remote: %#v", summary["remotes"])
+	}
+}
+
+func TestAppEnsureRuntimeDoesNotMutateGlobalConfig(t *testing.T) {
+	globalConfigBefore := pcsconfig.Config
+	globalDirBefore := pcsconfig.GetConfigDir()
+	oldEnv, hadEnv := os.LookupEnv(EnvConfigFile)
+	defer func() {
+		if hadEnv {
+			_ = os.Setenv(EnvConfigFile, oldEnv)
+		} else {
+			_ = os.Unsetenv(EnvConfigFile)
+		}
+	}()
+
+	root := t.TempDir()
+	cfgPathA := filepath.Join(root, "a", "pcs_config.json")
+	cfgPathB := filepath.Join(root, "b", "pcs_config.json")
+	appA := &App{CWD: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if err := appA.ensureRuntime(cfgPathA); err != nil {
+		t.Fatal(err)
+	}
+	defer appA.Config.Close()
+
+	appB := &App{CWD: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if err := appB.ensureRuntime(cfgPathB); err != nil {
+		t.Fatal(err)
+	}
+	defer appB.Config.Close()
+
+	if appA.Config == appB.Config || appA.Config.FilePath() != cfgPathA || appB.Config.FilePath() != cfgPathB {
+		t.Fatalf("apps did not receive isolated configs: A=%q B=%q", appA.Config.FilePath(), appB.Config.FilePath())
+	}
+	if pcsconfig.Config != globalConfigBefore || pcsconfig.GetConfigDir() != globalDirBefore {
+		t.Fatalf("ensureRuntime mutated global pcsconfig state: configSame=%v dir=%q wantDir=%q", pcsconfig.Config == globalConfigBefore, pcsconfig.GetConfigDir(), globalDirBefore)
 	}
 }

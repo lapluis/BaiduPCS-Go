@@ -114,7 +114,16 @@ func executeWorkerCommand(ctx context.Context, cmd *exec.Cmd, kind string, uid u
 }
 
 // RunWorker receives paths and an account ID only, never credential arguments.
-func RunWorker(args []string) (err error) {
+func RunWorker(args []string) error {
+	return RunWorkerWithConfig(args, nil)
+}
+
+// RunWorkerWithConfig runs a transfer worker against an explicit PCSConfig instance.
+// Passing cfg == nil falls back to the global pcsconfig.Config.
+func RunWorkerWithConfig(args []string, cfg *pcsconfig.PCSConfig) (err error) {
+	if cfg == nil {
+		cfg = pcsconfig.Config
+	}
 	if len(args) != 5 && len(args) != 6 {
 		return errors.New("invalid worker arguments")
 	}
@@ -163,13 +172,13 @@ func RunWorker(args []string) (err error) {
 	}()
 	report := reporter.Report
 	onProgress := func(done, total, rate int64) { report(transferProgress{Done: done, Total: total, Rate: rate}) }
-	user, err := pcsconfig.Config.SwitchUser(&pcsconfig.BaiduBase{UID: uid})
+	user, err := cfg.SwitchUser(&pcsconfig.BaiduBase{UID: uid})
 	if err != nil {
 		return err
 	}
-	pcs := user.BaiduPCS()
-	pcsconfig.Config.MaxUploadRate = rate
-	pcsconfig.Config.MaxDownloadRate = rate
+	pcs := user.BaiduPCSWithConfig(cfg)
+	cfg.MaxUploadRate = rate
+	cfg.MaxDownloadRate = rate
 	executor := &taskframework.TaskExecutor{IsFailedDeque: true}
 	executor.SetParallel(1)
 	if kind == "upload" {
@@ -184,12 +193,16 @@ func RunWorker(args []string) (err error) {
 			return errors.New("upload worker expects a regular file")
 		}
 		if info.Size == 0 {
-			return uploadEmptyFile(ctx, pcs, args[3], pcsconfig.Config.PCSHTTPClient())
+			return uploadEmptyFile(ctx, pcs, args[3], cfg.PCSHTTPClient())
 		}
 		// Each target has a separate resume database, preventing workers from
 		// overwriting each other's state or resuming against another account/path.
 		key := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x00%s", uid, args[2], args[3])))
-		stateDir := filepath.Join(pcsconfig.GetConfigDir(), "rc-state")
+		configDir := pcsconfig.GetConfigDir()
+		if cfg.FilePath() != "" {
+			configDir = filepath.Dir(cfg.FilePath())
+		}
+		stateDir := filepath.Join(configDir, "rc-state")
 		if err = os.MkdirAll(stateDir, 0700); err != nil {
 			return err
 		}
@@ -229,7 +242,7 @@ func RunWorker(args []string) (err error) {
 		}
 		statistic := &pcsdownload.DownloadStatistic{}
 		statistic.StartTimer()
-		cfg := &downloader.Config{Mode: transfer.RangeGenMode_BlockSize, MaxParallel: settings.Threads, CacheSize: pcsconfig.Config.CacheSize, BlockSize: baidupcs.InitRangeSize, MaxRate: rate, InstanceStateStorageFormat: downloader.InstanceStateStorageFormatProto3, TryHTTP: !pcsconfig.Config.EnableHTTPS}
+		dlCfg := &downloader.Config{Mode: transfer.RangeGenMode_BlockSize, MaxParallel: settings.Threads, CacheSize: cfg.CacheSize, BlockSize: baidupcs.InitRangeSize, MaxRate: rate, InstanceStateStorageFormat: downloader.InstanceStateStorageFormatProto3, TryHTTP: !cfg.EnableHTTPS}
 		executor.Append(&pcsdownload.DownloadTaskUnit{ProbeOnly: kind == "probe", Context: ctx, Progress: onProgress, ExpectedETag: settings.ETag, ExpectedModified: settings.Modified, OnProbe: func(etag, modified string) {
 			report(transferProgress{Total: info.Size, ETag: etag, Modified: modified})
 		}, OnTransferError: func(err error) {
@@ -239,7 +252,7 @@ func RunWorker(args []string) (err error) {
 			if errors.Is(err, downloader.ErrRemoteChanged) || errors.Is(err, downloader.ErrResumeFileMismatch) || errors.Is(err, downloader.ErrResumeSizeMismatch) {
 				report(transferProgress{Reset: true})
 			}
-		}, Cfg: cfg, PCS: pcs, ParentTaskExecutor: executor, DownloadStatistic: statistic, PrintFormat: pcsdownload.DefaultPrintFormat, IsOverwrite: true, NoCheck: true, ModifyMTime: true, DownloadMode: pcsdownload.DownloadModeLocate, PcsPath: args[2], SavePath: args[3], FileInfo: info}, 0)
+		}, Cfg: dlCfg, PCS: pcs, ParentTaskExecutor: executor, DownloadStatistic: statistic, PrintFormat: pcsdownload.DefaultPrintFormat, IsOverwrite: true, NoCheck: true, ModifyMTime: true, DownloadMode: pcsdownload.DownloadModeLocate, PcsPath: args[2], SavePath: args[3], FileInfo: info}, 0)
 	} else {
 		return errors.New("unknown transfer kind")
 	}

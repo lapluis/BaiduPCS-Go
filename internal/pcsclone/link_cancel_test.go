@@ -48,9 +48,9 @@ func commandFixture(t *testing.T, handler http.HandlerFunc, commands []*command,
 	if err := app.ensureRuntime(filepath.Join(app.CWD, defaultConfigName)); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { pcsconfig.Config.Close() })
-	pcsconfig.Config.EnableHTTPS = false
-	pcsconfig.Config.BaiduUserList = pcsconfig.BaiduUserList{&pcsconfig.Baidu{BaiduBase: pcsconfig.BaiduBase{UID: 7}}}
+	t.Cleanup(func() { _ = app.Config.Close() })
+	app.Config.EnableHTTPS = false
+	app.Config.BaiduUserList = pcsconfig.BaiduUserList{&pcsconfig.Baidu{BaiduBase: pcsconfig.BaiduBase{UID: 7}}}
 	app.Resolver.Aliases["bd"] = 7
 	oldProxy, oldRules := requester.ProxyAddr, requester.ProxyHostnameRules
 	t.Cleanup(func() { requester.SetGlobalProxy(oldProxy); requester.SetProxyHostnameRules(oldRules) })

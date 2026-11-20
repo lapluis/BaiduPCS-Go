@@ -33,7 +33,7 @@ func TestCookieLoginCommandsUseExactCookieFields(t *testing.T) {
 				c, out := commandFixture(t, func(http.ResponseWriter, *http.Request) {
 					t.Error("synthetic offline login reached the network")
 				}, buildConfigGroup().Group, operation, []string{"bd"}, []string{"--cookies", tc.cookies})
-				cfg := pcsconfig.Config
+				cfg := c.app.Config
 				cfg.ForceLogin = "offline fixture"
 				cfg.BaiduActiveUID = 77
 				cfg.BaiduUserList = pcsconfig.BaiduUserList{&pcsconfig.Baidu{BaiduBase: pcsconfig.BaiduBase{UID: 77, Name: "other"}, BDUSS: "SYNTHETIC-OTHER"}}
@@ -90,7 +90,7 @@ func TestCookieLoginCommandsUseExactCookieFields(t *testing.T) {
 				if loggedIn == nil || loggedIn.BDUSS != "SYNTHETIC" || loggedIn.COOKIES != tc.cookies || c.app.Resolver.Aliases["bd"] != 24 || len(saved.BaiduUserList) != 2 {
 					t.Fatal("valid login did not persist the exact cookie and account identity")
 				}
-				if other := findBaiduUser(77); other == nil || other.BDUSS != "SYNTHETIC-OTHER" {
+				if other := findBaiduUser(cfg, 77); other == nil || other.BDUSS != "SYNTHETIC-OTHER" {
 					t.Fatal("login changed the unrelated account")
 				}
 				if out.Len() == 0 || strings.Contains(out.String(), "SYNTHETIC") {

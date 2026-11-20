@@ -11,20 +11,109 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/qjfoidnh/BaiduPCS-Go/baidupcs"
 	"github.com/qjfoidnh/BaiduPCS-Go/internal/pcsconfig"
 )
 
 var aliasPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]+$`)
 
+// AccountStore provides access to account configuration and storage locations
+// without requiring callers to mutate the global pcsconfig.Config singleton.
+type AccountStore interface {
+	ConfigDir() string
+	ConfigFilePath() string
+	BaiduPCS(uid uint64) (*baidupcs.BaiduPCS, bool)
+	HasAccount(uid uint64) bool
+}
+
+type pcsConfigStore struct {
+	cfg       *pcsconfig.PCSConfig
+	configDir string
+}
+
+// NewPCSConfigStore adapts a PCSConfig instance into an AccountStore.
+// Passing cfg == nil falls back to pcsconfig.Config dynamically for legacy callers.
+func NewPCSConfigStore(cfg *pcsconfig.PCSConfig, configDir string) AccountStore {
+	return &pcsConfigStore{cfg: cfg, configDir: configDir}
+}
+
+func (s *pcsConfigStore) activeConfig() *pcsconfig.PCSConfig {
+	if s != nil && s.cfg != nil {
+		return s.cfg
+	}
+	return pcsconfig.Config
+}
+
+func (s *pcsConfigStore) ConfigDir() string {
+	if s != nil && s.configDir != "" {
+		return s.configDir
+	}
+	if s != nil && s.cfg != nil && s.cfg.FilePath() != "" {
+		return filepath.Dir(s.cfg.FilePath())
+	}
+	return pcsconfig.GetConfigDir()
+}
+
+func (s *pcsConfigStore) ConfigFilePath() string {
+	cfg := s.activeConfig()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.FilePath()
+}
+
+func (s *pcsConfigStore) HasAccount(uid uint64) bool {
+	cfg := s.activeConfig()
+	if cfg == nil {
+		return false
+	}
+	for _, u := range cfg.BaiduUserList {
+		if u != nil && u.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *pcsConfigStore) BaiduPCS(uid uint64) (*baidupcs.BaiduPCS, bool) {
+	cfg := s.activeConfig()
+	if cfg == nil {
+		return nil, false
+	}
+	for _, u := range cfg.BaiduUserList {
+		if u != nil && u.UID == uid {
+			return u.BaiduPCSWithConfig(cfg), true
+		}
+	}
+	return nil, false
+}
+
 type Resolver struct {
 	CWD     string
 	Aliases map[string]uint64
+	Store   AccountStore
+}
+
+func (r *Resolver) store() AccountStore {
+	if r != nil && r.Store != nil {
+		return r.Store
+	}
+	return NewPCSConfigStore(nil, "")
 }
 
 func aliasesPath() string { return filepath.Join(pcsconfig.GetConfigDir(), "rc_remotes.json") }
+
+func (r *Resolver) aliasesPath() string {
+	return filepath.Join(r.store().ConfigDir(), "rc_remotes.json")
+}
+
 func NewResolver(cwd string) (*Resolver, error) {
-	r := &Resolver{CWD: cwd, Aliases: map[string]uint64{}}
-	b, err := os.ReadFile(aliasesPath())
+	return NewResolverWithStore(cwd, nil)
+}
+
+func NewResolverWithStore(cwd string, store AccountStore) (*Resolver, error) {
+	r := &Resolver{CWD: cwd, Aliases: map[string]uint64{}, Store: store}
+	b, err := os.ReadFile(r.aliasesPath())
 	if os.IsNotExist(err) {
 		return r, nil
 	}
@@ -39,17 +128,20 @@ func NewResolver(cwd string) (*Resolver, error) {
 	}
 	return r, nil
 }
+func (r *Resolver) HasAccount(uid uint64) bool {
+	return r.store().HasAccount(uid)
+}
 func (r *Resolver) Save() error {
 	b, err := json.MarshalIndent(r.Aliases, "", "  ")
 	if err != nil {
 		return err
 	}
-	target, err := pcsconfig.ResolveConfigDestination(aliasesPath())
+	target, err := pcsconfig.ResolveConfigDestination(r.aliasesPath())
 	if err != nil {
 		return err
 	}
-	if pcsconfig.Config != nil && pcsconfig.Config.FilePath() != "" {
-		account, err := pcsconfig.ResolveConfigDestination(pcsconfig.Config.FilePath())
+	if accountPath := r.store().ConfigFilePath(); accountPath != "" {
+		account, err := pcsconfig.ResolveConfigDestination(accountPath)
 		if err != nil {
 			return err
 		}
@@ -122,10 +214,8 @@ func (r *Resolver) Resolve(s string) (Endpoint, error) {
 	if strings.Contains(rest, `\`) {
 		return Endpoint{}, errors.New("remote paths use forward slashes")
 	}
-	for _, u := range pcsconfig.Config.BaiduUserList {
-		if u != nil && u.UID == uid {
-			return Endpoint{FS: &Remote{PCS: u.BaiduPCS(), UID: uid}, Root: path.Clean("/" + rest)}, nil
-		}
+	if pcs, ok := r.store().BaiduPCS(uid); ok {
+		return Endpoint{FS: &Remote{PCS: pcs, UID: uid}, Root: path.Clean("/" + rest)}, nil
 	}
 	return Endpoint{}, fmt.Errorf("remote %q refers to an account that is no longer logged in", alias)
 }
