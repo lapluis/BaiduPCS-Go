@@ -1,4 +1,6 @@
-# 验证记录
+# 验证记录（旧 `rc` 入口基线）
+
+> 本文件记录 2026-10-22 旧 `BaiduPCS-Go rc` 入口接入时的基线验证与 2026-10-14 历史参考验证；本 fork 最新的全仓测试、工具链安全核对与真实网盘验证结果请见 [pcsclone-validation.md](pcsclone-validation.md)。
 
 本文件区分两类结果：
 

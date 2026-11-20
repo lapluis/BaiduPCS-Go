@@ -1,8 +1,8 @@
 # BaiduPCS-Go 百度网盘客户端(加强版)
 
-> 本 fork 在保留原有命令的基础上，以补丁系列增加 rclone 风格的统一文件操作命令，详见 [使用指南](docs/rc.md)。运行 `BaiduPCS-Go rc help` 查看指令。补丁分组、上游同步与导出流程见 [补丁系列说明](docs/patch-series.md)。
->
-> 新增独立入口 `pcsclone`：独立配置、独立命令解析，复用同一操作引擎和传输 worker。构建 `go build -o build/pcsclone.exe ./cmd/pcsclone`，使用说明见 [pcsclone 指南](docs/pcsclone.md)，命令契约见 [pcsclone 命令契约](docs/pcsclone-command-contract.md)。
+> **本 fork 增强说明**：
+> - **独立入口 `pcsclone`（推荐）**：独立配置目录与命令解析，复用统一文件操作引擎和隔离传输 worker。使用 `.\scripts\build-pcsclone.ps1`（固定 Go 1.27.4 工具链）或 `go build -o build/pcsclone.exe ./cmd/pcsclone` 构建；详见 [使用与迁移指南](docs/pcsclone.md)、[命令契约](docs/pcsclone-command-contract.md) 与 [验证记录](docs/pcsclone-validation.md)。
+> - **保留旧入口 `BaiduPCS-Go` 与 `rc` 子命令**：原有交互式及 CLI 命令继续保留，运行 `BaiduPCS-Go rc help` 查看内置统一文件命令，详见 [rc 使用指南](docs/rc.md) 与 [补丁维护说明](docs/patch-series.md)；全部文档索引见 [docs/README.md](docs/README.md)。
 
 仿 Linux shell 文件处理命令的百度网盘命令行客户端.
 

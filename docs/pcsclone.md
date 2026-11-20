@@ -3,8 +3,10 @@
 `pcsclone` 是本仓库新增的独立文件操作入口。它复用 `internal/rc` 的显式端点、计划/执行引擎和隔离传输 worker，并复用 `baidupcs` 的网盘能力，但不进入 `BaiduPCS-Go` 的旧交互界面，也不依赖旧的当前账号或工作目录。
 
 - 命令契约：[pcsclone-command-contract.md](pcsclone-command-contract.md)
-- 验证记录：[pcsclone-validation.md](pcsclone-validation.md)
+- 验证记录：[pcsclone-validation.md](pcsclone-validation.md)（历史逐轮回归归档：[pcsclone-validation-archive.md](pcsclone-validation-archive.md)）
 - 旧的统一命令入口（仍保留）：[rc.md](rc.md)
+
+**目录**：[1. 构建](#1-构建) · [2. 配置目录](#2-配置目录) · [3. 账号](#3-账号) · [4. 核心文件操作](#4-核心文件操作) · [5. 百度专有功能](#5-百度专有功能) · [6. 退出码与自动化](#6-退出码与自动化) · [7. 与 BaiduPCS-Go 的关系](#7-与-baidupcs-go-的关系) · [8. Shell 补全](#8-shell-补全) · [9. 当前限制](#9-当前限制)
 
 ## 1. 构建
 
@@ -333,7 +335,7 @@ if ($LASTEXITCODE -ne 0) { throw "sync failed: $LASTEXITCODE" }
 
 ## 7. 与 BaiduPCS-Go 的关系
 
-- 两者共享 `baidupcs`、`pcsconfig` 配置结构和 `internal/rc` 执行引擎。
+- 两者共享 `baidupcs`、`pcsconfig` 配置结构和 `internal/rc` 执行引擎；执行引擎与 `pcsclone` 通过注入的 `rc.AccountStore` 和独立 `*pcsconfig.PCSConfig` 访问账号与配置，不再改写全局 `pcsconfig.Config`。
 - 旧入口及旧 `rc` 命令继续存在，行为不被 pcsclone 改写。
 - pcsclone 使用独立配置目录；导入是单向、显式、只读旧文件的。
 - 传输 worker 是 pcsclone 自身，不使用旧可执行文件；两个入口的 worker 互不依赖。
@@ -449,8 +451,7 @@ PowerShell 在命令行中间补全时，只解析光标前的命令和参数。
 ## 9. 当前限制
 
 - 不提供 `mount`、`serve`、`bisync` 或 rclone Remote Control API。
-- 执行引擎与 `pcsclone` 通过注入的 `rc.AccountStore` / 独立 `*pcsconfig.PCSConfig` 访问账号和配置，不再改写全局 `pcsconfig.Config`（旧版 `BaiduPCS-Go` 入口仍沿用默认全局配置）。
 - 下载跨命令续传需要服务端支持 Range 并提供有效的实体校验信息；否则重下。上传续传状态按账号、源、目标隔离。
 - 不跟随符号链接或 Windows 目录联接，路径的父目录也受此限制；不复制 ACL/所有者。
 - 远端比较、`check`、`stat --hash`、`--checksum` 可能需要下载内容，产生流量和临时磁盘占用。
-- 真实网盘验证需要在有测试账号的环境中另行执行；当前验证范围见 [pcsclone-validation.md](pcsclone-validation.md)。
+- 双账号跨账号中转、外部链接 `baidu transfer` 与真实终端大文件 Ctrl-C 续传尚未完成实盘验证；当前验证状态见 [pcsclone-validation.md](pcsclone-validation.md)。
