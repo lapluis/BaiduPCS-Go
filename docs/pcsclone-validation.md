@@ -141,4 +141,4 @@ $LASTEXITCODE
 Get-FileHash -Algorithm SHA256 -LiteralPath $target
 ```
 
-4. **线上 GitHub Actions 发布流水线**：[`.github/workflows/main.yml`](../.github/workflows/main.yml) 已按 `.go-version`（Go 1.27.4）、Windows Go 1.23 兼容性门禁与二进制 `govulncheck` 扫描配置完成；需在 fork 仓库的 GitHub Actions 页面启用工作流后观察首次线上完整运行，并持续审查第三方依赖版本告警。
+4. **线上 GitHub Actions 发布流水线**：[`.github/workflows/main.yml`](../.github/workflows/main.yml) 已调整为仅发布 `pcsclone` 的六个 64 位目标（Linux/Windows/macOS × `amd64`/`arm64`，按 `.go-version` Go 1.27.4 构建、保留 Windows Go 1.23 兼容性门禁与二进制 `govulncheck` 扫描，并支持 `pcsclone-v*` tag 自动发布 Release）；需在 fork 仓库的 GitHub Actions 页面启用工作流后观察首次线上完整运行，并持续审查第三方依赖版本告警。

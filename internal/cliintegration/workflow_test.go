@@ -26,17 +26,18 @@ func TestWorkflowBuildArtifactNamesAndEntrypoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	workflow := string(data)
+	if strings.Contains(workflow, "Build binary file") || strings.Contains(workflow, "baidupcs-go_") {
+		t.Fatal("workflow must only build pcsclone release artifacts")
+	}
 	for _, target := range []struct{ os, arch string }{
-		{"linux", "386"}, {"linux", "amd64"}, {"linux", "arm"}, {"linux", "arm64"},
-		{"windows", "386"}, {"windows", "amd64"}, {"windows", "arm"},
+		{"linux", "amd64"}, {"linux", "arm64"},
+		{"windows", "amd64"}, {"windows", "arm64"},
 		{"darwin", "amd64"}, {"darwin", "arm64"},
 	} {
 		for _, pr := range []string{"false", "true"} {
-			for _, step := range []struct{ name, prefix, entry string }{
-				{"Build binary file", "baidupcs-go_", "."},
-				{"Build pcsclone binary", "pcsclone_", "./cmd/pcsclone"},
-			} {
-				t.Run(target.os+"/"+target.arch+"/pr="+pr+"/"+step.name, func(t *testing.T) {
+			for _, refType := range []string{"branch", "tag"} {
+				t.Run(target.os+"/"+target.arch+"/pr="+pr+"/"+refType, func(t *testing.T) {
 					root := t.TempDir()
 					bin := filepath.Join(root, "bin")
 					if err := os.Mkdir(bin, 0700); err != nil {
@@ -58,9 +59,20 @@ printf 'fixture artifact\n' > "$output"
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					cmd := exec.CommandContext(ctx, bash, "-e", "-c", workflowRunBlock(t, string(data), step.name))
+					cmd := exec.CommandContext(ctx, bash, "-e", "-c", workflowRunBlock(t, workflow, "Build pcsclone binary"))
 					cmd.Dir = root
-					cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "BINARY_PREFIX=baidupcs-go_", "BINARY_SUFFIX=", "GOOS="+target.os, "GOARCH="+target.arch, "GOOS_=", "IS_PR="+pr, "PR_PROMPT=fixture PR notice", "LD_FLAGS=-w -s")
+					cmd.Env = append(
+						os.Environ(),
+						"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+						"GOOS="+target.os,
+						"GOARCH="+target.arch,
+						"IS_PR="+pr,
+						"PR_PROMPT=fixture PR notice",
+						"LD_FLAGS=-w",
+						"REF_TYPE="+refType,
+						"REF_NAME=pcsclone-v0.1.0",
+						"SHORT_SHA=1234567890abcdef",
+					)
 					output, err := cmd.CombinedOutput()
 					if err != nil {
 						t.Fatalf("workflow step failed: %v\n%s", err, output)
@@ -69,7 +81,7 @@ printf 'fixture artifact\n' > "$output"
 					if target.os == "windows" {
 						suffix = ".exe"
 					}
-					want := step.prefix + target.os + "_" + target.arch + suffix
+					want := "pcsclone_" + target.os + "_" + target.arch + suffix
 					files, err := os.ReadDir(filepath.Join(root, "output"))
 					if err != nil || len(files) != 1 || files[0].Name() != want {
 						t.Fatalf("wrong artifact: files=%v want=%s err=%v", files, want, err)
@@ -78,11 +90,16 @@ printf 'fixture artifact\n' > "$output"
 					if err != nil {
 						t.Fatal(err)
 					}
+					wantVersion := "pcsclone-v0.1.0-dev+1234567"
+					if refType == "tag" {
+						wantVersion = "pcsclone-v0.1.0"
+					}
+					wantLDFlags := "-w -X main.Version=" + wantVersion
 					got := strings.Split(strings.TrimSuffix(string(args), "\n"), "\n")
-					if len(got) != 7 || got[0] != "build" || got[1] != "-o" || got[2] != "output/"+want || got[3] != "-trimpath" || got[4] != "-ldflags" || got[5] != "-w -s" || got[6] != step.entry {
+					if len(got) != 7 || got[0] != "build" || got[1] != "-o" || got[2] != "output/"+want || got[3] != "-trimpath" || got[4] != "-ldflags" || got[5] != wantLDFlags || got[6] != "./cmd/pcsclone" {
 						t.Fatalf("wrong compiler invocation: %q", got)
 					}
-					if step.name == "Build binary file" && strings.Contains(string(output), "fixture PR notice") != (pr == "true") {
+					if strings.Contains(string(output), "fixture PR notice") != (pr == "true") {
 						t.Fatalf("PR notice changed: %q", output)
 					}
 				})

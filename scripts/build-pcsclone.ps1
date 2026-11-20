@@ -1,6 +1,6 @@
 param(
     [string]$Output = 'build/pcsclone.exe',
-    [string]$Version = 'v4.0.2-dev'
+    [string]$Version = 'pcsclone-v0.1.0'
 )
 
 Set-StrictMode -Version Latest

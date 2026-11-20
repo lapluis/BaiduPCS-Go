@@ -11,7 +11,7 @@ import (
 
 // Version is the pcsclone release string. Builds may override it with
 // -ldflags "-X main.Version=<version>".
-var Version = "v4.0.2-dev"
+var Version = "pcsclone-v0.1.0"
 
 func main() {
 	os.Exit(pcsclone.Run(os.Args[1:], Version, os.Stdout, os.Stderr))

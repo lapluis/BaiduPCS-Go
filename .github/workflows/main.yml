@@ -1,88 +1,16 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 env:
-  BINARY_PREFIX: "baidupcs-go_"
-  BINARY_SUFFIX: ""
   PR_PROMPT: "::warning:: Build artifact will not be uploaded due to the workflow is trigged by pull request."
   LD_FLAGS: "-w"
   GOTOOLCHAIN: local
 
 jobs:
-  build:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.legacy && ' (compatibility only)' || '' }}
-    needs: compatibility
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Eight release targets plus a Windows ARM32 compatibility-only build.
-        goos: [linux, windows, darwin]
-        goarch: ["386", amd64, arm, arm64]
-        exclude:
-          - goos: darwin
-            goarch: arm
-          - goos: darwin
-            goarch: "386"
-          - goos: windows
-            goarch: arm64
-        include:
-          - goos: windows
-            goarch: arm
-            legacy: true
-      fail-fast: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Go environment
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: ${{ matrix.legacy && 'go.mod' || '.go-version' }}
-      - name: Cache downloaded module
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('go.mod', '.go-version', 'go.sum') }}
-      - name: Verify build scripts
-        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}
-        run: go test ./internal/cliintegration -run '^Test(WorkflowBuildArtifactNamesAndEntrypoints|WorkflowReleasePolicy|WorkflowVulnerabilityGateStopsOnFailure|BuildScriptStopsBeforePackagingOrCleanupOnFailure|BuildArchiveReplacesStaleEntriesAndPreservesPreviousOnFailure)$' -count=1
-      - name: Build binary file
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          IS_PR: ${{ !!github.head_ref }}
-        run: |
-          if [ $GOOS = "windows" ]; then export BINARY_SUFFIX="$BINARY_SUFFIX.exe"; fi
-          if $IS_PR ; then echo $PR_PROMPT; fi
-          export BINARY_NAME="${BINARY_PREFIX}${GOOS}_${GOARCH}${BINARY_SUFFIX}"
-          export CGO_ENABLED=0
-          go build -o "output/$BINARY_NAME" -trimpath -ldflags "$LD_FLAGS" .
-      - name: Build pcsclone binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          PCS_SUFFIX=""
-          if [ "$GOOS" = "windows" ]; then PCS_SUFFIX=".exe"; fi
-          export CGO_ENABLED=0
-          go build -o "output/pcsclone_${GOOS}_${GOARCH}${PCS_SUFFIX}" -trimpath -ldflags "$LD_FLAGS" ./cmd/pcsclone
-      - name: Verify release artifacts
-        if: ${{ !matrix.legacy }}
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          for binary in output/*; do
-            govulncheck -mode binary "$binary"
-          done
-      - name: Explain legacy compatibility build
-        if: ${{ matrix.legacy }}
-        run: echo "Windows ARM32 is a compile-only compatibility check; artifacts are not uploaded."
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: ${{ success() && !github.head_ref && !matrix.legacy }}
-        with:
-          name: ${{ matrix.goos }}_${{ matrix.goarch }}
-          path: output/
   compatibility:
     name: Go 1.23 Windows source compatibility
     runs-on: windows-latest
@@ -96,3 +24,82 @@ jobs:
         env:
           GOFLAGS: -mod=readonly
         run: go test -p 1 ./... -shuffle=on -count=1 -timeout 180s
+
+  build:
+    name: Build pcsclone ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Six 64-bit release targets for pcsclone.
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+      fail-fast: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go environment
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+      - name: Cache downloaded module
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('go.mod', '.go-version', 'go.sum') }}
+      - name: Verify build scripts
+        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}
+        run: go test ./internal/cliintegration -run '^Test(WorkflowBuildArtifactNamesAndEntrypoints|WorkflowReleasePolicy|WorkflowVulnerabilityGateStopsOnFailure|BuildScriptStopsBeforePackagingOrCleanupOnFailure|BuildArchiveReplacesStaleEntriesAndPreservesPreviousOnFailure)$' -count=1
+      - name: Build pcsclone binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          IS_PR: ${{ !!github.head_ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          if [ "$IS_PR" = "true" ]; then echo "$PR_PROMPT"; fi
+          PCS_SUFFIX=""
+          if [ "$GOOS" = "windows" ]; then PCS_SUFFIX=".exe"; fi
+          if [ "$REF_TYPE" = "tag" ] && [ -n "$REF_NAME" ]; then
+            PCS_VERSION="$REF_NAME"
+          else
+            PCS_VERSION="pcsclone-v0.1.0-dev+${SHORT_SHA%"${SHORT_SHA#???????}"}"
+          fi
+          export CGO_ENABLED=0
+          go build -o "output/pcsclone_${GOOS}_${GOARCH}${PCS_SUFFIX}" -trimpath -ldflags "$LD_FLAGS -X main.Version=$PCS_VERSION" ./cmd/pcsclone
+      - name: Verify release artifacts
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          for binary in output/*; do
+            govulncheck -mode binary "$binary"
+          done
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: ${{ success() && !github.head_ref }}
+        with:
+          name: pcsclone_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: output/
+
+  release:
+    name: Publish pcsclone release
+    needs: build
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'pcsclone-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum pcsclone_* > SHA256SUMS.txt
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --title "${{ github.ref_name }}" --generate-notes

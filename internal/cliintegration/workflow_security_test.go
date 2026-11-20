@@ -40,30 +40,43 @@ func TestWorkflowReleasePolicy(t *testing.T) {
 		"  LD_FLAGS: \"-w\"\n",
 		"  GOTOOLCHAIN: local\n",
 		"    needs: compatibility\n",
-		"        include:\n          - goos: windows\n            goarch: arm\n            legacy: true\n",
+		"        goos: [linux, windows, darwin]\n",
+		"        goarch: [amd64, arm64]\n",
 		"hashFiles('go.mod', '.go-version', 'go.sum')",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("missing release invariant %q", required)
 		}
 	}
-	if !strings.Contains(workflowStep(t, workflow, "Setup Go environment"), "go-version-file: ${{ matrix.legacy && 'go.mod' || '.go-version' }}") {
-		t.Error("release targets do not use the pinned toolchain independently of compatibility builds")
+	for _, forbidden := range []string{
+		"Build binary file",
+		"baidupcs-go_",
+		"\"386\"",
+		"goarch: arm\n",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("workflow still contains removed legacy target/artifact %q", forbidden)
+		}
 	}
-	if !strings.Contains(workflowStep(t, workflow, "Verify release artifacts"), "if: ${{ !matrix.legacy }}") {
-		t.Error("legacy binaries must not be treated as patched release artifacts")
+	if !strings.Contains(workflowStep(t, workflow, "Setup Go environment"), "go-version-file: .go-version") {
+		t.Error("release targets must use the pinned .go-version toolchain")
 	}
-	if !strings.Contains(workflowStep(t, workflow, "Upload artifact"), "if: ${{ success() && !github.head_ref && !matrix.legacy }}") {
-		t.Error("upload must require success and exclude PRs and legacy builds")
+	if !strings.Contains(workflowStep(t, workflow, "Upload artifact"), "if: ${{ success() && !github.head_ref }}") {
+		t.Error("upload must require success and exclude PRs")
 	}
 	build := strings.Index(workflow, "      - name: Build pcsclone binary\n")
 	scan := strings.Index(workflow, "      - name: Verify release artifacts\n")
 	upload := strings.Index(workflow, "      - name: Upload artifact\n")
 	if build < 0 || !(build < scan && scan < upload) {
-		t.Error("both binaries must be built and scanned before upload")
+		t.Error("pcsclone binary must be built and scanned before upload")
 	}
 	compat := strings.Index(workflow, "  compatibility:\n")
-	if compat < 0 || !strings.Contains(workflow[compat:], "runs-on: windows-latest") || !strings.Contains(workflow[compat:], "go-version-file: go.mod") || !strings.Contains(workflow[compat:], "go test -p 1 ./...") || strings.Contains(workflow[compat:], "actions/upload-artifact") {
+	buildJob := strings.Index(workflow, "  build:\n")
+	if compat < 0 || buildJob < 0 || compat >= buildJob {
+		t.Fatal("missing compatibility or build job")
+	}
+	compatSection := workflow[compat:buildJob]
+	if !strings.Contains(compatSection, "runs-on: windows-latest") || !strings.Contains(compatSection, "go-version-file: go.mod") || !strings.Contains(compatSection, "go test -p 1 ./...") || strings.Contains(compatSection, "actions/upload-artifact") {
 		t.Error("source compatibility must run on Windows without publishing old-SDK artifacts")
 	}
 	data, err := os.ReadFile(filepath.Join("..", "..", ".go-version"))
